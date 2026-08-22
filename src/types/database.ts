@@ -114,6 +114,7 @@ export interface Conversation {
 }
 
 export type MessageRole = "user" | "assistant" | "system";
+export type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
 
 export interface Message {
   id: string;
@@ -121,5 +122,49 @@ export interface Message {
   conversation_id: string;
   role: MessageRole;
   content: string;
+  // Populated for assistant messages only (Jalon 2 — RAG engine).
+  answer_status: AnswerStatus | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  embedding_tokens: number | null;
+  latency_ms: number | null;
   created_at: string;
+}
+
+// ---------------------------------------------------------------------
+// Jalon 2 — RAG engine
+// ---------------------------------------------------------------------
+
+export interface KnowledgeChunk {
+  id: string;
+  hotel_id: string;
+  source_id: string;
+  content: string;
+  chunk_index: number;
+  token_count: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  // `embedding` (vector(1536)) is intentionally not modeled here — the app
+  // never reads it back as a JS array, only writes it and lets Postgres
+  // compare it via match_knowledge_chunks().
+}
+
+export interface MessageSource {
+  id: string;
+  message_id: string;
+  hotel_id: string;
+  source_id: string;
+  chunk_id: string;
+  similarity_score: number;
+  created_at: string;
+}
+
+/** Row shape returned by the match_knowledge_chunks() RPC. */
+export interface MatchedChunk {
+  chunk_id: string;
+  source_id: string;
+  source_title: string;
+  content: string;
+  similarity: number;
 }
