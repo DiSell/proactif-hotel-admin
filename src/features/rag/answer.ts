@@ -1,9 +1,11 @@
+import { z } from "zod";
+import { zodTextFormat } from "openai/helpers/zod";
 import { createClient } from "@/lib/supabase/server";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
 import { retrieveKnowledge, selectRelevantChunks, DEFAULT_SIMILARITY_THRESHOLD } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
-import type { AnswerQuestionResult } from "./types";
+import type { AnswerQuestionResult, GroundingMode, RetrievedChunk } from "./types";
 import type { ChatbotSettings, Hotel } from "@/types/database";
 
 /** How much prior conversation gets replayed to the model — never the full history. */
@@ -11,8 +13,6 @@ const MAX_HISTORY_MESSAGES = 12;
 const RETRIEVAL_LIMIT = 6;
 
 const GENERIC_ERROR_REPLY = "Une erreur est survenue. Veuillez réessayer dans un instant.";
-const DEFAULT_FALLBACK_REPLY =
-  "Je ne dispose pas de cette information pour le moment. Un membre de l'équipe reviendra vers vous.";
 
 export interface AnswerQuestionParams {
   hotelId: string;
@@ -23,11 +23,28 @@ export interface AnswerQuestionParams {
 type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 
 /**
+ * Structured output schema for the "no_context" branch only. Without a
+ * chunk count to infer answerStatus from, the model itself has to say
+ * whether this turn was a valid behavioral answer, an unsourced factual
+ * question, or something needing human handoff — see buildNoContextGuidance
+ * in prompt.ts for the criteria it's given. The "grounded" branch doesn't
+ * need this: finding relevant chunks is itself enough to call it "answered".
+ */
+const noContextReplySchema = z.object({
+  reply: z.string(),
+  answerStatus: z.enum(["answered", "fallback", "handoff"]),
+});
+
+/**
  * Orchestrates one turn: persists the visitor's message, retrieves
- * tenant-scoped knowledge, decides fallback vs. answered, calls OpenAI only
- * when there's something relevant to ground the answer in, persists the
- * assistant's reply + which chunks (if any) backed it, and returns the
- * result. Never lets the model answer ungrounded — see the fallback branch.
+ * tenant-scoped knowledge, and always calls the model — either GROUNDED
+ * (relevant chunks found, passed as reference data) or NO_CONTEXT (nothing
+ * relevant found, no knowledge block, model self-classifies answerStatus).
+ * The model is never short-circuited to a static reply just because
+ * retrieval came back empty — see groundingMode below. It's still never
+ * allowed to invent an operational fact about the establishment: that
+ * guarantee now lives in the prompt's absolute rules + capabilities section
+ * (prompt.ts) instead of in a pre-model gate here.
  */
 export async function answerQuestion({ hotelId, conversationId, message }: AnswerQuestionParams): Promise<AnswerQuestionResult> {
   const supabase = await createClient();
@@ -59,7 +76,7 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
   const history = await loadHistory(supabase, conversationId);
   const startedAt = Date.now();
 
-  let relevantChunks;
+  let relevantChunks: RetrievedChunk[];
   try {
     const chunks = await retrieveKnowledge({ hotelId, query: message, limit: RETRIEVAL_LIMIT });
     relevantChunks = selectRelevantChunks(chunks, DEFAULT_SIMILARITY_THRESHOLD);
@@ -68,35 +85,69 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
   }
 
-  if (relevantChunks.length === 0) {
-    const reply = settings?.fallback_message?.trim() || DEFAULT_FALLBACK_REPLY;
-    await insertAssistantMessage(supabase, {
+  const groundingMode: GroundingMode = relevantChunks.length > 0 ? "grounded" : "no_context";
+  const model = openaiChatModel();
+  const historyInput = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+  if (groundingMode === "grounded") {
+    return answerGrounded(supabase, {
       hotelId,
       conversationId,
-      content: reply,
-      answerStatus: "fallback",
-      model: null,
-      inputTokens: null,
-      outputTokens: null,
-      latencyMs: Date.now() - startedAt,
+      message,
+      hotel,
+      settings,
+      model,
+      historyInput,
+      relevantChunks,
+      startedAt,
     });
-    return { reply, sources: [], answerStatus: "fallback" };
   }
 
-  const instructions = buildHotelInstructions({ hotel, settings });
-  // The retrieved knowledge is data, not an instruction: it goes in `input`
-  // as its own item, clearly separated from the visitor's actual message,
-  // never concatenated into `instructions` (see prompt.ts). At this point
-  // relevantChunks is always non-empty — the fallback branch above already
-  // returned when there was nothing relevant.
+  return answerNoContext(supabase, {
+    hotelId,
+    conversationId,
+    message,
+    hotel,
+    settings,
+    model,
+    historyInput,
+    startedAt,
+  });
+}
+
+type HistoryInputItem = { role: "user" | "assistant"; content: string };
+
+/**
+ * GROUNDED: relevant knowledge chunks were found — pass them as reference
+ * data in `input` (never in `instructions`, see prompt.ts) and let the model
+ * ground its answer in them. Always "answered": finding relevant chunks is
+ * itself the signal, so there's no self-classification needed here (unlike
+ * answerNoContext below).
+ */
+async function answerGrounded(
+  supabase: SupabaseClient,
+  params: {
+    hotelId: string;
+    conversationId: string;
+    message: string;
+    hotel: Hotel;
+    settings: ChatbotSettings | null;
+    model: string;
+    historyInput: HistoryInputItem[];
+    relevantChunks: RetrievedChunk[];
+    startedAt: number;
+  }
+): Promise<AnswerQuestionResult> {
+  const { hotelId, conversationId, message, hotel, settings, model, historyInput, relevantChunks, startedAt } = params;
+
+  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "grounded" });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
-    ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    ...historyInput,
     { role: "user" as const, content: referenceBlock },
     { role: "user" as const, content: message },
   ];
 
-  const model = openaiChatModel();
   let reply: string;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
@@ -108,7 +159,7 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
   } catch (err) {
-    console.error("answerQuestion: OpenAI call failed", { hotelId, message: (err as Error).message });
+    console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
   }
 
@@ -140,6 +191,74 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
   }
 
   return { reply, sources: relevantChunks, answerStatus: "answered" };
+}
+
+/**
+ * NO_CONTEXT: nothing relevant was retrieved. The model still runs — no
+ * knowledge block in `input`, instructions carry buildNoContextGuidance's
+ * boundary (identity/settings/capabilities/real contact info only, never
+ * invent an operational fact) — and self-classifies answerStatus via
+ * structured output, since an empty chunk list is no longer a reliable
+ * signal on its own (a greeting and an unsourced price question both have
+ * zero chunks, but very different correct answerStatus).
+ */
+async function answerNoContext(
+  supabase: SupabaseClient,
+  params: {
+    hotelId: string;
+    conversationId: string;
+    message: string;
+    hotel: Hotel;
+    settings: ChatbotSettings | null;
+    model: string;
+    historyInput: HistoryInputItem[];
+    startedAt: number;
+  }
+): Promise<AnswerQuestionResult> {
+  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt } = params;
+
+  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context" });
+  const input = [...historyInput, { role: "user" as const, content: message }];
+
+  let reply: string;
+  let answerStatus: "answered" | "fallback" | "handoff";
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+
+  try {
+    const client = getOpenAIClient();
+    const response = await client.responses.parse({
+      model,
+      instructions,
+      input,
+      text: { format: zodTextFormat(noContextReplySchema, "assistant_reply") },
+    });
+    if (!response.output_parsed) {
+      throw new Error("no_context response did not match the expected structured schema");
+    }
+    reply = response.output_parsed.reply;
+    answerStatus = response.output_parsed.answerStatus;
+    inputTokens = response.usage?.input_tokens ?? null;
+    outputTokens = response.usage?.output_tokens ?? null;
+  } catch (err) {
+    console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });
+    return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
+  }
+
+  const latencyMs = Date.now() - startedAt;
+
+  await insertAssistantMessage(supabase, {
+    hotelId,
+    conversationId,
+    content: reply,
+    answerStatus,
+    model,
+    inputTokens,
+    outputTokens,
+    latencyMs,
+  });
+
+  return { reply, sources: [], answerStatus };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
