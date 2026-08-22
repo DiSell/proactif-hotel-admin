@@ -71,7 +71,8 @@ create table public.chatbot_settings (
   updated_at timestamptz not null default now()
 );
 
-create index chatbot_settings_hotel_id_idx on public.chatbot_settings (hotel_id);
+-- no separate index needed: the `unique` constraint on hotel_id above
+-- already creates one.
 
 -- =========================================================================
 -- widget_settings — display config for the embeddable widget, separate
@@ -89,7 +90,8 @@ create table public.widget_settings (
   updated_at timestamptz not null default now()
 );
 
-create index widget_settings_hotel_id_idx on public.widget_settings (hotel_id);
+-- no separate index needed: the `unique` constraint on hotel_id above
+-- already creates one.
 
 -- =========================================================================
 -- knowledge_sources — no RAG/embeddings yet, just structured source rows.
