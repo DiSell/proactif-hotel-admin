@@ -8,7 +8,7 @@ import { Toggle } from "@/components/ui/Toggle";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { useToast } from "@/components/ui/Toast";
-import { toggleSourceActive, deleteSource } from "./actions";
+import { toggleSourceActive, deleteSource, reindexSource } from "./actions";
 import type { KnowledgeSource } from "@/types/database";
 
 const TYPE_LABEL: Record<KnowledgeSource["type"], string> = {
@@ -47,8 +47,27 @@ export function SourcesTable({ hotelId, sources }: { hotelId: string; sources: K
   const router = useRouter();
   const toast = useToast();
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [reindexingId, setReindexingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+
+  function handleReindex(source: KnowledgeSource) {
+    setReindexingId(source.id);
+    startTransition(async () => {
+      const result = await reindexSource(hotelId, source.id);
+      setReindexingId(null);
+      if (!result.ok) {
+        toast.show(result.error ?? "Erreur", "danger");
+        return;
+      }
+      if (result.data?.status === "error") {
+        toast.show("Réindexation en erreur.", "danger");
+      } else {
+        toast.show("Source réindexée.");
+      }
+      router.refresh();
+    });
+  }
 
   function handleToggle(source: KnowledgeSource) {
     setPendingId(source.id);
@@ -97,6 +116,20 @@ export function SourcesTable({ hotelId, sources }: { hotelId: string; sources: K
       width: "56px",
       render: (s) => (
         <Toggle checked={s.is_active} onChange={() => handleToggle(s)} label={`Actif — ${s.title}`} disabled={pendingId === s.id} />
+      ),
+    },
+    {
+      header: "",
+      width: "90px",
+      render: (s) => (
+        <button
+          type="button"
+          onClick={() => handleReindex(s)}
+          disabled={reindexingId === s.id}
+          className="text-2xs font-medium text-body/70 hover:text-ink disabled:opacity-50"
+        >
+          {reindexingId === s.id ? "Réindexation…" : "Réindexer"}
+        </button>
       ),
     },
     {

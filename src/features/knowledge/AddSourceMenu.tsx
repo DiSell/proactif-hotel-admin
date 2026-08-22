@@ -77,7 +77,11 @@ export function AddSourceMenu({ hotelId, websiteUrl }: { hotelId: string; websit
         toast.show(result.error ?? "Erreur", "danger");
         return;
       }
-      toast.show("Source ajoutée.");
+      if (result.data?.status === "error") {
+        toast.show("Source ajoutée, mais l’indexation a échoué. Réessayez avec « Réindexer ».", "danger");
+      } else {
+        toast.show("Source ajoutée et indexée.");
+      }
       reset();
       router.refresh();
     });
