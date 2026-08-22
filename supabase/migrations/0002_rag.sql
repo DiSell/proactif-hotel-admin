@@ -21,27 +21,52 @@ alter table public.messages
   add column embedding_tokens integer,
   add column latency_ms integer;
 
+-- Composite-FK target: lets message_sources force "this message row really
+-- belongs to this hotel_id" at the database level (see below), not just by
+-- convention. messages.id is already globally unique (primary key), so this
+-- adds no new restriction on messages itself — it only makes the pair
+-- referenceable together.
+alter table public.messages
+  add constraint messages_id_hotel_id_key unique (id, hotel_id);
+
+-- =========================================================================
+-- knowledge_sources — composite-FK target (same reasoning as above)
+-- =========================================================================
+alter table public.knowledge_sources
+  add constraint knowledge_sources_id_hotel_id_key unique (id, hotel_id);
+
 -- =========================================================================
 -- knowledge_chunks
 -- =========================================================================
+-- Cross-tenant integrity by construction: a chunk's (source_id, hotel_id)
+-- pair must match a real (id, hotel_id) pair in knowledge_sources. It is
+-- therefore impossible at the database level to insert a chunk tagged
+-- hotel_id = A whose source_id points at a source owned by hotel B — the
+-- FK itself rejects that row, independent of any application logic bug.
 create table public.knowledge_chunks (
   id uuid primary key default gen_random_uuid(),
   hotel_id uuid not null references public.hotels (id) on delete cascade,
-  source_id uuid not null references public.knowledge_sources (id) on delete cascade,
+  source_id uuid not null,
   content text not null,
   embedding vector(1536) not null,
   chunk_index integer not null,
   token_count integer,
   metadata jsonb not null default '{}',
   -- Prepared for a future hybrid (vector + lexical) retrieval function —
-  -- unused by match_knowledge_chunks() this milestone, see plan notes.
-  content_tsv tsvector generated always as (to_tsvector('french', content)) stored,
-  created_at timestamptz not null default now()
+  -- unused by match_knowledge_chunks() this milestone. 'simple' (not
+  -- 'french'): the product is multilingual and a single-language stemming
+  -- config would skew ranking against non-French content. A proper
+  -- per-language or language-detected config can replace this later
+  -- without touching the column shape.
+  content_tsv tsvector generated always as (to_tsvector('simple', content)) stored,
+  created_at timestamptz not null default now(),
+  constraint knowledge_chunks_id_hotel_id_key unique (id, hotel_id),
+  constraint knowledge_chunks_source_hotel_fkey
+    foreign key (source_id, hotel_id)
+    references public.knowledge_sources (id, hotel_id)
+    on delete cascade
 );
 
--- hotel_id is denormalized on purpose (also reachable via source_id) so
--- every tenant-scoped filter — including inside match_knowledge_chunks() —
--- is a direct indexed equality check, never a join away from being forgotten.
 create index knowledge_chunks_hotel_id_idx on public.knowledge_chunks (hotel_id);
 create index knowledge_chunks_source_id_idx on public.knowledge_chunks (source_id);
 create index knowledge_chunks_tsv_idx on public.knowledge_chunks using gin (content_tsv);
@@ -54,14 +79,31 @@ create index knowledge_chunks_tsv_idx on public.knowledge_chunks using gin (cont
 -- =========================================================================
 -- message_sources — which chunks actually grounded a given assistant reply
 -- =========================================================================
+-- Every FK here is composite on (…, hotel_id): a message_sources row can
+-- only ever point at a message, a source, and a chunk that all agree on
+-- the same hotel_id. Four independent database-level checks collapse into
+-- one guarantee — this table cannot itself become the leak, regardless of
+-- what value the app happened to pass for hotel_id.
 create table public.message_sources (
   id uuid primary key default gen_random_uuid(),
-  message_id uuid not null references public.messages (id) on delete cascade,
+  message_id uuid not null,
   hotel_id uuid not null references public.hotels (id) on delete cascade,
-  source_id uuid not null references public.knowledge_sources (id) on delete cascade,
-  chunk_id uuid not null references public.knowledge_chunks (id) on delete cascade,
+  source_id uuid not null,
+  chunk_id uuid not null,
   similarity_score real not null,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint message_sources_message_hotel_fkey
+    foreign key (message_id, hotel_id)
+    references public.messages (id, hotel_id)
+    on delete cascade,
+  constraint message_sources_source_hotel_fkey
+    foreign key (source_id, hotel_id)
+    references public.knowledge_sources (id, hotel_id)
+    on delete cascade,
+  constraint message_sources_chunk_hotel_fkey
+    foreign key (chunk_id, hotel_id)
+    references public.knowledge_chunks (id, hotel_id)
+    on delete cascade
 );
 
 create index message_sources_message_id_idx on public.message_sources (message_id);
@@ -93,9 +135,12 @@ revoke all on public.message_sources from anon;
 
 -- =========================================================================
 -- match_knowledge_chunks — the ONLY way the app performs vector retrieval.
--- The hotel_id filter lives inside this function's SQL body, not in
--- caller-supplied logic: there is no code path through this function that
--- skips it, regardless of how retrieveKnowledge() is called from the app.
+-- Two independent tenant checks, not one: the where clause on kc.hotel_id,
+-- AND the join condition re-asserting ks.hotel_id = kc.hotel_id. Given the
+-- composite FK above, that join condition can never actually exclude a
+-- row that the where clause already let through — it's deliberate defense
+-- in depth, not load-bearing on its own, so a future refactor of this
+-- function has to remove two things, not one, to reopen a cross-tenant leak.
 -- Also filters to active, non-disabled sources so a superadmin disabling a
 -- source immediately excludes it from retrieval.
 -- =========================================================================
@@ -124,7 +169,9 @@ as $$
     1 - (kc.embedding <=> p_query_embedding) as similarity
   from public.knowledge_chunks kc
   join public.knowledge_sources ks
-    on ks.id = kc.source_id and ks.is_active
+    on ks.id = kc.source_id
+    and ks.hotel_id = kc.hotel_id
+    and ks.is_active
   where kc.hotel_id = p_hotel_id
   order by kc.embedding <=> p_query_embedding
   limit greatest(p_match_count, 1);
@@ -139,6 +186,14 @@ grant execute on function public.match_knowledge_chunks(uuid, vector, int) to au
 -- and only then calls this function, so a failed OpenAI call never leaves
 -- a source half-reindexed: either every new chunk lands in the same
 -- transaction as the delete of the old ones, or nothing changes at all.
+--
+-- The ownership check below is belt-and-suspenders on top of the FK: it
+-- fails fast with a clear error BEFORE the delete runs, rather than
+-- letting a mismatched call delete zero rows and then hit a generic FK
+-- violation on insert. Either path aborts the whole function with no
+-- partial writes (a plpgsql function body runs inside the calling
+-- statement's transaction; an unhandled exception rolls back everything
+-- this call did).
 -- =========================================================================
 create or replace function public.replace_knowledge_chunks(
   p_source_id uuid,
@@ -151,6 +206,14 @@ security invoker
 set search_path = public
 as $$
 begin
+  if not exists (
+    select 1 from public.knowledge_sources
+    where id = p_source_id and hotel_id = p_hotel_id
+  ) then
+    raise exception 'replace_knowledge_chunks: source % does not belong to hotel %', p_source_id, p_hotel_id
+      using errcode = 'P0001';
+  end if;
+
   delete from public.knowledge_chunks
   where source_id = p_source_id and hotel_id = p_hotel_id;
 
