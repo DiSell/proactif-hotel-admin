@@ -29,17 +29,30 @@ export const hotelIdentitySchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/, "Couleur invalide (format #RRGGBB)."),
 });
 
-export const hotelLanguagesSchema = z
-  .object({
-    languages: z.array(z.enum(LANGUAGE_OPTIONS)).min(1, "Sélectionnez au moins une langue."),
-    default_language: z.enum(LANGUAGE_OPTIONS),
-    booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
-    spa_booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
-  })
-  .refine((data) => data.languages.includes(data.default_language), {
+// Plain shape (no refine) so it stays mergeable — zod v4 forbids .merge()
+// on a schema that already carries a .refine(). The cross-field check is
+// applied once, at the end, on whichever schema actually needs it.
+const hotelLanguagesShape = z.object({
+  languages: z.array(z.enum(LANGUAGE_OPTIONS)).min(1, "Sélectionnez au moins une langue."),
+  default_language: z.enum(LANGUAGE_OPTIONS),
+  booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
+  spa_booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
+});
+
+const defaultLanguageMustBeSelected = {
+  check: (data: { languages: string[]; default_language: string }) => data.languages.includes(data.default_language),
+  issue: {
     message: "La langue par défaut doit faire partie des langues sélectionnées.",
-    path: ["default_language"],
-  });
+    path: ["default_language"] as (string | number)[],
+  },
+};
+
+// Used for the wizard's per-step validation (features/hotels/wizard/Wizard.tsx) —
+// never merged into another schema, only .safeParse()'d directly.
+export const hotelLanguagesSchema = hotelLanguagesShape.refine(
+  defaultLanguageMustBeSelected.check,
+  defaultLanguageMustBeSelected.issue
+);
 
 export const hotelAssistantIntroSchema = z.object({
   assistant_enabled: z.boolean(),
@@ -51,8 +64,9 @@ export const createHotelSchema = z
   .object({})
   .merge(hotelInfoSchema)
   .merge(hotelIdentitySchema)
-  .merge(hotelLanguagesSchema)
-  .merge(hotelAssistantIntroSchema);
+  .merge(hotelLanguagesShape)
+  .merge(hotelAssistantIntroSchema)
+  .refine(defaultLanguageMustBeSelected.check, defaultLanguageMustBeSelected.issue);
 
 export type CreateHotelInput = z.infer<typeof createHotelSchema>;
 
