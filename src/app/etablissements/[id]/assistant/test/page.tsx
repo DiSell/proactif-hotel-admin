@@ -33,11 +33,13 @@ export default async function AssistantFullscreenTestPage({
       </div>
       <div className="border-b border-border bg-canvas px-6 py-3 text-center">
         <span className="text-2xs text-body/80">
-          Cette conversation utilise les réglages actuels de {hotel.name} et n’est pas enregistrée. Réponses simulées.
+          Cette conversation utilise les réglages actuels de {hotel.name} et appelle le moteur réel (OpenAI + base de
+          connaissances). Elle est enregistrée.
         </span>
       </div>
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden p-6">
         <ChatPreview
+          hotelId={hotel.id}
           assistantName={hotel.assistant_name || "Assistant"}
           welcomeMessage={settings?.welcome_message || "Bonjour, comment puis-je vous aider ?"}
           fullScreen

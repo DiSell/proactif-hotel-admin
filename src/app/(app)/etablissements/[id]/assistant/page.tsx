@@ -26,6 +26,7 @@ export default async function AssistantPage({ params }: PageProps<"/etablissemen
         </div>
         <div className="h-[520px]">
           <ChatPreview
+            hotelId={hotel.id}
             assistantName={hotel.assistant_name || "Assistant"}
             welcomeMessage={settings?.welcome_message || "Bonjour, comment puis-je vous aider ?"}
           />

@@ -1,36 +1,80 @@
 "use client";
 
 import { useState } from "react";
-import { getSimulatedReply } from "./getSimulatedReply";
+
+type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
+
+interface MessageSource {
+  sourceId: string;
+  sourceTitle: string;
+  similarity: number;
+}
 
 interface ChatMessage {
   role: "assistant" | "user";
   content: string;
+  answerStatus?: AnswerStatus;
+  sources?: MessageSource[];
+}
+
+interface ChatApiResponse {
+  conversationId: string;
+  reply: string;
+  sources: MessageSource[];
+  answerStatus: AnswerStatus;
 }
 
 interface ChatPreviewProps {
+  hotelId: string;
   assistantName: string;
   welcomeMessage: string;
   fullScreen?: boolean;
 }
 
-export function ChatPreview({ assistantName, welcomeMessage, fullScreen }: ChatPreviewProps) {
+export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen }: ChatPreviewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: welcomeMessage }]);
   const [input, setInput] = useState("");
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  function handleSend() {
+  async function handleSend() {
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed || loading) return;
     setInput("");
+    setError(null);
     setMessages((current) => [...current, { role: "user", content: trimmed }]);
-    // Simulated — see getSimulatedReply.ts. Not a real request.
-    setTimeout(() => {
-      setMessages((current) => [...current, { role: "assistant", content: getSimulatedReply(trimmed, assistantName) }]);
-    }, 500);
+    setLoading(true);
+
+    try {
+      const response = await fetch(`/api/hotels/${hotelId}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversationId, message: trimmed }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || "Une erreur est survenue.");
+      }
+
+      const data: ChatApiResponse = await response.json();
+      setConversationId(data.conversationId);
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", content: data.reply, answerStatus: data.answerStatus, sources: data.sources },
+      ]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Une erreur est survenue.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleReset() {
     setMessages([{ role: "assistant", content: welcomeMessage }]);
+    setConversationId(null);
+    setError(null);
   }
 
   return (
@@ -41,27 +85,41 @@ export function ChatPreview({ assistantName, welcomeMessage, fullScreen }: ChatP
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-canvas">{assistantName || "Assistant"}</p>
-          <p className="text-2xs text-canvas/55">Aperçu de test (simulé)</p>
+          <p className="text-2xs text-canvas/55">Mode test — réponses réelles</p>
         </div>
         <button type="button" onClick={handleReset} className="text-2xs font-medium text-canvas/70 hover:text-canvas">
-          Vider
+          Nouvelle conversation
         </button>
       </div>
 
       <div className={`flex flex-1 flex-col gap-3 overflow-y-auto p-4 ${fullScreen ? "" : "min-h-[320px]"}`}>
         {messages.map((message, index) => (
-          <div
-            key={index}
-            className={`max-w-[78%] rounded-xl px-3.5 py-2.5 text-xs leading-relaxed ${
-              message.role === "user" ? "self-end bg-ink text-canvas" : "self-start border border-border bg-surface"
-            }`}
-            style={{
-              borderRadius: message.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
-            }}
-          >
-            {message.content}
+          <div key={index} className={`flex flex-col gap-1.5 ${message.role === "user" ? "items-end" : "items-start"}`}>
+            <div
+              className={`max-w-[78%] rounded-xl px-3.5 py-2.5 text-xs leading-relaxed ${
+                message.role === "user" ? "bg-ink text-canvas" : "border border-border bg-surface"
+              }`}
+              style={{
+                borderRadius: message.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
+              }}
+            >
+              {message.content}
+            </div>
+            {message.role === "assistant" && message.answerStatus && (
+              <SourcesDebugPanel answerStatus={message.answerStatus} sources={message.sources ?? []} />
+            )}
           </div>
         ))}
+
+        {loading && (
+          <div className="max-w-[78%] self-start rounded-xl border border-border bg-surface px-3.5 py-2.5 text-xs text-body/60">
+            {assistantName || "Assistant"} écrit…
+          </div>
+        )}
+
+        {error && (
+          <div className="self-start rounded-xl border border-danger/40 bg-danger/10 px-3.5 py-2.5 text-xs text-danger">{error}</div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 border-t border-border p-3">
@@ -73,19 +131,48 @@ export function ChatPreview({ assistantName, welcomeMessage, fullScreen }: ChatP
             if (event.key === "Enter") handleSend();
           }}
           placeholder="Écrivez votre message…"
-          className="h-10 flex-1 rounded-full border border-border bg-surface px-4 text-xs outline-none focus:border-ink"
+          disabled={loading}
+          className="h-10 flex-1 rounded-full border border-border bg-surface px-4 text-xs outline-none focus:border-ink disabled:opacity-60"
         />
         <button
           type="button"
           onClick={handleSend}
+          disabled={loading}
           aria-label="Envoyer"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink text-canvas"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-ink text-canvas disabled:opacity-60"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
           </svg>
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Admin-only debug panel — this component is never rendered in a public
+ * widget, only in the admin dashboard's live preview and fullscreen test
+ * mode. Shows source titles + similarity scores, never embeddings, prompt
+ * text, or other internals.
+ */
+function SourcesDebugPanel({ answerStatus, sources }: { answerStatus: AnswerStatus; sources: MessageSource[] }) {
+  if (answerStatus === "fallback") {
+    return <p className="max-w-[78%] text-2xs italic text-body/55">Aucune source suffisamment pertinente.</p>;
+  }
+
+  if (answerStatus !== "answered" || sources.length === 0) return null;
+
+  return (
+    <div className="max-w-[78%] rounded-lg border border-border/70 bg-canvas px-3 py-2 text-2xs text-body/70">
+      <p className="mb-1 font-medium text-body/80">Sources utilisées</p>
+      <ul className="flex flex-col gap-0.5">
+        {sources.map((source) => (
+          <li key={source.sourceId}>
+            • {source.sourceTitle} — {(source.similarity * 100).toFixed(0)}%
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
