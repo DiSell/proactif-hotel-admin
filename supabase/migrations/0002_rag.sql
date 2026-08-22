@@ -30,6 +30,22 @@ alter table public.messages
   add constraint messages_id_hotel_id_key unique (id, hotel_id);
 
 -- =========================================================================
+-- conversations — composite-FK target, so a message can't claim a
+-- conversation that actually belongs to a different hotel.
+-- =========================================================================
+alter table public.conversations
+  add constraint conversations_id_hotel_id_key
+  unique (id, hotel_id);
+
+-- The plain conversation_id -> conversations(id) FK from 0001 stays as-is;
+-- this composite one adds the hotel_id agreement on top of it.
+alter table public.messages
+  add constraint messages_conversation_hotel_fkey
+  foreign key (conversation_id, hotel_id)
+  references public.conversations (id, hotel_id)
+  on delete cascade;
+
+-- =========================================================================
 -- knowledge_sources — composite-FK target (same reasoning as above)
 -- =========================================================================
 alter table public.knowledge_sources
@@ -61,6 +77,14 @@ create table public.knowledge_chunks (
   content_tsv tsvector generated always as (to_tsvector('simple', content)) stored,
   created_at timestamptz not null default now(),
   constraint knowledge_chunks_id_hotel_id_key unique (id, hotel_id),
+  -- Composite-FK target for message_sources below: lets it pin down not
+  -- just "this chunk belongs to this hotel" but "this chunk belongs to
+  -- this hotel AND this source", in one constraint.
+  constraint knowledge_chunks_id_source_hotel_key unique (id, source_id, hotel_id),
+  -- Business rule, not just tenant isolation: within one source, chunk
+  -- ordering can't collide. Guards against a reindex bug inserting the
+  -- same chunk_index twice for the same source.
+  constraint knowledge_chunks_source_chunk_index_key unique (hotel_id, source_id, chunk_index),
   constraint knowledge_chunks_source_hotel_fkey
     foreign key (source_id, hotel_id)
     references public.knowledge_sources (id, hotel_id)
@@ -96,13 +120,23 @@ create table public.message_sources (
     foreign key (message_id, hotel_id)
     references public.messages (id, hotel_id)
     on delete cascade,
+  -- Kept alongside the chunk FK below even though it's now implied
+  -- transitively (knowledge_chunks.source_id already composite-FKs to
+  -- knowledge_sources): a direct, independent check here means a future
+  -- change to the chunks->sources relationship can't silently loosen what
+  -- message_sources itself guarantees about source_id. Cheap redundancy,
+  -- worth keeping.
   constraint message_sources_source_hotel_fkey
     foreign key (source_id, hotel_id)
     references public.knowledge_sources (id, hotel_id)
     on delete cascade,
-  constraint message_sources_chunk_hotel_fkey
-    foreign key (chunk_id, hotel_id)
-    references public.knowledge_chunks (id, hotel_id)
+  -- Composite on (chunk_id, source_id, hotel_id): not only must the chunk
+  -- belong to this hotel, it must belong to THIS row's source_id too — a
+  -- row claiming chunk X under source_id Y is rejected if X's real source
+  -- is actually Z, even when Y and Z belong to the same hotel.
+  constraint message_sources_chunk_source_hotel_fkey
+    foreign key (chunk_id, source_id, hotel_id)
+    references public.knowledge_chunks (id, source_id, hotel_id)
     on delete cascade
 );
 
@@ -174,7 +208,7 @@ as $$
     and ks.is_active
   where kc.hotel_id = p_hotel_id
   order by kc.embedding <=> p_query_embedding
-  limit greatest(p_match_count, 1);
+  limit least(greatest(p_match_count, 1), 20);
 $$;
 
 revoke all on function public.match_knowledge_chunks(uuid, vector, int) from public;
