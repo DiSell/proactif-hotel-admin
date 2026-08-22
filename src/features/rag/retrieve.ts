@@ -10,14 +10,29 @@ import type { RetrievedChunk } from "./types";
  * routes, tests) must import this one instead of hardcoding a number, so
  * the cutoff can never silently diverge between two code paths.
  *
- * Set to 0.6 based on real observed data from the RAG smoke tests
- * (text-embedding-3-small, French hotel FAQ content): genuinely correct
- * matches for real questions scored between ~0.60 and ~0.71 similarity — a
- * 0.75 cutoff silently fell back on questions that had a clearly relevant
- * source. Still not a "considered final" value; revisit as more real
- * conversation data comes in, and adjust only here — every caller follows.
+ * MVP value, calibrated empirically — NOT a considered-final number, and
+ * NOT to be lowered further without new measurement:
+ *
+ * A 32-query benchmark (8 real facts x FR/EN/ES + 8 negative queries, across
+ * two hotels' real content, text-embedding-3-small) measured precision and
+ * recall at six candidate thresholds by sweeping retrieveKnowledge()'s raw
+ * scores (nothing in production was changed to run it):
+ *
+ *   threshold  precision  recall
+ *   0.60       100%       16.7%   <- previous value: too many real matches missed, in French too, not just cross-lingual
+ *   0.58       100%       25.0%
+ *   0.56       100%       33.3%
+ *   0.54       100%       41.7%
+ *   0.52       100%       54.2%
+ *   0.50       100%       62.5%   <- current value: best recall with zero false positives observed in the sample
+ *
+ * Precision stayed at 100% (zero false positives) across the entire sweep,
+ * so 0.50 was chosen as the most permissive value actually measured — going
+ * lower would be extrapolating past real data, not reading it. Revisit with
+ * a larger/more diverse benchmark before adjusting further; adjust only
+ * here — every caller follows.
  */
-export const DEFAULT_SIMILARITY_THRESHOLD = 0.6;
+export const DEFAULT_SIMILARITY_THRESHOLD = 0.5;
 
 const DEFAULT_MATCH_COUNT = 6;
 
