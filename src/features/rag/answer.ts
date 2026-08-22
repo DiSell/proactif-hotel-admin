@@ -1,8 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
-import { retrieveKnowledge, selectRelevantChunks } from "./retrieve";
-import { buildHotelInstructions } from "./prompt";
+import { retrieveKnowledge, selectRelevantChunks, DEFAULT_SIMILARITY_THRESHOLD } from "./retrieve";
+import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import type { AnswerQuestionResult } from "./types";
 import type { ChatbotSettings, Hotel } from "@/types/database";
 
@@ -62,7 +62,7 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
   let relevantChunks;
   try {
     const chunks = await retrieveKnowledge({ hotelId, query: message, limit: RETRIEVAL_LIMIT });
-    relevantChunks = selectRelevantChunks(chunks);
+    relevantChunks = selectRelevantChunks(chunks, DEFAULT_SIMILARITY_THRESHOLD);
   } catch (err) {
     console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -83,9 +83,16 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     return { reply, sources: [], answerStatus: "fallback" };
   }
 
-  const instructions = buildHotelInstructions({ hotel, settings, chunks: relevantChunks });
+  const instructions = buildHotelInstructions({ hotel, settings });
+  // The retrieved knowledge is data, not an instruction: it goes in `input`
+  // as its own item, clearly separated from the visitor's actual message,
+  // never concatenated into `instructions` (see prompt.ts). At this point
+  // relevantChunks is always non-empty — the fallback branch above already
+  // returned when there was nothing relevant.
+  const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
     ...history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+    { role: "user" as const, content: referenceBlock },
     { role: "user" as const, content: message },
   ];
 

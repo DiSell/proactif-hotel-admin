@@ -5,12 +5,19 @@ import type { RetrievedChunk } from "./types";
 
 /**
  * Cosine similarity (1 - cosine distance) cutoff below which a chunk is
- * considered not relevant enough to ground an answer. NOT tuned against
- * real usage yet — expect to revisit once there's real conversation data
- * to look at (a fixed 0.75 is a reasonable starting point, not a
- * considered-final threshold).
+ * considered not relevant enough to ground an answer. This is the ONLY
+ * threshold constant in the app — every caller (answerQuestion, the smoke
+ * routes, tests) must import this one instead of hardcoding a number, so
+ * the cutoff can never silently diverge between two code paths.
+ *
+ * Set to 0.6 based on real observed data from the RAG smoke tests
+ * (text-embedding-3-small, French hotel FAQ content): genuinely correct
+ * matches for real questions scored between ~0.60 and ~0.71 similarity — a
+ * 0.75 cutoff silently fell back on questions that had a clearly relevant
+ * source. Still not a "considered final" value; revisit as more real
+ * conversation data comes in, and adjust only here — every caller follows.
  */
-export const DEFAULT_SIMILARITY_THRESHOLD = 0.75;
+export const DEFAULT_SIMILARITY_THRESHOLD = 0.6;
 
 const DEFAULT_MATCH_COUNT = 6;
 
