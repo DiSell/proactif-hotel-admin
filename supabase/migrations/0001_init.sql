@@ -235,6 +235,60 @@ create policy "superadmin full access" on public.messages
   for all using (public.is_superadmin()) with check (public.is_superadmin());
 
 -- =========================================================================
+-- Data API grants
+-- =========================================================================
+-- This project has "expose new tables" disabled in Project Settings ->
+-- Data API, so tables created here get NO privileges for PostgREST's roles
+-- until granted explicitly. Without this block, RLS policies above would
+-- never even be reached: supabase-js would fail with a plain permission
+-- error (or "not found in schema cache") before RLS gets a chance to filter
+-- anything. A GRANT and a POLICY answer two different questions — GRANT
+-- says the role may attempt the operation at all, RLS says which rows it
+-- actually sees or can write — so both are required, and neither replaces
+-- the other.
+--
+-- Least privilege for this milestone: only `authenticated` gets DML on
+-- these tables (the dashboard is the only client, every request runs as a
+-- logged-in superadmin). `anon` gets nothing on business tables — there is
+-- no public flow yet reading/writing them directly; the future public chat
+-- widget will go through its own, more restrictive surface, not raw table
+-- access. DELETE is included to match what the RLS policies above already
+-- permit a superadmin to do (`for all`); it isn't a wider grant than the
+-- policies already allow, just one that lets the policy actually apply.
+grant usage on schema public to authenticated;
+
+grant select, insert, update, delete on public.profiles to authenticated;
+grant select, insert, update, delete on public.hotels to authenticated;
+grant select, insert, update, delete on public.chatbot_settings to authenticated;
+grant select, insert, update, delete on public.widget_settings to authenticated;
+grant select, insert, update, delete on public.knowledge_sources to authenticated;
+grant select, insert, update, delete on public.conversations to authenticated;
+grant select, insert, update, delete on public.messages to authenticated;
+
+-- Explicit and idempotent, independent of whatever the dashboard toggle
+-- does or doesn't do by default: anon has no access to any business table.
+revoke all on public.profiles from anon;
+revoke all on public.hotels from anon;
+revoke all on public.chatbot_settings from anon;
+revoke all on public.widget_settings from anon;
+revoke all on public.knowledge_sources from anon;
+revoke all on public.conversations from anon;
+revoke all on public.messages from anon;
+
+-- Functions: is_superadmin() is already scoped to `authenticated` only via
+-- the revoke/grant right after its definition above — nothing to add here.
+-- set_updated_at() is a trigger function, never invoked directly through
+-- PostgREST, so it needs no EXECUTE grant to authenticated or anon either.
+
+-- Storage (storage.objects / storage.buckets) is Supabase-managed
+-- infrastructure, not a table created by this migration — its base grants
+-- to anon/authenticated are already in place regardless of the "expose new
+-- tables" setting, which only governs tables created in exposed app
+-- schemas (public here), not Supabase's own storage/auth schemas. The
+-- storage.objects policies below are what actually restricts access; no
+-- additional GRANT is needed there.
+
+-- =========================================================================
 -- Storage buckets
 -- =========================================================================
 insert into storage.buckets (id, name, public)
