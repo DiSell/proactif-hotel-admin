@@ -226,9 +226,11 @@ async function buildRoomRecommendation(
     recommendedAccommodationTypeId: string | null;
     rankedCandidates: RankedCandidate[];
     accommodationTypesById: Map<string, AccommodationType>;
+    /** hotels.booking_url, passed straight through from the already-loaded hotel row — see answerGrounded's call site. Never sourced from the model or the visitor's message. */
+    bookingUrl: string | null;
   }
 ): Promise<RoomRecommendation | null> {
-  const { hotelId, recommendedAccommodationTypeId, rankedCandidates, accommodationTypesById } = params;
+  const { hotelId, recommendedAccommodationTypeId, rankedCandidates, accommodationTypesById, bookingUrl } = params;
   if (!recommendedAccommodationTypeId) return null;
 
   const matched = rankedCandidates.find((c) => c.id === recommendedAccommodationTypeId);
@@ -249,6 +251,7 @@ async function buildRoomRecommendation(
     name: matched.name,
     photos: (photos ?? []).map((p) => ({ url: p.photo_url as string, alt: p.alt_text as string | null })),
     pageUrl: accommodationType.source_url,
+    bookingUrl,
   };
 }
 
@@ -368,6 +371,7 @@ async function answerGrounded(
     recommendedAccommodationTypeId,
     rankedCandidates,
     accommodationTypesById,
+    bookingUrl: hotel.booking_url,
   });
 
   return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation };

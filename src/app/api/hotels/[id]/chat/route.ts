@@ -26,7 +26,7 @@ export async function POST(request: Request, context: RouteContext<"/api/hotels/
 
   const supabase = await createClient();
 
-  const { data: hotel, error: hotelError } = await supabase.from("hotels").select("id, booking_url").eq("id", hotelId).maybeSingle();
+  const { data: hotel, error: hotelError } = await supabase.from("hotels").select("id").eq("id", hotelId).maybeSingle();
   if (hotelError || !hotel) {
     return NextResponse.json({ error: "Établissement introuvable." }, { status: 404 });
   }
@@ -62,9 +62,11 @@ export async function POST(request: Request, context: RouteContext<"/api/hotels/
       reply: result.reply,
       sources: result.sources.map((s) => ({ sourceId: s.sourceId, sourceTitle: s.sourceTitle, similarity: s.similarity })),
       answerStatus: result.answerStatus,
-      // bookingUrl comes straight from the hotel row already loaded above —
-      // never invented, never derived from anything the model said.
-      roomRecommendation: result.roomRecommendation ? { ...result.roomRecommendation, bookingUrl: hotel.booking_url } : null,
+      // roomRecommendation.bookingUrl is already sourced server-side from
+      // hotels.booking_url by answerQuestion() itself (see
+      // buildRoomRecommendation in features/rag/answer.ts) — nothing to add
+      // or override here anymore.
+      roomRecommendation: result.roomRecommendation,
     });
   } catch (err) {
     console.error("POST /api/hotels/[id]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

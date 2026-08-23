@@ -87,6 +87,45 @@ describe("answerGrounded — accommodation recommendation", () => {
 });
 
 /**
+ * Regression guards for RoomRecommendation.bookingUrl being native to
+ * answerQuestion()'s own output (P0-3) — no route is allowed to bolt it on
+ * anymore, and it must be structurally impossible for the model to supply
+ * one instead of the hotel's actual configured URL.
+ */
+describe("buildRoomRecommendation — bookingUrl", () => {
+  function sliceFn(name: string, nextName: string): string {
+    const start = source.indexOf(`async function ${name}`);
+    const end = source.indexOf(`async function ${nextName}`);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it("[native field] the returned object includes bookingUrl, sourced from the function's own bookingUrl parameter — not derived, not defaulted", () => {
+    const fn = sliceFn("buildRoomRecommendation", "answerGrounded");
+    // Anchored right after pageUrl (the return object's second-to-last
+    // field) rather than matching the whole `return { ... }` block, since
+    // the photos line contains its own nested { url, alt } object literal
+    // that would otherwise break a naive brace-balanced match.
+    expect(fn).toMatch(/pageUrl: accommodationType\.source_url,\s*\n\s*bookingUrl,\s*\n\s*\};/);
+  });
+
+  it("[server-sourced only] bookingUrl is passed into buildRoomRecommendation from hotel.booking_url at the call site — the already-loaded hotel row, not the model's output", () => {
+    const groundedFn = sliceFn("answerGrounded", "answerNoContext");
+    expect(groundedFn).toMatch(/buildRoomRecommendation\(supabase,\s*\{[^}]*bookingUrl:\s*hotel\.booking_url,?[^}]*\}\)/);
+  });
+
+  it("[no model URL field] neither structured-output schema exposes anything a model could use to supply its own booking URL", () => {
+    const groundedSchemaStart = source.indexOf("const groundedReplySchema");
+    const noContextSchemaStart = source.indexOf("const noContextReplySchema");
+    const groundedSchema = source.slice(groundedSchemaStart, source.indexOf("});", groundedSchemaStart));
+    const noContextSchema = source.slice(noContextSchemaStart, source.indexOf("});", noContextSchemaStart));
+    expect(groundedSchema).not.toMatch(/url/i);
+    expect(noContextSchema).not.toMatch(/url/i);
+  });
+});
+
+/**
  * Regression guards for making the availability pipeline orthogonal to
  * groundingMode — same testing constraint as above.
  */

@@ -34,6 +34,15 @@ export interface RoomRecommendation {
   name: string;
   photos: { url: string; alt: string | null }[];
   pageUrl: string | null;
+  /**
+   * hotels.booking_url, read straight from the database row — never from
+   * the model's structured output (neither groundedReplySchema nor
+   * noContextReplySchema in answer.ts declares any URL field, so there is
+   * no field for the model to populate this from even accidentally) and
+   * never derived from the visitor's message. Null when the hotel hasn't
+   * configured one.
+   */
+  bookingUrl: string | null;
 }
 
 export interface AnswerQuestionResult {
