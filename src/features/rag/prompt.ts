@@ -45,6 +45,15 @@ export interface BuildHotelInstructionsParams {
    * below. Absent or "not_requested" adds nothing.
    */
   availabilityCheckState?: AvailabilityCheckState;
+  /**
+   * Broader than availabilityCheckState — true whenever the message
+   * expresses ANY reservation/availability/price intent (see answer.ts's
+   * isBookingIntent), independent of whether the richer stay-context
+   * pipeline ran. Drives buildBookingIntentGuidance below, which tells the
+   * model a "Réserver" button may be shown separately by the interface —
+   * the model must never write out a URL itself either way.
+   */
+  bookingIntentDetected?: boolean;
 }
 
 /**
@@ -96,6 +105,7 @@ export function buildHotelInstructions({
   rankedCandidates,
   party,
   availabilityCheckState,
+  bookingIntentDetected,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -142,6 +152,8 @@ export function buildHotelInstructions({
   // Orthogonal to groundingMode, deliberately — see BuildHotelInstructionsParams.
   const availabilityGuidance =
     availabilityCheckState && availabilityCheckState.kind !== "not_requested" ? buildAvailabilityGuidance(availabilityCheckState) : "";
+  // Also orthogonal to groundingMode, and independent of availabilityGuidance above (bookingIntentDetected is a broader net — see answer.ts's isBookingIntent).
+  const bookingIntentGuidance = bookingIntentDetected ? buildBookingIntentGuidance(Boolean(hotel.booking_url)) : "";
 
   return [
     identity,
@@ -153,9 +165,31 @@ export function buildHotelInstructions({
     noContextGuidance,
     accommodationGuidance,
     availabilityGuidance,
+    bookingIntentGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/**
+ * Orthogonal to groundingMode and to availabilityCheckState — fires
+ * whenever the message expresses reservation/availability/price intent
+ * (see answer.ts's isBookingIntent, deliberately broader than
+ * isAvailabilityRequest so a pure price question like "combien coûte une
+ * nuit ?" is covered too). The model is told a CTA button may appear
+ * separately, specifically so it never tries to write out its own URL or
+ * contact detail in the reply text — the actual link, when one exists, is
+ * always hotels.booking_url attached server-side (see answer.ts's
+ * buildBookingAction), never anything the model produces.
+ */
+function buildBookingIntentGuidance(hasBookingUrl: boolean): string {
+  return [
+    "INTENTION RÉSERVATION / DISPONIBILITÉ / PRIX :",
+    "Le visiteur exprime une intention de réservation, de disponibilité ou de prix. Rappel : tu ne peux vérifier aucune disponibilité réelle, donner aucun prix réel, ni effectuer de réservation — ne prétends jamais le contraire et n'invente jamais de montant, de date disponible, de lien ou de coordonnée.",
+    hasBookingUrl
+      ? "Un bouton « Réserver » vers le moteur de réservation de l'établissement sera affiché séparément par l'interface, automatiquement — n'écris JAMAIS d'URL ni de lien toi-même dans ta réponse, contente-toi d'inviter le visiteur à l'utiliser pour vérifier disponibilité et prix réels."
+      : "Aucun moteur de réservation n'est configuré pour cet établissement : invite le visiteur à contacter directement l'établissement pour vérifier disponibilité et prix réels, sans jamais inventer de lien ou de coordonnée qui ne t'aurait pas été fournie ailleurs.",
+  ].join("\n");
 }
 
 /**

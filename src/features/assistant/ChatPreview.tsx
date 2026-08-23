@@ -19,12 +19,26 @@ interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
+/**
+ * Generic CTA, independent of RoomRecommendation — see
+ * features/rag/types.ts (ChatAction) for the server-side contract. `url` is
+ * always hotels.booking_url, attached server-side; never null when this
+ * object is present at all (see answer.ts's buildBookingAction — it
+ * returns the whole action as null rather than an action with a null url).
+ */
+interface ChatAction {
+  type: "booking";
+  label: string;
+  url: string;
+}
+
 interface ChatMessage {
   role: "assistant" | "user";
   content: string;
   answerStatus?: AnswerStatus;
   sources?: MessageSource[];
   roomRecommendation?: RoomRecommendation | null;
+  action?: ChatAction | null;
 }
 
 interface ChatApiResponse {
@@ -33,6 +47,7 @@ interface ChatApiResponse {
   sources: MessageSource[];
   answerStatus: AnswerStatus;
   roomRecommendation: RoomRecommendation | null;
+  action: ChatAction | null;
 }
 
 interface ChatPreviewProps {
@@ -74,7 +89,14 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
       setConversationId(data.conversationId);
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: data.reply, answerStatus: data.answerStatus, sources: data.sources, roomRecommendation: data.roomRecommendation },
+        {
+          role: "assistant",
+          content: data.reply,
+          answerStatus: data.answerStatus,
+          sources: data.sources,
+          roomRecommendation: data.roomRecommendation,
+          action: data.action,
+        },
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Une erreur est survenue.");
@@ -128,6 +150,17 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
               >
                 Voir la chambre — {message.roomRecommendation.name}
               </button>
+            )}
+            {/* Server guarantees roomRecommendation and action are never both present for the same turn (see answer.ts's buildBookingAction) — no dedup needed here. */}
+            {message.role === "assistant" && message.action && (
+              <a
+                href={message.action.url}
+                target="_blank"
+                rel="noreferrer"
+                className="max-w-[78%] rounded-full bg-ink px-4 py-2 text-center text-2xs font-medium text-canvas hover:opacity-90"
+              >
+                {message.action.label}
+              </a>
             )}
           </div>
         ))}

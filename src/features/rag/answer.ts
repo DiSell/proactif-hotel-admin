@@ -14,7 +14,7 @@ import { checkAvailability } from "../availability/checkAvailability";
 import { applyAvailabilityToCandidates } from "../availability/applyAvailabilityToCandidates";
 import { NoopAvailabilityProviderResolver } from "../availability/resolver";
 import type { AvailabilityCheckState, StayRequestState } from "../availability/types";
-import type { AnswerQuestionResult, GroundingMode, RetrievedChunk, RoomRecommendation } from "./types";
+import type { AnswerQuestionResult, ChatAction, GroundingMode, RetrievedChunk, RoomRecommendation } from "./types";
 import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
 
 /**
@@ -33,6 +33,50 @@ const MAX_HISTORY_MESSAGES = 12;
 const RETRIEVAL_LIMIT = 6;
 
 const GENERIC_ERROR_REPLY = "Une erreur est survenue. Veuillez réessayer dans un instant.";
+
+/**
+ * Price wording specifically — isAvailabilityRequest (availability/gates.ts)
+ * deliberately covers reservation/availability wording only, since it also
+ * gates the real checkAvailability() call and must stay narrow for that
+ * purpose (see gates.ts's own doc comment). The CTA below needs a broader
+ * net — "combien coûte une nuit ?" should trigger the booking CTA even
+ * though it must never trigger an actual (nonexistent) price check.
+ */
+const PRICE_INTENT_PATTERNS: RegExp[] = [
+  /\bprix\b/i,
+  /\btarifs?\b/i,
+  /combien\s+co[uû]te/i,
+  /\bco[uû]te\b/i,
+  /\bpayer\b/i,
+  /\bprice\b/i,
+  /\brates?\b/i,
+  /\bcost\b/i,
+];
+
+/**
+ * Broader than isAvailabilityRequest on purpose: reservation OR
+ * availability OR price wording, all treated the same way by MODE STANDARD
+ * — none of them can be answered for real, all of them should surface the
+ * booking CTA when one is configured. Never used to gate the actual
+ * checkAvailability() call (that stays exactly isAvailabilityRequest, see
+ * above) — only to decide whether to attach a `action` to the result.
+ */
+export function isBookingIntent(message: string): boolean {
+  return isAvailabilityRequest(message) || PRICE_INTENT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * The only place a ChatAction is ever constructed. `bookingUrl` is null
+ * either because the hotel hasn't configured one, or because the caller
+ * deliberately passed null to suppress the generic CTA (see
+ * answerGrounded's call site: a turn that already produced a
+ * RoomRecommendation with its own "Réserver" button never also gets this
+ * generic one for the same link).
+ */
+export function buildBookingAction(bookingIntentDetected: boolean, bookingUrl: string | null): ChatAction | null {
+  if (!bookingIntentDetected || !bookingUrl) return null;
+  return { type: "booking", label: "Réserver", url: bookingUrl };
+}
 
 export interface AnswerQuestionParams {
   hotelId: string;
@@ -178,6 +222,12 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
   // confirmed-available recommendation. A no-op when no check ran.
   rankedCandidates = applyAvailabilityToCandidates(rankedCandidates, availabilityCheckState);
 
+  // Computed once, independent of groundingMode and of
+  // shouldResolveStayContext — a pure regex check on the raw message, cheap
+  // enough to always run. Drives the generic booking CTA (see
+  // buildBookingAction) in both branches below.
+  const bookingIntentDetected = isBookingIntent(message);
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -193,6 +243,7 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
       party,
       accommodationTypesById,
       availabilityCheckState,
+      bookingIntentDetected,
     });
   }
 
@@ -206,6 +257,7 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     historyInput,
     startedAt,
     availabilityCheckState,
+    bookingIntentDetected,
   });
 }
 
@@ -288,6 +340,7 @@ async function answerGrounded(
     party: PartySize;
     accommodationTypesById: Map<string, AccommodationType>;
     availabilityCheckState: AvailabilityCheckState;
+    bookingIntentDetected: boolean;
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -304,9 +357,18 @@ async function answerGrounded(
     party,
     accommodationTypesById,
     availabilityCheckState,
+    bookingIntentDetected,
   } = params;
 
-  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "grounded", rankedCandidates, party, availabilityCheckState });
+  const instructions = buildHotelInstructions({
+    hotel,
+    settings,
+    groundingMode: "grounded",
+    rankedCandidates,
+    party,
+    availabilityCheckState,
+    bookingIntentDetected,
+  });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
     ...historyInput,
@@ -374,7 +436,15 @@ async function answerGrounded(
     bookingUrl: hotel.booking_url,
   });
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation };
+  // A RoomRecommendation with its own "Réserver" button already covers the
+  // booking intent for this turn — never a second, generic CTA pointing at
+  // the exact same URL. Passing null here (instead of skipping
+  // buildBookingAction outright) keeps the "no booking_url configured"
+  // and "already covered by roomRecommendation" cases going through the
+  // same single code path.
+  const action = buildBookingAction(bookingIntentDetected, roomRecommendation ? null : hotel.booking_url);
+
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action };
 }
 
 /**
@@ -398,11 +468,13 @@ async function answerNoContext(
     historyInput: HistoryInputItem[];
     startedAt: number;
     availabilityCheckState: AvailabilityCheckState;
+    bookingIntentDetected: boolean;
   }
 ): Promise<AnswerQuestionResult> {
-  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt, availabilityCheckState } = params;
+  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt, availabilityCheckState, bookingIntentDetected } =
+    params;
 
-  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context", availabilityCheckState });
+  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context", availabilityCheckState, bookingIntentDetected });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
   let reply: string;
@@ -443,7 +515,10 @@ async function answerNoContext(
     latencyMs,
   });
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null };
+  // no_context never produces a RoomRecommendation (see answer.groundingMode.test.ts) — nothing to deduplicate against, unlike answerGrounded.
+  const action = buildBookingAction(bookingIntentDetected, hotel.booking_url);
+
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -504,5 +579,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null };
 }

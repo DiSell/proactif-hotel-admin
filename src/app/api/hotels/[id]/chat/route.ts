@@ -62,11 +62,12 @@ export async function POST(request: Request, context: RouteContext<"/api/hotels/
       reply: result.reply,
       sources: result.sources.map((s) => ({ sourceId: s.sourceId, sourceTitle: s.sourceTitle, similarity: s.similarity })),
       answerStatus: result.answerStatus,
-      // roomRecommendation.bookingUrl is already sourced server-side from
-      // hotels.booking_url by answerQuestion() itself (see
-      // buildRoomRecommendation in features/rag/answer.ts) — nothing to add
-      // or override here anymore.
+      // roomRecommendation.bookingUrl and action are both already sourced
+      // server-side from hotels.booking_url by answerQuestion() itself (see
+      // buildRoomRecommendation / buildBookingAction in
+      // features/rag/answer.ts) — nothing to add or override here anymore.
       roomRecommendation: result.roomRecommendation,
+      action: result.action,
     });
   } catch (err) {
     console.error("POST /api/hotels/[id]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

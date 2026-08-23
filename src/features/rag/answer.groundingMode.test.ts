@@ -126,6 +126,58 @@ describe("buildRoomRecommendation — bookingUrl", () => {
 });
 
 /**
+ * Regression guards for the generic booking CTA (P0-1) — independent of
+ * RoomRecommendation, must reach the visitor even when no specific room was
+ * recommended (grounded with no match, or no_context entirely). Runtime
+ * behavior of isBookingIntent/buildBookingAction themselves is covered by
+ * real unit tests in bookingAction.test.ts; this file only guards how the
+ * two branches WIRE those pure functions in, since answerGrounded/
+ * answerNoContext can't be unit-tested directly here (Supabase + OpenAI).
+ */
+describe("answer.ts — generic booking CTA (action)", () => {
+  function sliceFn(name: string, nextName: string): string {
+    const start = source.indexOf(`async function ${name}`);
+    const end = source.indexOf(`async function ${nextName}`);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it("[computed once] bookingIntentDetected is computed in answerQuestion itself, before branching — not re-derived separately in each branch", () => {
+    const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
+    expect(answerQuestionFn).toMatch(/const bookingIntentDetected = isBookingIntent\(message\);/);
+
+    // Scoped precisely to each call's own argument object (not a greedy
+    // match that could straddle both calls and pass even if
+    // bookingIntentDetected were missing from one of them specifically).
+    const groundedCallStart = answerQuestionFn.indexOf("return answerGrounded(supabase, {");
+    const groundedCallEnd = answerQuestionFn.indexOf("});", groundedCallStart);
+    expect(answerQuestionFn.slice(groundedCallStart, groundedCallEnd)).toMatch(/bookingIntentDetected,/);
+
+    const noContextCallStart = answerQuestionFn.indexOf("return answerNoContext(supabase, {");
+    const noContextCallEnd = answerQuestionFn.indexOf("});", noContextCallStart);
+    expect(answerQuestionFn.slice(noContextCallStart, noContextCallEnd)).toMatch(/bookingIntentDetected,/);
+  });
+
+  it("[no_context — works with no RoomRecommendation at all] answerNoContext attaches action from bookingIntentDetected + hotel.booking_url directly, and returns it", () => {
+    const fn = sliceFn("answerNoContext", "loadHistory");
+    expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected, hotel\.booking_url\);/);
+    expect(fn).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action \};/);
+  });
+
+  it("[grounded — dedup with RoomRecommendation] answerGrounded suppresses the generic action (passes null) whenever a RoomRecommendation was already produced this turn — never both for the same URL", () => {
+    const fn = sliceFn("answerGrounded", "answerNoContext");
+    expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected, roomRecommendation \? null : hotel\.booking_url\);/);
+    expect(fn).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action \};/);
+  });
+
+  it("[single source of truth] buildBookingAction is the ONLY place an action object literal ({ type: \"booking\", ... }) is constructed — never inlined again at either call site", () => {
+    const actionLiteralCount = (source.match(/\{\s*type:\s*"booking"/g) ?? []).length;
+    expect(actionLiteralCount).toBe(1);
+  });
+});
+
+/**
  * Regression guards for making the availability pipeline orthogonal to
  * groundingMode — same testing constraint as above.
  */

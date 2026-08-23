@@ -45,9 +45,32 @@ export interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
+/**
+ * Generic call-to-action, independent of RoomRecommendation — covers a
+ * reservation/availability/price intent that isn't tied to a specific
+ * recommended accommodation (e.g. "avez-vous de la place ?", "combien coûte
+ * une nuit ?"). `url` is always hotels.booking_url, read straight from the
+ * database row — never from the model, the RAG knowledge base, or the
+ * visitor's message (see buildBookingAction in answer.ts). Only ever one
+ * action type today ("booking"); the discriminated `type` field exists so a
+ * future action kind doesn't require a breaking change to this shape.
+ */
+export interface ChatAction {
+  type: "booking";
+  label: string;
+  url: string;
+}
+
 export interface AnswerQuestionResult {
   reply: string;
   sources: RetrievedChunk[];
   answerStatus: AnswerStatus;
   roomRecommendation: RoomRecommendation | null;
+  /**
+   * Null whenever a RoomRecommendation with its own bookingUrl was already
+   * produced this turn (see answer.ts's buildBookingAction call sites) —
+   * deliberately never both at once, to avoid two "Réserver" buttons for
+   * the same link in the same turn.
+   */
+  action: ChatAction | null;
 }
