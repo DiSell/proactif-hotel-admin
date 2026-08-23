@@ -3,9 +3,20 @@ import { NextResponse, type NextRequest } from "next/server";
 import { supabasePublishableKey, supabaseUrl } from "./env";
 
 const PUBLIC_PATHS = ["/login"];
+// The public widget — embed script, its config/chat API, and the standalone
+// chat page rendered inside the embed iframe — must be reachable by an
+// anonymous visitor on a hotel's own site. Nobody browsing a hotel's
+// website is expected to hold a Proactif admin session; without this, every
+// widget request would be redirected to /login below, same as any other
+// unauthenticated page in this app. See features/widget/publicHotel.ts for
+// how tenant isolation is enforced instead (never through auth here).
+const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/"];
+const PUBLIC_EXACT_PATHS = ["/widget.js"];
 
-function isPublicPath(pathname: string) {
-  return PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`));
+export function isPublicPath(pathname: string) {
+  if (PUBLIC_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) return true;
+  if (PUBLIC_EXACT_PATHS.includes(pathname)) return true;
+  return PUBLIC_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
 /**

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { zodTextFormat } from "openai/helpers/zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
@@ -82,9 +83,22 @@ export interface AnswerQuestionParams {
   hotelId: string;
   conversationId: string;
   message: string;
+  /**
+   * Injected Supabase client — defaults to the session-bound admin client
+   * (createClient()), preserving today's behavior exactly for the admin
+   * chat route. The public widget's chat route passes the service-role
+   * client instead (see features/widget/publicHotel.ts): every table this
+   * function touches (hotels, chatbot_settings, accommodation_types,
+   * room_photos, messages, conversations, message_sources) has RLS scoped
+   * to `is_superadmin()` plus an explicit `revoke all ... from anon`, so an
+   * anonymous visitor's session-bound client can read/write none of them.
+   * Tenant isolation for that path is therefore enforced entirely in
+   * application code (widget_key -> hotelId resolved server-side, never
+   * accepted from the client) rather than by RLS — see
+   * features/widget/publicHotel.ts's resolvePublicWidgetContext.
+   */
+  supabase?: SupabaseClient;
 }
-
-type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 
 /**
  * Structured output schema for the "no_context" branch only. Without a
@@ -122,8 +136,13 @@ const groundedReplySchema = z.object({
  * guarantee now lives in the prompt's absolute rules + capabilities section
  * (prompt.ts) instead of in a pre-model gate here.
  */
-export async function answerQuestion({ hotelId, conversationId, message }: AnswerQuestionParams): Promise<AnswerQuestionResult> {
-  const supabase = await createClient();
+export async function answerQuestion({
+  hotelId,
+  conversationId,
+  message,
+  supabase: injectedSupabase,
+}: AnswerQuestionParams): Promise<AnswerQuestionResult> {
+  const supabase = injectedSupabase ?? (await createClient());
 
   const { data: hotel, error: hotelError } = await supabase
     .from("hotels")
@@ -147,14 +166,18 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     throw new Error(`answerQuestion: failed to store user message: ${userMessageError.message}`);
   }
 
-  await supabase.from("conversations").update({ last_message_at: new Date().toISOString() }).eq("id", conversationId);
+  // hotel_id filtered in the query itself, not just implied by the caller
+  // having already validated conversationId — auto-defensive even though
+  // every caller (admin and public widget routes) already does that
+  // validation before reaching this function.
+  await supabase.from("conversations").update({ last_message_at: new Date().toISOString() }).eq("id", conversationId).eq("hotel_id", hotelId);
 
   const history = await loadHistory(supabase, conversationId);
   const startedAt = Date.now();
 
   let relevantChunks: RetrievedChunk[];
   try {
-    const chunks = await retrieveKnowledge({ hotelId, query: message, limit: RETRIEVAL_LIMIT });
+    const chunks = await retrieveKnowledge({ hotelId, query: message, limit: RETRIEVAL_LIMIT, supabase });
     relevantChunks = selectRelevantChunks(chunks, DEFAULT_SIMILARITY_THRESHOLD);
   } catch (err) {
     console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });

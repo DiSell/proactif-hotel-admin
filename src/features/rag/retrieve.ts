@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { embedText } from "./embeddings";
 import type { MatchedChunk } from "@/types/database";
@@ -41,6 +42,16 @@ export interface RetrieveKnowledgeParams {
   hotelId: string;
   query: string;
   limit?: number;
+  /**
+   * Injected Supabase client — defaults to the session-bound admin client
+   * (createClient()), unchanged behavior for every existing caller. The
+   * public widget's chat route passes the service-role client instead (see
+   * answer.ts's answerQuestion and features/widget/publicHotel.ts): RLS on
+   * knowledge_chunks, plus an explicit `revoke ... from public` on the
+   * match_knowledge_chunks() RPC itself, blocks an anonymous visitor
+   * entirely otherwise.
+   */
+  supabase?: SupabaseClient;
 }
 
 /**
@@ -55,13 +66,14 @@ export async function retrieveKnowledge({
   hotelId,
   query,
   limit = DEFAULT_MATCH_COUNT,
+  supabase: injectedSupabase,
 }: RetrieveKnowledgeParams): Promise<RetrievedChunk[]> {
   if (!hotelId) {
     throw new Error("retrieveKnowledge: hotelId is required — no retrieval may run without it.");
   }
 
   const queryEmbedding = await embedText(query);
-  const supabase = await createClient();
+  const supabase = injectedSupabase ?? (await createClient());
 
   const { data, error } = await supabase.rpc("match_knowledge_chunks", {
     p_hotel_id: hotelId,
