@@ -117,6 +117,8 @@ export interface UpdateHotelInfoInput {
   email: string;
   primary_color: string;
   secondary_color: string;
+  booking_url: string;
+  spa_booking_url: string;
 }
 
 export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): Promise<ActionResult<null>> {
@@ -145,6 +147,8 @@ export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): 
       email: parsed.data.email || null,
       primary_color: parsed.data.primary_color,
       secondary_color: parsed.data.secondary_color,
+      booking_url: parsed.data.booking_url || null,
+      spa_booking_url: parsed.data.spa_booking_url || null,
     })
     .eq("id", id);
 

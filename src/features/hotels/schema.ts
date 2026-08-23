@@ -2,6 +2,33 @@ import { z } from "zod";
 
 const LANGUAGE_OPTIONS = ["fr", "en", "es", "nl", "de", "it"] as const;
 
+const HTTP_URL_MESSAGE = "Entrez une URL valide commençant par http:// ou https://.";
+
+/**
+ * z.string().url() alone accepts ANY syntactically valid URL, including
+ * javascript:, data:, and file: — all of which would end up rendered as a
+ * plain <a href> in the chat widget (see RoomPhotoModal.tsx). Booking links
+ * are the one URL a visitor's browser actually navigates to unattended, so
+ * this restricts them to http/https specifically, not just "looks like a
+ * URL".
+ */
+function isHttpUrl(value: string): boolean {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const httpUrlSchema = z.string().trim().refine(isHttpUrl, { message: HTTP_URL_MESSAGE });
+
+/** Shared by the creation wizard (hotelLanguagesShape) and hotel-info editing (updateHotelInfoSchema) — same column, same rules, both places. */
+const hotelBookingLinksSchema = z.object({
+  booking_url: httpUrlSchema.optional().or(z.literal("")),
+  spa_booking_url: httpUrlSchema.optional().or(z.literal("")),
+});
+
 export const hotelInfoSchema = z.object({
   name: z.string().trim().min(1, "Le nom est obligatoire."),
   website: z.string().trim().url("Entrez une URL valide (https://…)."),
@@ -32,12 +59,12 @@ export const hotelIdentitySchema = z.object({
 // Plain shape (no refine) so it stays mergeable — zod v4 forbids .merge()
 // on a schema that already carries a .refine(). The cross-field check is
 // applied once, at the end, on whichever schema actually needs it.
-const hotelLanguagesShape = z.object({
-  languages: z.array(z.enum(LANGUAGE_OPTIONS)).min(1, "Sélectionnez au moins une langue."),
-  default_language: z.enum(LANGUAGE_OPTIONS),
-  booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
-  spa_booking_url: z.string().trim().url("Entrez une URL valide.").optional().or(z.literal("")),
-});
+const hotelLanguagesShape = z
+  .object({
+    languages: z.array(z.enum(LANGUAGE_OPTIONS)).min(1, "Sélectionnez au moins une langue."),
+    default_language: z.enum(LANGUAGE_OPTIONS),
+  })
+  .merge(hotelBookingLinksSchema);
 
 const defaultLanguageMustBeSelected = {
   check: (data: { languages: string[]; default_language: string }) => data.languages.includes(data.default_language),
@@ -70,7 +97,7 @@ export const createHotelSchema = z
 
 export type CreateHotelInput = z.infer<typeof createHotelSchema>;
 
-export const updateHotelInfoSchema = hotelInfoSchema.merge(hotelIdentitySchema);
+export const updateHotelInfoSchema = hotelInfoSchema.merge(hotelIdentitySchema).merge(hotelBookingLinksSchema);
 export type UpdateHotelInfoInput = z.infer<typeof updateHotelInfoSchema>;
 
 export { LANGUAGE_OPTIONS };

@@ -23,6 +23,8 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
     email: hotel.email ?? "",
     primary_color: hotel.primary_color ?? "#1A1D1A",
     secondary_color: hotel.secondary_color ?? "#8A6A3E",
+    booking_url: hotel.booking_url ?? "",
+    spa_booking_url: hotel.spa_booking_url ?? "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isPending, startTransition] = useTransition();
@@ -104,6 +106,26 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
             value={state.email}
             onChange={(event) => patch({ email: event.target.value })}
             className={inputClassName(Boolean(errors.email))}
+          />
+        </FormField>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <FormField label="URL de réservation" htmlFor="booking_url" error={errors.booking_url}>
+          <input
+            id="booking_url"
+            value={state.booking_url}
+            onChange={(event) => patch({ booking_url: event.target.value })}
+            placeholder="https://"
+            className={inputClassName(Boolean(errors.booking_url))}
+          />
+        </FormField>
+        <FormField label="URL de réservation spa" htmlFor="spa_booking_url" error={errors.spa_booking_url}>
+          <input
+            id="spa_booking_url"
+            value={state.spa_booking_url}
+            onChange={(event) => patch({ spa_booking_url: event.target.value })}
+            placeholder="https://"
+            className={inputClassName(Boolean(errors.spa_booking_url))}
           />
         </FormField>
       </div>
