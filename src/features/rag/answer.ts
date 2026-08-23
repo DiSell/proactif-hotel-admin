@@ -5,8 +5,28 @@ import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
 import { retrieveKnowledge, selectRelevantChunks, DEFAULT_SIMILARITY_THRESHOLD } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
-import type { AnswerQuestionResult, GroundingMode, RetrievedChunk } from "./types";
-import type { ChatbotSettings, Hotel } from "@/types/database";
+import { extractPartySize, type PartySize } from "./partySize";
+import { filterAndRankAccommodations, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
+import { shouldResolveStayContext, isAvailabilityRequest } from "../availability/gates";
+import { resolveStayRequestFromHistory } from "../availability/extractStayRequest";
+import { validateStayRequestState } from "../availability/stayRequest";
+import { checkAvailability } from "../availability/checkAvailability";
+import { applyAvailabilityToCandidates } from "../availability/applyAvailabilityToCandidates";
+import { NoopAvailabilityProviderResolver } from "../availability/resolver";
+import type { AvailabilityCheckState, StayRequestState } from "../availability/types";
+import type { AnswerQuestionResult, GroundingMode, RetrievedChunk, RoomRecommendation } from "./types";
+import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
+
+/**
+ * Phase A: no hotel-configured timezone field exists yet (see
+ * src/types/database.ts Hotel) — no migration is added just for this. UTC
+ * is an honest, assumption-free placeholder rather than guessing a
+ * business timezone; revisit once a real field exists.
+ */
+const FALLBACK_TIME_ZONE = "UTC";
+
+/** A single resolver instance for the whole process — Phase A always resolves to no_provider, cheaply, so nothing needs per-call construction. */
+const availabilityProviderResolver = new NoopAvailabilityProviderResolver();
 
 /** How much prior conversation gets replayed to the model — never the full history. */
 const MAX_HISTORY_MESSAGES = 12;
@@ -33,6 +53,18 @@ type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
 const noContextReplySchema = z.object({
   reply: z.string(),
   answerStatus: z.enum(["answered", "fallback", "handoff"]),
+});
+
+/**
+ * Structured output schema for the "grounded" branch. recommendedAccommodationTypeId
+ * is a raw, UNVERIFIED string from the model at this point — answerGrounded
+ * validates it against the exact rankedCandidates list actually offered
+ * this turn before it's ever trusted (see buildRoomRecommendation below).
+ * Never null-coalesced into a real recommendation without that check.
+ */
+const groundedReplySchema = z.object({
+  reply: z.string(),
+  recommendedAccommodationTypeId: z.string().nullable(),
 });
 
 /**
@@ -89,6 +121,63 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
   const model = openaiChatModel();
   const historyInput = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
+  // Independent of groundingMode, deliberately (see prompt.ts's
+  // buildAvailabilityGuidance and the plan): a stay/availability question
+  // must be resolvable even when RAG finds no relevant chunk at all — RAG
+  // and availability are orthogonal concerns, never gating one another.
+  const { data: accommodationTypes } = await supabase
+    .from("accommodation_types")
+    .select("*")
+    .eq("hotel_id", hotelId)
+    .eq("active", true)
+    .returns<AccommodationType[]>();
+  const accommodationTypesById = new Map((accommodationTypes ?? []).map((a) => [a.id, a]));
+  const candidates: AccommodationCandidate[] = (accommodationTypes ?? []).map((a) => ({
+    id: a.id,
+    name: a.name,
+    maxGuests: a.max_guests,
+    maxAdults: a.max_adults,
+    maxChildren: a.max_children,
+  }));
+
+  // Cheap fallback, always available: a single-message regex extraction —
+  // unchanged from before this chantier. Only upgraded to the richer
+  // multi-turn state below when the broad gate judges it worth the cost of
+  // an extra model call.
+  let party: PartySize = extractPartySize(message);
+  let availabilityCheckState: AvailabilityCheckState = { kind: "not_requested" };
+
+  if (shouldResolveStayContext(message)) {
+    try {
+      const rawState = await resolveStayRequestFromHistory([...historyInput, { role: "user", content: message }], {
+        referenceDate: new Date().toISOString().slice(0, 10),
+        timeZone: FALLBACK_TIME_ZONE,
+      });
+      const validatedState: StayRequestState = validateStayRequestState(rawState);
+
+      if (validatedState.adults !== null && validatedState.childrenCount !== null) {
+        party = { adults: validatedState.adults, children: validatedState.childrenCount, total: validatedState.adults + validatedState.childrenCount };
+      }
+
+      // isAvailabilityRequest, not shouldResolveStayContext, gates the
+      // actual provider call — see gates.ts: a business-only capacity
+      // question must never produce a spurious "can't check availability" aside.
+      if (isAvailabilityRequest(message)) {
+        availabilityCheckState = await checkAvailability({ hotelId, state: validatedState, resolver: availabilityProviderResolver });
+      }
+    } catch (err) {
+      // Best-effort enrichment — never fails the whole turn. party/availabilityCheckState stay at their safe fallback values.
+      console.error("answerQuestion: stay-request resolution failed", { hotelId, message: (err as Error).message });
+    }
+  }
+
+  let rankedCandidates = filterAndRankAccommodations(candidates, party);
+  // Server-side enforcement, not just prompt guidance (see
+  // applyAvailabilityToCandidates): a capacity-compatible candidate the
+  // provider reports UNAVAILABLE/UNKNOWN can never be offered as a
+  // confirmed-available recommendation. A no-op when no check ran.
+  rankedCandidates = applyAvailabilityToCandidates(rankedCandidates, availabilityCheckState);
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -100,6 +189,10 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
       historyInput,
       relevantChunks,
       startedAt,
+      rankedCandidates,
+      party,
+      accommodationTypesById,
+      availabilityCheckState,
     });
   }
 
@@ -112,10 +205,52 @@ export async function answerQuestion({ hotelId, conversationId, message }: Answe
     model,
     historyInput,
     startedAt,
+    availabilityCheckState,
   });
 }
 
 type HistoryInputItem = { role: "user" | "assistant"; content: string };
+
+/**
+ * The single point where a raw model-provided id becomes a real
+ * recommendation, or doesn't. Requires the id to be present in
+ * rankedCandidates — the exact, already-filtered list offered THIS turn —
+ * not merely "some accommodation_types row for this hotel_id" (a candidate
+ * the capacity filter already excluded must never come back through this
+ * path). Any mismatch, including a stale/foreign id, resolves to null.
+ */
+async function buildRoomRecommendation(
+  supabase: SupabaseClient,
+  params: {
+    hotelId: string;
+    recommendedAccommodationTypeId: string | null;
+    rankedCandidates: RankedCandidate[];
+    accommodationTypesById: Map<string, AccommodationType>;
+  }
+): Promise<RoomRecommendation | null> {
+  const { hotelId, recommendedAccommodationTypeId, rankedCandidates, accommodationTypesById } = params;
+  if (!recommendedAccommodationTypeId) return null;
+
+  const matched = rankedCandidates.find((c) => c.id === recommendedAccommodationTypeId);
+  if (!matched) return null;
+
+  const accommodationType = accommodationTypesById.get(matched.id);
+  if (!accommodationType || accommodationType.hotel_id !== hotelId) return null;
+
+  const { data: photos } = await supabase
+    .from("room_photos")
+    .select("photo_url, alt_text")
+    .eq("hotel_id", hotelId)
+    .eq("accommodation_type_id", matched.id)
+    .order("position", { ascending: true });
+
+  return {
+    accommodationTypeId: matched.id,
+    name: matched.name,
+    photos: (photos ?? []).map((p) => ({ url: p.photo_url as string, alt: p.alt_text as string | null })),
+    pageUrl: accommodationType.source_url,
+  };
+}
 
 /**
  * GROUNDED: relevant knowledge chunks were found — pass them as reference
@@ -123,6 +258,16 @@ type HistoryInputItem = { role: "user" | "assistant"; content: string };
  * ground its answer in them. Always "answered": finding relevant chunks is
  * itself the signal, so there's no self-classification needed here (unlike
  * answerNoContext below).
+ *
+ * Uses structured output (responses.parse + groundedReplySchema) so the
+ * model can additionally name an accommodation it's recommending — but only
+ * from rankedCandidates, a list ALREADY filtered by capacity server-side
+ * (see answerQuestion/accommodationRanking.ts). recommendedAccommodationTypeId
+ * coming back from the model is still just a string at that point: it's
+ * only trusted once matched against rankedCandidates by id below — an id
+ * for a different hotel, an id that was never offered, or an id that was
+ * already excluded by the capacity filter all resolve to no recommendation
+ * at all, never a fabricated one.
  */
 async function answerGrounded(
   supabase: SupabaseClient,
@@ -136,11 +281,29 @@ async function answerGrounded(
     historyInput: HistoryInputItem[];
     relevantChunks: RetrievedChunk[];
     startedAt: number;
+    rankedCandidates: RankedCandidate[];
+    party: PartySize;
+    accommodationTypesById: Map<string, AccommodationType>;
+    availabilityCheckState: AvailabilityCheckState;
   }
 ): Promise<AnswerQuestionResult> {
-  const { hotelId, conversationId, message, hotel, settings, model, historyInput, relevantChunks, startedAt } = params;
+  const {
+    hotelId,
+    conversationId,
+    message,
+    hotel,
+    settings,
+    model,
+    historyInput,
+    relevantChunks,
+    startedAt,
+    rankedCandidates,
+    party,
+    accommodationTypesById,
+    availabilityCheckState,
+  } = params;
 
-  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "grounded" });
+  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "grounded", rankedCandidates, party, availabilityCheckState });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
     ...historyInput,
@@ -149,13 +312,23 @@ async function answerGrounded(
   ];
 
   let reply: string;
+  let recommendedAccommodationTypeId: string | null;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
 
   try {
     const client = getOpenAIClient();
-    const response = await client.responses.create({ model, instructions, input });
-    reply = response.output_text;
+    const response = await client.responses.parse({
+      model,
+      instructions,
+      input,
+      text: { format: zodTextFormat(groundedReplySchema, "assistant_reply") },
+    });
+    if (!response.output_parsed) {
+      throw new Error("grounded response did not match the expected structured schema");
+    }
+    reply = response.output_parsed.reply;
+    recommendedAccommodationTypeId = response.output_parsed.recommendedAccommodationTypeId;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
   } catch (err) {
@@ -190,7 +363,14 @@ async function answerGrounded(
     }
   }
 
-  return { reply, sources: relevantChunks, answerStatus: "answered" };
+  const roomRecommendation = await buildRoomRecommendation(supabase, {
+    hotelId,
+    recommendedAccommodationTypeId,
+    rankedCandidates,
+    accommodationTypesById,
+  });
+
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation };
 }
 
 /**
@@ -213,11 +393,12 @@ async function answerNoContext(
     model: string;
     historyInput: HistoryInputItem[];
     startedAt: number;
+    availabilityCheckState: AvailabilityCheckState;
   }
 ): Promise<AnswerQuestionResult> {
-  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt } = params;
+  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt, availabilityCheckState } = params;
 
-  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context" });
+  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context", availabilityCheckState });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
   let reply: string;
@@ -258,7 +439,7 @@ async function answerNoContext(
     latencyMs,
   });
 
-  return { reply, sources: [], answerStatus };
+  return { reply, sources: [], answerStatus, roomRecommendation: null };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -319,5 +500,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error" };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null };
 }

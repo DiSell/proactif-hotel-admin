@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { RoomPhotoModal } from "./RoomPhotoModal";
 
 type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
 
@@ -10,11 +11,20 @@ interface MessageSource {
   similarity: number;
 }
 
+interface RoomRecommendation {
+  accommodationTypeId: string;
+  name: string;
+  photos: { url: string; alt: string | null }[];
+  pageUrl: string | null;
+  bookingUrl: string | null;
+}
+
 interface ChatMessage {
   role: "assistant" | "user";
   content: string;
   answerStatus?: AnswerStatus;
   sources?: MessageSource[];
+  roomRecommendation?: RoomRecommendation | null;
 }
 
 interface ChatApiResponse {
@@ -22,6 +32,7 @@ interface ChatApiResponse {
   reply: string;
   sources: MessageSource[];
   answerStatus: AnswerStatus;
+  roomRecommendation: RoomRecommendation | null;
 }
 
 interface ChatPreviewProps {
@@ -37,6 +48,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
 
   async function handleSend() {
     const trimmed = input.trim();
@@ -62,7 +74,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
       setConversationId(data.conversationId);
       setMessages((current) => [
         ...current,
-        { role: "assistant", content: data.reply, answerStatus: data.answerStatus, sources: data.sources },
+        { role: "assistant", content: data.reply, answerStatus: data.answerStatus, sources: data.sources, roomRecommendation: data.roomRecommendation },
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Une erreur est survenue.");
@@ -108,6 +120,15 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
             {message.role === "assistant" && message.answerStatus && (
               <SourcesDebugPanel answerStatus={message.answerStatus} sources={message.sources ?? []} />
             )}
+            {message.role === "assistant" && message.roomRecommendation && (
+              <button
+                type="button"
+                onClick={() => setOpenRoomRecommendation(message.roomRecommendation ?? null)}
+                className="max-w-[78%] rounded-lg border border-border bg-canvas px-3 py-2 text-left text-2xs font-medium text-ink hover:border-ink"
+              >
+                Voir la chambre — {message.roomRecommendation.name}
+              </button>
+            )}
           </div>
         ))}
 
@@ -146,6 +167,16 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
           </svg>
         </button>
       </div>
+
+      {openRoomRecommendation && (
+        <RoomPhotoModal
+          name={openRoomRecommendation.name}
+          photos={openRoomRecommendation.photos}
+          pageUrl={openRoomRecommendation.pageUrl}
+          bookingUrl={openRoomRecommendation.bookingUrl}
+          onClose={() => setOpenRoomRecommendation(null)}
+        />
+      )}
     </div>
   );
 }

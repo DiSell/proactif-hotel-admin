@@ -49,3 +49,83 @@ describe("answerQuestion — grounded / no_context split", () => {
     expect(source).toMatch(/groundingMode:\s*GroundingMode\s*=\s*relevantChunks\.length > 0 \? "grounded" : "no_context"/);
   });
 });
+
+/**
+ * Regression guards for the accommodation-recommendation structured output —
+ * same testing constraint as above (no Supabase/OpenAI mocking here).
+ */
+describe("answerGrounded — accommodation recommendation", () => {
+  it("uses structured output (responses.parse + groundedReplySchema), not the old plain responses.create/output_text", () => {
+    const groundedFn = source.slice(source.indexOf("async function answerGrounded"), source.indexOf("async function answerNoContext"));
+    expect(groundedFn).toMatch(/zodTextFormat\(groundedReplySchema/);
+    expect(groundedFn).toMatch(/recommendedAccommodationTypeId = response\.output_parsed\.recommendedAccommodationTypeId/);
+    expect(groundedFn).not.toMatch(/responses\.create\(/);
+    expect(groundedFn).not.toMatch(/response\.output_text/);
+  });
+
+  it("recommendedAccommodationTypeId is validated against rankedCandidates (the exact offered list), not just looked up by hotel_id", () => {
+    const fn = source.slice(source.indexOf("async function buildRoomRecommendation"), source.indexOf("async function answerGrounded"));
+    // Matched against the already-filtered candidate list first...
+    expect(fn).toMatch(/rankedCandidates\.find\(\(c\) => c\.id === recommendedAccommodationTypeId\)/);
+    // ...and hotel_id is still cross-checked as a second, independent guard.
+    expect(fn).toMatch(/accommodationType\.hotel_id !== hotelId/);
+  });
+
+  it("groundedReplySchema's recommendedAccommodationTypeId is documented as untrusted raw model output, never coerced directly into a recommendation", () => {
+    // The doc comment sits directly above the schema declaration.
+    const schemaIndex = source.indexOf("const groundedReplySchema");
+    const docCommentStart = source.lastIndexOf("/**", schemaIndex);
+    const doc = source.slice(docCommentStart, schemaIndex);
+    expect(doc).toMatch(/UNVERIFIED/);
+  });
+
+  it("buildAccommodationGuidance / rankedCandidates are only ever computed inside the grounded branch of answerQuestion, never the no_context branch", () => {
+    const noContextFn = source.slice(source.indexOf("async function answerNoContext"), source.indexOf("async function loadHistory"));
+    expect(noContextFn).not.toMatch(/rankedCandidates/);
+    expect(noContextFn).not.toMatch(/accommodation_types/);
+  });
+});
+
+/**
+ * Regression guards for making the availability pipeline orthogonal to
+ * groundingMode — same testing constraint as above.
+ */
+describe("answerQuestion — availability is orthogonal to groundingMode", () => {
+  it("the stay-request/availability pipeline runs BEFORE the grounded/no_context branch decision, not nested inside it", () => {
+    const gateIndex = source.indexOf("shouldResolveStayContext(message)");
+    const branchIndex = source.indexOf('if (groundingMode === "grounded")');
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(branchIndex).toBeGreaterThan(-1);
+    expect(gateIndex).toBeLessThan(branchIndex);
+  });
+
+  it("answerNoContext also receives and forwards availabilityCheckState to buildHotelInstructions — never conditioned on grounded", () => {
+    const noContextFn = source.slice(source.indexOf("async function answerNoContext"), source.indexOf("async function loadHistory"));
+    expect(noContextFn).toMatch(/availabilityCheckState/);
+    expect(noContextFn).toMatch(/buildHotelInstructions\(\{[^}]*availabilityCheckState/);
+  });
+
+  it("answerGrounded also forwards availabilityCheckState to buildHotelInstructions", () => {
+    const groundedFn = source.slice(source.indexOf("async function answerGrounded"), source.indexOf("async function answerNoContext"));
+    expect(groundedFn).toMatch(/buildHotelInstructions\(\{[^}]*availabilityCheckState/);
+  });
+
+  it("[no field pre-filtering] answerQuestion never tests checkIn/checkOut/adults before calling checkAvailability — only isAvailabilityRequest gates the call", () => {
+    const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
+    expect(answerQuestionFn).not.toMatch(/if\s*\(\s*(validatedState\.)?checkIn\b/);
+    expect(answerQuestionFn).not.toMatch(/if\s*\(\s*(validatedState\.)?checkOut\b/);
+    const checkAvailabilityCallIndex = answerQuestionFn.indexOf("checkAvailability({");
+    const gateCallIndex = answerQuestionFn.indexOf("isAvailabilityRequest(message)");
+    expect(checkAvailabilityCallIndex).toBeGreaterThan(-1);
+    expect(gateCallIndex).toBeGreaterThan(-1);
+    expect(gateCallIndex).toBeLessThan(checkAvailabilityCallIndex);
+  });
+
+  it("applyAvailabilityToCandidates runs on every turn's rankedCandidates, not only inside the grounded branch", () => {
+    const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
+    const branchIndex = answerQuestionFn.indexOf('if (groundingMode === "grounded")');
+    const applyIndex = answerQuestionFn.indexOf("applyAvailabilityToCandidates(");
+    expect(applyIndex).toBeGreaterThan(-1);
+    expect(applyIndex).toBeLessThan(branchIndex);
+  });
+});

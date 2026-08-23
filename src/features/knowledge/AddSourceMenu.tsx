@@ -8,12 +8,12 @@ import { Card } from "@/components/ui/Card";
 import { FormField, inputClassName, textareaClassName } from "@/components/ui/FormField";
 import { useToast } from "@/components/ui/Toast";
 import { addUrlSource, addTextSource, addFaqSource, addDocumentSource } from "./actions";
-import type { AnalyzeSiteResponse } from "./schema";
+import { AnalyzeSiteModal } from "./AnalyzeSiteModal";
 
-type Mode = null | "menu" | "url" | "text" | "document" | "faq";
+type Mode = null | "menu" | "url" | "text" | "document" | "faq" | "analyze";
 
 const MENU_ITEMS: { mode: Mode; label: string }[] = [
-  { mode: null, label: "Analyser le site web" }, // handled specially below
+  { mode: "analyze", label: "Analyser le site web" },
   { mode: "url", label: "Ajouter une URL" },
   { mode: "document", label: "Importer un document" },
   { mode: "text", label: "Ajouter du texte" },
@@ -33,17 +33,6 @@ export function AddSourceMenu({ hotelId, websiteUrl }: { hotelId: string; websit
     setMode(null);
     setFields({ title: "", value: "" });
     setUploadedFile(null);
-  }
-
-  async function handleAnalyze() {
-    setMenuOpen(false);
-    try {
-      const response = await fetch(`/api/hotels/${hotelId}/analyze`, { method: "POST" });
-      const data: AnalyzeSiteResponse = await response.json();
-      toast.show(data.message, "danger");
-    } catch {
-      toast.show("L’analyse automatique n’est pas encore disponible.", "danger");
-    }
   }
 
   function handleSubmit() {
@@ -101,11 +90,7 @@ export function AddSourceMenu({ hotelId, websiteUrl }: { hotelId: string; websit
               type="button"
               onClick={() => {
                 setMenuOpen(false);
-                if (item.mode === null) {
-                  void handleAnalyze();
-                } else {
-                  setMode(item.mode);
-                }
+                setMode(item.mode);
               }}
               className="flex w-full items-center rounded-lg px-3 py-2.5 text-left text-xs hover:bg-canvas"
             >
@@ -115,7 +100,9 @@ export function AddSourceMenu({ hotelId, websiteUrl }: { hotelId: string; websit
         </Card>
       )}
 
-      {mode && (
+      {mode === "analyze" && <AnalyzeSiteModal hotelId={hotelId} websiteUrl={websiteUrl} onClose={reset} />}
+
+      {mode && mode !== "analyze" && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4">
           <Card className="w-full max-w-md p-6">
             <h2 className="mb-4 text-sm font-semibold text-ink">

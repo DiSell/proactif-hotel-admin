@@ -23,8 +23,22 @@ export type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
  */
 export type GroundingMode = "grounded" | "no_context";
 
+/**
+ * Present only when the model recommended a specific accommodation AND the
+ * server independently validated recommendedAccommodationTypeId against the
+ * exact candidate list actually offered that turn (see answer.ts) — never
+ * built from a raw, unverified model output.
+ */
+export interface RoomRecommendation {
+  accommodationTypeId: string;
+  name: string;
+  photos: { url: string; alt: string | null }[];
+  pageUrl: string | null;
+}
+
 export interface AnswerQuestionResult {
   reply: string;
   sources: RetrievedChunk[];
   answerStatus: AnswerStatus;
+  roomRecommendation: RoomRecommendation | null;
 }

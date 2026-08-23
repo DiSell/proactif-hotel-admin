@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import type { ChatbotSettings, Hotel } from "@/types/database";
 import type { RetrievedChunk } from "./types";
+import type { RankedCandidate } from "./accommodationRanking";
+import type { AvailabilityCheckState } from "../availability/types";
 
 function makeHotel(overrides: Partial<Hotel> = {}): Hotel {
   return {
@@ -205,6 +207,151 @@ describe("buildHotelInstructions — no_context mode", () => {
     });
     expect(instructions).toContain("Je ne sais pas, désolé.");
     expect(instructions).toMatch(/adapte-la toujours à la langue et au ton du visiteur/);
+  });
+});
+
+describe("buildHotelInstructions — accommodation recommendation guidance", () => {
+  function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
+    return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
+  }
+
+  it("adds nothing when no ranked candidates are passed, even in grounded mode", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    expect(instructions).not.toMatch(/HÉBERGEMENTS/);
+  });
+
+  it("adds nothing in no_context mode, even if candidates are passed", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "no_context",
+      rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: 4, fit: "known" }]),
+      party: { adults: 2, children: 0, total: 2 },
+    });
+    expect(instructions).not.toMatch(/HÉBERGEMENTS/);
+  });
+
+  it("lists only the offered candidates by exact id — never a hint that a fuller list exists", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([
+        { id: "acc-a", name: "Chambre Standard", maxGuests: 3, fit: "known" },
+        { id: "acc-b", name: "Junior Suite", maxGuests: 4, fit: "known" },
+      ]),
+      party: { adults: 2, children: 1, total: 3 },
+    });
+    expect(instructions).toContain('id="acc-a"');
+    expect(instructions).toContain("Chambre Standard");
+    expect(instructions).toContain('id="acc-b"');
+    expect(instructions).toContain("Junior Suite");
+    expect(instructions).toMatch(/ne doit jamais.*réintroduit|JAMAIS un hébergement absent/);
+  });
+
+  it("[uncertainty] tells the model not to claim a best fit when the group size is unknown", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: 4, fit: "known" }]),
+      party: { adults: null, children: null, total: null },
+    });
+    expect(instructions).toMatch(/n'a pas pu être déterminée avec certitude/);
+  });
+
+  it("[uncertainty] tells the model to be honest about missing capacity data when every candidate is unknown fit", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: null, fit: "unknown" }]),
+      party: { adults: 2, children: 1, total: 3 },
+    });
+    expect(instructions).toMatch(/pas assez d'informations vérifiées/);
+  });
+
+  it("does not force the uncertainty disclaimer when at least one candidate has a known/confirmed capacity", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: 4, fit: "known" }]),
+      party: { adults: 2, children: 1, total: 3 },
+    });
+    expect(instructions).not.toMatch(/pas assez d'informations vérifiées/);
+  });
+});
+
+describe("buildHotelInstructions — availability guidance (orthogonal to groundingMode)", () => {
+  it("adds nothing when availabilityCheckState is absent or not_requested, in either mode", () => {
+    for (const groundingMode of ["grounded", "no_context"] as const) {
+      const withoutState = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode });
+      expect(withoutState).not.toMatch(/DISPONIBILITÉ TEMPS RÉEL/);
+      const withNotRequested = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode,
+        availabilityCheckState: { kind: "not_requested" },
+      });
+      expect(withNotRequested).not.toMatch(/DISPONIBILITÉ TEMPS RÉEL/);
+    }
+  });
+
+  it("[orthogonal to RAG] adds availability guidance in no_context mode too — never gated on grounded", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "no_context",
+      availabilityCheckState: { kind: "no_provider" },
+    });
+    expect(instructions).toMatch(/DISPONIBILITÉ TEMPS RÉEL/);
+    expect(instructions).toMatch(/ne prétends jamais l'avoir vérifiée/);
+  });
+
+  it("[missing_input] tells the model to ask only for the missing fields", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      availabilityCheckState: { kind: "missing_input", missingFields: ["checkOut"] },
+    });
+    expect(instructions).toContain("checkOut");
+    expect(instructions).toMatch(/UNIQUEMENT l'information manquante/);
+  });
+
+  it("[checked] lists each item separately by id, with independent status rules", () => {
+    const state: AvailabilityCheckState = {
+      kind: "checked",
+      result: {
+        integrationId: "int-1",
+        provider: "test",
+        checkedAt: "2026-09-01T10:00:00Z",
+        availabilityStatus: "UNKNOWN",
+        items: [
+          { externalAccommodationId: "A", availabilityStatus: "AVAILABLE" },
+          { externalAccommodationId: "B", availabilityStatus: "UNAVAILABLE" },
+          { externalAccommodationId: "C", availabilityStatus: "UNKNOWN" },
+        ],
+      },
+    };
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded", availabilityCheckState: state });
+    expect(instructions).toContain("A → AVAILABLE");
+    expect(instructions).toContain("B → UNAVAILABLE");
+    expect(instructions).toContain("C → UNKNOWN");
+    expect(instructions).toMatch(/UNAVAILABLE ne doit JAMAIS être présenté comme disponible/);
+    expect(instructions).toMatch(/n'affecte le statut d'AUCUN autre hébergement/);
+  });
+
+  it("[unknown] tells the model to claim neither availability nor unavailability", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      availabilityCheckState: { kind: "unknown", error: { code: "TIMEOUT", message: "timeout", hotelId: "hotel-a", retryable: true } },
+    });
+    expect(instructions).toMatch(/n'a pas pu aboutir/);
+    expect(instructions).toMatch(/ni disponibilité ni indisponibilité/);
   });
 });
 

@@ -1,5 +1,8 @@
 import type { ChatbotSettings, Hotel } from "@/types/database";
 import type { GroundingMode, RetrievedChunk } from "./types";
+import type { PartySize } from "./partySize";
+import type { RankedCandidate } from "./accommodationRanking";
+import type { AvailabilityCheckState } from "../availability/types";
 
 const TONE_LABEL: Record<string, string> = {
   professional: "professionnel",
@@ -25,6 +28,23 @@ export interface BuildHotelInstructionsParams {
   settings: ChatbotSettings | null;
   /** Which mode this turn runs in — see types.ts. Changes ONLY the no-context guidance block below; chunks are never accepted here regardless of mode. */
   groundingMode: GroundingMode;
+  /**
+   * Already filtered/ranked by filterAndRankAccommodations (see
+   * accommodationRanking.ts) — grounded mode only. NEVER the hotel's full
+   * accommodation_types list: only candidates that survived the deterministic
+   * capacity filter reach this function, so the model can never be tempted
+   * to pick one that was already excluded (see buildAccommodationGuidance).
+   */
+  rankedCandidates?: RankedCandidate[];
+  /** The group size this turn's candidates were filtered against, if any could be determined — see partySize.ts. */
+  party?: PartySize;
+  /**
+   * Orthogonal to groundingMode — added regardless of grounded/no_context
+   * (a stay/availability question can arise even when RAG finds nothing
+   * relevant). See src/features/availability/ and buildAvailabilityGuidance
+   * below. Absent or "not_requested" adds nothing.
+   */
+  availabilityCheckState?: AvailabilityCheckState;
 }
 
 /**
@@ -69,7 +89,14 @@ const SCOPE = [
  * settings, capabilities, real contact info), and how to classify its own
  * answerStatus. See answer.ts for how each mode is decided and called.
  */
-export function buildHotelInstructions({ hotel, settings, groundingMode }: BuildHotelInstructionsParams): string {
+export function buildHotelInstructions({
+  hotel,
+  settings,
+  groundingMode,
+  rankedCandidates,
+  party,
+  availabilityCheckState,
+}: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
 
@@ -108,8 +135,27 @@ export function buildHotelInstructions({ hotel, settings, groundingMode }: Build
     : "";
 
   const noContextGuidance = groundingMode === "no_context" ? buildNoContextGuidance(settings) : "";
+  const accommodationGuidance =
+    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0
+      ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })
+      : "";
+  // Orthogonal to groundingMode, deliberately — see BuildHotelInstructionsParams.
+  const availabilityGuidance =
+    availabilityCheckState && availabilityCheckState.kind !== "not_requested" ? buildAvailabilityGuidance(availabilityCheckState) : "";
 
-  return [identity, behavior, CAPABILITIES, SCOPE, absoluteRules, customInstructions, noContextGuidance].filter(Boolean).join("\n\n");
+  return [
+    identity,
+    behavior,
+    CAPABILITIES,
+    SCOPE,
+    absoluteRules,
+    customInstructions,
+    noContextGuidance,
+    accommodationGuidance,
+    availabilityGuidance,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
@@ -148,6 +194,97 @@ function buildNoContextGuidance(settings: ChatbotSettings | null): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/**
+ * Only appended in "grounded" mode, and only when at least one accommodation
+ * candidate survived the deterministic capacity filter (see
+ * accommodationRanking.ts) — most grounded questions have nothing to do
+ * with picking a room and this block would just be noise for them.
+ *
+ * The critical property this text has to establish: the model is choosing
+ * among an ALREADY-FILTERED list, not deciding fitness itself. It must
+ * never be given the full unfiltered accommodation_types list — a candidate
+ * whose capacity was already confirmed too small for the group is simply
+ * never mentioned here, so the model has no way to "reintroduce" it (see
+ * answer.ts's post-call validation, which rejects any id not in this exact
+ * list as a second, structural line of defense).
+ */
+function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: PartySize): string {
+  const lines = rankedCandidates.map((c) => {
+    const capacity = c.fit === "known" ? `capacité confirmée : ${c.maxGuests} personnes` : "capacité non vérifiée";
+    return `- id="${c.id}" — ${c.name} (${capacity})`;
+  });
+
+  const allUnknown = rankedCandidates.every((c) => c.fit === "unknown");
+
+  const partyNote =
+    party.total === null
+      ? "La taille du groupe du visiteur n'a pas pu être déterminée avec certitude à partir de son message : tu peux présenter les hébergements ci-dessous, mais ne prétends jamais avoir identifié celui qui leur convient le mieux."
+      : `Le groupe du visiteur compte ${party.total} personne(s) (${[party.adults !== null ? `${party.adults} adulte(s)` : null, party.children !== null ? `${party.children} enfant(s)` : null].filter(Boolean).join(", ") || "détail non précisé"}). Les hébergements listés ci-dessous ont déjà été filtrés par le serveur pour exclure tout ce dont la capacité connue est insuffisante pour ce groupe — tu n'as pas besoin de revérifier cela.`;
+
+  const uncertaintyNote = allUnknown
+    ? "Aucun de ces hébergements n'a de capacité fiable enregistrée : ne prétends jamais avoir déterminé le mieux adapté. Réponds en substance que tu peux présenter les hébergements disponibles, mais que tu n'as pas assez d'informations vérifiées pour dire lequel convient le mieux."
+    : "";
+
+  return [
+    "HÉBERGEMENTS — candidats déjà pré-filtrés par capacité :",
+    partyNote,
+    "Liste des hébergements que tu peux mentionner ou recommander pour cette question (id — nom — capacité) :",
+    lines.join("\n"),
+    "Tu ne peux renseigner recommendedAccommodationTypeId qu'avec l'un de ces id EXACTS ci-dessus, ou le laisser null si aucun ne se distingue clairement ou si la question ne porte pas sur le choix d'un hébergement. Ne recommande JAMAIS un hébergement absent de cette liste, même s'il t'est déjà connu par ailleurs — un hébergement absent d'ici a été exclu pour une bonne raison (capacité insuffisante) et ne doit jamais être réintroduit.",
+    "Tu peux en revanche arbitrer entre les candidats de cette liste selon d'autres critères exprimés par le visiteur (cuisine équipée, chambres séparées, accès PMR, terrasse, budget…) si les connaissances fournies le permettent — mais uniquement parmi cette liste.",
+    uncertaintyNote,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * Dynamic — built from the runtime AvailabilityCheckState computed this
+ * turn (src/features/availability/), never a fixed "PMS not connected"
+ * string, which would become false the moment a real provider is
+ * connected (Phase B/C). Never called for "not_requested" — see
+ * buildHotelInstructions, which skips this block entirely in that case.
+ *
+ * For "checked", every item is listed separately by its own
+ * accommodationTypeId (see AvailabilityCheckState in availability/types.ts)
+ * — an UNKNOWN item never taints an AVAILABLE/UNAVAILABLE one from the same
+ * response, and vice versa.
+ */
+function buildAvailabilityGuidance(state: Exclude<AvailabilityCheckState, { kind: "not_requested" }>): string {
+  switch (state.kind) {
+    case "no_provider":
+      return [
+        "DISPONIBILITÉ TEMPS RÉEL :",
+        "Aucune vérification réelle de disponibilité n'est disponible pour cet établissement en ce moment — ne prétends jamais l'avoir vérifiée.",
+      ].join("\n");
+
+    case "missing_input":
+      return [
+        "DISPONIBILITÉ TEMPS RÉEL :",
+        `Pour vérifier la disponibilité réelle, il manque encore : ${state.missingFields.join(", ")}. Demande UNIQUEMENT l'information manquante pertinente, rien d'autre.`,
+      ].join("\n");
+
+    case "checked": {
+      const lines = state.result.items.map(
+        (item) => `- ${item.externalAccommodationId} → ${item.availabilityStatus} (vérifié à ${state.result.checkedAt})`
+      );
+      return [
+        "DISPONIBILITÉ TEMPS RÉEL — résultats par hébergement :",
+        ...lines,
+        "Un hébergement AVAILABLE peut être présenté comme vérifié disponible à cet instant, jamais comme garanti jusqu'à réservation.",
+        "Un hébergement UNAVAILABLE ne doit JAMAIS être présenté comme disponible.",
+        "Un hébergement UNKNOWN sur cette liste n'affecte le statut d'AUCUN autre hébergement de la même liste — ne le présente ni disponible ni indisponible.",
+      ].join("\n");
+    }
+
+    case "unknown":
+      return [
+        "DISPONIBILITÉ TEMPS RÉEL :",
+        "La vérification n'a pas pu aboutir — ne prétends ni disponibilité ni indisponibilité pour aucun hébergement.",
+      ].join("\n");
+  }
 }
 
 /**
