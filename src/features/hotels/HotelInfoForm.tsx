@@ -25,6 +25,11 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
     secondary_color: hotel.secondary_color ?? "#8A6A3E",
     booking_url: hotel.booking_url ?? "",
     spa_booking_url: hotel.spa_booking_url ?? "",
+    booking_action_mode: hotel.booking_action_mode,
+    host_booking_selector:
+      hotel.booking_action_mode === "host_widget" && typeof hotel.host_booking_trigger === "object" && hotel.host_booking_trigger !== null
+        ? String((hotel.host_booking_trigger as { selector?: unknown }).selector ?? "")
+        : "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isPending, startTransition] = useTransition();
@@ -109,26 +114,55 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
           />
         </FormField>
       </div>
-      <div className="grid grid-cols-2 gap-4">
-        <FormField label="URL de réservation" htmlFor="booking_url" error={errors.booking_url}>
+      <FormField label="Mode de réservation" htmlFor="booking_action_mode">
+        <select
+          id="booking_action_mode"
+          value={state.booking_action_mode}
+          onChange={(event) => patch({ booking_action_mode: event.target.value as UpdateHotelInfoInput["booking_action_mode"] })}
+          className={inputClassName()}
+        >
+          <option value="url">Lien externe</option>
+          <option value="host_widget">Module de réservation du site</option>
+        </select>
+      </FormField>
+
+      {state.booking_action_mode === "url" ? (
+        <div className="grid grid-cols-2 gap-4">
+          <FormField label="URL de réservation" htmlFor="booking_url" error={errors.booking_url}>
+            <input
+              id="booking_url"
+              value={state.booking_url}
+              onChange={(event) => patch({ booking_url: event.target.value })}
+              placeholder="https://"
+              className={inputClassName(Boolean(errors.booking_url))}
+            />
+          </FormField>
+          <FormField label="URL de réservation spa" htmlFor="spa_booking_url" error={errors.spa_booking_url}>
+            <input
+              id="spa_booking_url"
+              value={state.spa_booking_url}
+              onChange={(event) => patch({ spa_booking_url: event.target.value })}
+              placeholder="https://"
+              className={inputClassName(Boolean(errors.spa_booking_url))}
+            />
+          </FormField>
+        </div>
+      ) : (
+        <FormField
+          label="Sélecteur du bouton de réservation"
+          htmlFor="host_booking_selector"
+          error={errors.host_booking_selector}
+          hint="L'identifiant CSS (ex. #resa-toggle-menu) du bouton « Réserver » déjà présent sur le site de l'établissement. Le widget clique dessus pour ouvrir le module existant — aucune réservation n'est créée par Proactif. Ce sélecteur ne peut pas être testé automatiquement depuis ce tableau de bord (le site de l'établissement est sur un autre domaine) : vérifiez-le manuellement sur le site."
+        >
           <input
-            id="booking_url"
-            value={state.booking_url}
-            onChange={(event) => patch({ booking_url: event.target.value })}
-            placeholder="https://"
-            className={inputClassName(Boolean(errors.booking_url))}
+            id="host_booking_selector"
+            value={state.host_booking_selector}
+            onChange={(event) => patch({ host_booking_selector: event.target.value })}
+            placeholder="#resa-toggle-menu"
+            className={inputClassName(Boolean(errors.host_booking_selector))}
           />
         </FormField>
-        <FormField label="URL de réservation spa" htmlFor="spa_booking_url" error={errors.spa_booking_url}>
-          <input
-            id="spa_booking_url"
-            value={state.spa_booking_url}
-            onChange={(event) => patch({ spa_booking_url: event.target.value })}
-            placeholder="https://"
-            className={inputClassName(Boolean(errors.spa_booking_url))}
-          />
-        </FormField>
-      </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <FormField label="Couleur principale" htmlFor="primary_color" error={errors.primary_color}>
           <ColorField

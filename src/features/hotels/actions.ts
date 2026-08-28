@@ -5,7 +5,8 @@ import { createClient } from "@/lib/supabase/server";
 import { requireSuperadmin } from "@/lib/auth/session";
 import { generateWidgetKey, slugify } from "@/lib/widgetKey";
 import { createHotelSchema, updateHotelInfoSchema } from "./schema";
-import type { HotelStatus } from "@/types/database";
+import { hostBookingTriggerSchema } from "./hostBookingTrigger";
+import type { BookingActionMode, HotelStatus } from "@/types/database";
 import type { ActionResult } from "@/lib/actionResult";
 
 async function uniqueSlug(baseName: string): Promise<string> {
@@ -119,6 +120,9 @@ export interface UpdateHotelInfoInput {
   secondary_color: string;
   booking_url: string;
   spa_booking_url: string;
+  booking_action_mode: BookingActionMode;
+  /** Flat form field — only meaningful when booking_action_mode === "host_widget". Assembled into {strategy:"click", selector} below, never stored as-is. */
+  host_booking_selector: string;
 }
 
 export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): Promise<ActionResult<null>> {
@@ -149,6 +153,18 @@ export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): 
       secondary_color: parsed.data.secondary_color,
       booking_url: parsed.data.booking_url || null,
       spa_booking_url: parsed.data.spa_booking_url || null,
+      booking_action_mode: parsed.data.booking_action_mode,
+      // Re-validated here (not just trusted because the Zod form schema
+      // already checked host_booking_selector's length) — this is the
+      // actual write to hosts.host_booking_trigger, and the ONLY place
+      // that ever assembles the {strategy, selector} shape from a raw
+      // string. null whenever mode isn't "host_widget", so switching back
+      // to "url" cleanly clears any stale selector instead of leaving it
+      // dormant in the row.
+      host_booking_trigger:
+        parsed.data.booking_action_mode === "host_widget"
+          ? hostBookingTriggerSchema.parse({ strategy: "click", selector: parsed.data.host_booking_selector })
+          : null,
     })
     .eq("id", id);
 
@@ -173,6 +189,56 @@ export async function setHotelStatus(id: string, status: HotelStatus): Promise<A
   }
 
   revalidatePath(`/etablissements/${id}`);
+  revalidatePath("/etablissements");
+  return { ok: true, data: null };
+}
+
+// Postgres FK violation ("foreign_key_violation") — PostgREST/supabase-js
+// surface the real Postgres SQLSTATE on error.code, not a synthesized one.
+const FOREIGN_KEY_VIOLATION = "23503";
+
+/**
+ * Permanently deletes a hotel and everything that CASCADEs from it
+ * (chatbot_settings, widget_settings, accommodation_types, conversations,
+ * messages, knowledge_sources/knowledge_chunks, hotel_users, hotel_integrations
+ * and their reservation tables, etc. — every hotel_id FK in the schema is
+ * ON DELETE CASCADE except the two below). A linked hotel_admin account is
+ * NOT deleted — only its hotel_users row cascades away, leaving the same
+ * "authenticated but unlinked" state as revokeHotelClientAccess
+ * (features/hotelUsers/actions.ts) — the account itself is untouched.
+ *
+ * Uses the session-bound client, not the admin client — `authenticated`
+ * already holds full CRUD on public.hotels (0001_init.sql) and the
+ * "superadmin full access" RLS policy already covers DELETE via `for all`;
+ * no new grant or policy was needed for this to work.
+ *
+ * site_analysis_consents.hotel_id and reservation_audit_log.hotel_id are
+ * deliberately ON DELETE RESTRICT (see those tables' own migration
+ * comments, 0003_site_analysis_consent.sql / 0005_integrations_reservations.sql)
+ * — both are permanent audit trails the schema was explicitly designed to
+ * never let a hotel deletion silently erase. A hotel with any such history
+ * therefore CANNOT be deleted; Postgres reports SQLSTATE 23503
+ * (foreign_key_violation), translated below into a clear, specific message
+ * instead of a generic failure — deactivating the hotel (setHotelStatus)
+ * is the correct alternative in that case, not a workaround here.
+ */
+export async function deleteHotel(id: string): Promise<ActionResult<null>> {
+  await requireSuperadmin();
+  const supabase = await createClient();
+  const { error } = await supabase.from("hotels").delete().eq("id", id);
+
+  if (error) {
+    if ((error as { code?: string }).code === FOREIGN_KEY_VIOLATION) {
+      return {
+        ok: false,
+        error:
+          "Impossible de supprimer cet établissement : il possède un historique (consentements d'analyse de site et/ou réservations) qui doit être conservé. Désactivez-le plutôt.",
+      };
+    }
+    console.error("deleteHotel: supabase delete failed", { message: error.message });
+    return { ok: false, error: "Impossible de supprimer cet établissement pour le moment." };
+  }
+
   revalidatePath("/etablissements");
   return { ok: true, data: null };
 }

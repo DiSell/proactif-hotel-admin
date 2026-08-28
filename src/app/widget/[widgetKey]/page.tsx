@@ -5,6 +5,7 @@
 // use, never a hotelId from the client.
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolvePublicWidgetContext, buildPublicWidgetConfig } from "@/features/widget/publicHotel";
+import { parseHostOrigin } from "@/features/widget/hostOrigin";
 import { PublicWidgetChat } from "@/features/widget/PublicWidgetChat";
 
 function UnavailableState() {
@@ -15,8 +16,20 @@ function UnavailableState() {
   );
 }
 
-export default async function PublicWidgetPage({ params }: PageProps<"/widget/[widgetKey]">) {
+export default async function PublicWidgetPage({ params, searchParams }: PageProps<"/widget/[widgetKey]">) {
   const { widgetKey } = await params;
+  // ?hostOrigin=<encoded origin>, appended by public/widget.js when it
+  // creates this iframe (see widget.js's own doc comment). The ONLY use
+  // this value ever has: the postMessage targetOrigin for the host-booking
+  // bridge (see PublicWidgetChat.tsx) — never rendered, never navigated
+  // to, never treated as a selector or HTML. Validated here, server-side,
+  // rather than trusting the raw query string all the way into the client
+  // component — an invalid/missing value resolves to null, and the
+  // host-booking CTA degrades gracefully rather than ever falling back to
+  // a wildcard targetOrigin.
+  const resolvedSearchParams = await searchParams;
+  const rawHostOrigin = resolvedSearchParams?.hostOrigin;
+  const hostOrigin = parseHostOrigin(Array.isArray(rawHostOrigin) ? rawHostOrigin[0] : rawHostOrigin);
 
   let widgetContext;
   try {
@@ -37,5 +50,5 @@ export default async function PublicWidgetPage({ params }: PageProps<"/widget/[w
 
   const config = buildPublicWidgetConfig(widgetContext);
 
-  return <PublicWidgetChat widgetKey={widgetKey} config={config} />;
+  return <PublicWidgetChat widgetKey={widgetKey} config={config} hostOrigin={hostOrigin} />;
 }

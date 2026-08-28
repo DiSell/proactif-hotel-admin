@@ -7,6 +7,22 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/login/reset")).toBe(true);
   });
 
+  it("[client-portal login] /client/login and its sub-paths (forgot-password, reset-password) are public, so an unauthenticated visitor can actually sign in", () => {
+    expect(isPublicPath("/client/login")).toBe(true);
+    expect(isPublicPath("/client/login/forgot-password")).toBe(true);
+    expect(isPublicPath("/client/login/reset-password")).toBe(true);
+  });
+
+  it("[client-portal surfaces stay gated] every other /client/* path is NOT public", () => {
+    expect(isPublicPath("/client/dashboard")).toBe(false);
+    expect(isPublicPath("/client/partners")).toBe(false);
+    expect(isPublicPath("/api/client/hotels/abc/chat")).toBe(false);
+  });
+
+  it("[partner consent page] /partenaires/consentement is public — the partner has no account, the token in the URL is the sole authorization", () => {
+    expect(isPublicPath("/partenaires/consentement")).toBe(true);
+  });
+
   it("[widget page] /widget/[widgetKey] is public", () => {
     expect(isPublicPath("/widget/ps_live_abc123")).toBe(true);
     expect(isPublicPath("/widget/ps_live_abc123/")).toBe(true);

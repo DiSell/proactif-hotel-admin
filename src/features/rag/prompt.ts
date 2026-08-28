@@ -1,8 +1,11 @@
-import type { ChatbotSettings, Hotel } from "@/types/database";
+import type { ChatbotSettings, Hotel, HotelPartner } from "@/types/database";
+import { bookingCtaKind, type BookingCtaKind } from "./bookingCta";
 import type { GroundingMode, RetrievedChunk } from "./types";
 import type { PartySize } from "./partySize";
 import type { RankedCandidate } from "./accommodationRanking";
 import type { AvailabilityCheckState } from "../availability/types";
+import { HOTEL_PARTNER_CATEGORY_LABEL } from "../partners/schema";
+import { VOLATILE_STALENESS_DAYS } from "./staleness";
 
 const TONE_LABEL: Record<string, string> = {
   professional: "professionnel",
@@ -54,6 +57,26 @@ export interface BuildHotelInstructionsParams {
    * the model must never write out a URL itself either way.
    */
   bookingIntentDetected?: boolean;
+  /**
+   * Orthogonal to groundingMode, same shape as bookingIntentDetected above
+   * — true whenever the message expresses a local-partner intent (see
+   * answer.ts's isPartnerIntent from features/rag/partners.ts). Independent
+   * of `partnerCandidates`: intent can be detected with zero matching
+   * active partners, in which case buildPartnerGuidance still fires, but
+   * with an honest "nothing registered" instruction instead of a candidate
+   * list.
+   */
+  partnerIntentDetected?: boolean;
+  /**
+   * Already filtered to is_active, category-matched (best-effort) and
+   * capped server-side (features/rag/partners.ts:rankPartnerCandidates,
+   * DEFAULT_PARTNER_LIMIT/ALL_PARTNERS_LIMIT) — NEVER the hotel's full
+   * hotel_partners list. The model can only ever recommend an id from this
+   * exact list (see answer.ts's post-call validation), so the "max 3
+   * partners" rule is enforced structurally, not left to the model's
+   * judgment.
+   */
+  partnerCandidates?: HotelPartner[];
 }
 
 /**
@@ -83,6 +106,27 @@ const SCOPE = [
 ].join("\n");
 
 /**
+ * MVP freshness/staleness rule (RAG freshness audit) — always included,
+ * independent of groundingMode: harmless with no reference block (no_context),
+ * load-bearing whenever buildKnowledgeReferenceBlock() below actually shows
+ * chunks carrying a "Dernière synchronisation" date. Deliberately does NOT
+ * turn every old source into something suspect — see the second-to-last
+ * bullet, added specifically so a hotel's stable facts (address, general
+ * description, amenities) aren't hedged just because that source hasn't
+ * been re-crawled recently. VOLATILE_STALENESS_DAYS (staleness.ts) is the
+ * one place this threshold is defined — the back-office staleness badge
+ * (features/knowledge/StalenessBanner.tsx) imports the same constant so
+ * the two can never silently diverge.
+ */
+const FRESHNESS = [
+  "Fraîcheur des informations :",
+  "- Certaines informations sur l'établissement sont plutôt STABLES et changent rarement : adresse, description de l'établissement, équipements, services généraux, description des hébergements, politiques générales. Une source ancienne pour ce type d'information n'est pas une raison de la présenter avec méfiance.",
+  `- D'autres informations sont VOLATILES et peuvent changer souvent : horaires, tarifs, menus, événements, promotions/offres, disponibilités, ou toute information explicitement datée. Si les données de référence qui te sont fournies indiquent une « Dernière synchronisation » pour la source d'une information volatile, et que cette date remonte à plus de ${VOLATILE_STALENESS_DAYS} jours avant aujourd'hui, ne présente pas cette information comme garantie actuelle : par exemple « D'après les informations de l'établissement, mises à jour le [date], ... », et précise que cette information peut avoir changé et qu'il est conseillé de la confirmer auprès de l'établissement.`,
+  "- N'applique cette prudence qu'aux informations réellement volatiles ci-dessus, jamais systématiquement à une information stable simplement parce que sa source est ancienne.",
+  "- Ces mises en garde de fraîcheur ne changent rien aux règles absolues déjà en vigueur : ne prétends jamais avoir vérifié le site de l'établissement en temps réel, et ne prétends jamais connaître une disponibilité réelle et actuelle.",
+].join("\n");
+
+/**
  * Builds the Responses API `instructions` string: identity, configured
  * behavior, capabilities, and non-negotiable safety rules — and ONLY that.
  * Retrieved RAG content is never accepted by this function (no `chunks`
@@ -106,13 +150,20 @@ export function buildHotelInstructions({
   party,
   availabilityCheckState,
   bookingIntentDetected,
+  partnerIntentDetected,
+  partnerCandidates,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
+  // Needed so the freshness rule (FRESHNESS below) is actually computable by
+  // the model: a "Dernière synchronisation" date is meaningless without a
+  // "today" to compare it against — nothing else in this prompt ever states
+  // the current date otherwise.
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   const identity = `Tu es ${assistantName}, l'assistant virtuel de l'établissement "${hotel.name}"${
     place ? `, situé à ${place}` : ""
-  }.`;
+  }. Nous sommes le ${todayIso}.`;
 
   const tone = TONE_LABEL[settings?.tone ?? "warm"];
   const formality = settings?.formality === "tu" ? "tutoiement" : "vouvoiement";
@@ -138,6 +189,7 @@ export function buildHotelInstructions({
     "- Propose un passage à un contact humain lorsque c'est pertinent (réclamation, situation sensible, question hors de ta portée).",
     "- Reconnais une réclamation ou une situation sensible et adapte ton ton en conséquence.",
     "- Reste commercial sans jamais devenir insistant.",
+    "- Tu ne sais jamais si le visiteur est déjà client de cet établissement (séjour en cours ou déjà réservé) ou un simple prospect qui n'a pas encore réservé — ne présume ni l'un ni l'autre. Formule toute relance commerciale ou proposition d'aide pour le séjour de façon neutre, pertinente dans les deux cas (par exemple « n'hésitez pas si vous avez d'autres questions sur votre séjour » plutôt que « voulez-vous de l'aide pour réserver votre séjour »), sauf si le visiteur a lui-même précisé sa situation dans la conversation.",
   ].join("\n");
 
   const customInstructions = settings?.custom_instructions?.trim()
@@ -153,7 +205,11 @@ export function buildHotelInstructions({
   const availabilityGuidance =
     availabilityCheckState && availabilityCheckState.kind !== "not_requested" ? buildAvailabilityGuidance(availabilityCheckState) : "";
   // Also orthogonal to groundingMode, and independent of availabilityGuidance above (bookingIntentDetected is a broader net — see answer.ts's isBookingIntent).
-  const bookingIntentGuidance = bookingIntentDetected ? buildBookingIntentGuidance(Boolean(hotel.booking_url)) : "";
+  const bookingIntentGuidance = bookingIntentDetected ? buildBookingIntentGuidance(bookingCtaKind(hotel)) : "";
+  // Orthogonal to groundingMode, independent of every other guidance block —
+  // fires whenever a local-partner intent was detected, with or without any
+  // matching candidate (see buildPartnerGuidance's own doc comment).
+  const partnerGuidance = partnerIntentDetected ? buildPartnerGuidance(partnerCandidates ?? []) : "";
 
   return [
     identity,
@@ -161,11 +217,13 @@ export function buildHotelInstructions({
     CAPABILITIES,
     SCOPE,
     absoluteRules,
+    FRESHNESS,
     customInstructions,
     noContextGuidance,
     accommodationGuidance,
     availabilityGuidance,
     bookingIntentGuidance,
+    partnerGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -182,13 +240,65 @@ export function buildHotelInstructions({
  * always hotels.booking_url attached server-side (see answer.ts's
  * buildBookingAction), never anything the model produces.
  */
-function buildBookingIntentGuidance(hasBookingUrl: boolean): string {
+function buildBookingIntentGuidance(ctaKind: BookingCtaKind): string {
+  const modeSpecific =
+    ctaKind === "url"
+      ? "Un bouton « Réserver » vers le moteur de réservation de l'établissement sera affiché séparément par l'interface, automatiquement — n'écris JAMAIS d'URL ni de lien toi-même dans ta réponse, contente-toi d'inviter le visiteur à l'utiliser pour vérifier disponibilité et prix réels."
+      : ctaKind === "host_widget"
+        ? "Un bouton « Réserver » vers le module de réservation déjà présent sur le site de l'établissement sera affiché séparément par l'interface, automatiquement — n'écris JAMAIS de sélecteur, de code ou de lien toi-même dans ta réponse, et ne prétends jamais avoir vérifié une disponibilité, un tarif, ou avoir déjà effectué une réservation. Contente-toi d'inviter le visiteur à poursuivre sa réservation directement avec le module de réservation de l'établissement."
+        : "Aucun moteur de réservation n'est configuré pour cet établissement : invite le visiteur à contacter directement l'établissement pour vérifier disponibilité et prix réels, sans jamais inventer de lien ou de coordonnée qui ne t'aurait pas été fournie ailleurs.";
+
   return [
     "INTENTION RÉSERVATION / DISPONIBILITÉ / PRIX :",
     "Le visiteur exprime une intention de réservation, de disponibilité ou de prix. Rappel : tu ne peux vérifier aucune disponibilité réelle, donner aucun prix réel, ni effectuer de réservation — ne prétends jamais le contraire et n'invente jamais de montant, de date disponible, de lien ou de coordonnée.",
-    hasBookingUrl
-      ? "Un bouton « Réserver » vers le moteur de réservation de l'établissement sera affiché séparément par l'interface, automatiquement — n'écris JAMAIS d'URL ni de lien toi-même dans ta réponse, contente-toi d'inviter le visiteur à l'utiliser pour vérifier disponibilité et prix réels."
-      : "Aucun moteur de réservation n'est configuré pour cet établissement : invite le visiteur à contacter directement l'établissement pour vérifier disponibilité et prix réels, sans jamais inventer de lien ou de coordonnée qui ne t'aurait pas été fournie ailleurs.",
+    modeSpecific,
+  ].join("\n");
+}
+
+/**
+ * Fires whenever a local-partner intent was detected (see answer.ts's
+ * isPartnerIntent from features/rag/partners.ts), independent of
+ * groundingMode — a "vous connaissez un bon restaurant ?" is answerable
+ * even with zero RAG chunks retrieved.
+ *
+ * With candidates: the model is shown ONLY id/name/category/description —
+ * never website_url/booking_url/phone/address, which stay entirely
+ * server-decided (see answer.ts's post-call validation and
+ * partners.ts:buildPartnerAction) so the model can never write out a link
+ * or contact detail itself, only reference "the button/link shown below".
+ *
+ * Without candidates (partnerIntentDetected but the list is empty — no
+ * active partner at all, or none matching a detected category): tells the
+ * model plainly there's nothing registered, mirroring
+ * buildNoContextGuidance's "be honest, don't invent" discipline — this is
+ * what makes "aucun partenaire pertinent -> réponse honnête, jamais de
+ * recommandation fabriquée" (product spec point 6) actually hold even when
+ * intent detection fires on a hotel with no partners configured yet.
+ */
+function buildPartnerGuidance(candidates: Pick<HotelPartner, "id" | "name" | "category" | "description" | "opening_hours">[]): string {
+  if (candidates.length === 0) {
+    return [
+      "PARTENAIRES LOCAUX :",
+      "Le visiteur exprime une demande qui pourrait concerner un partenaire local (restaurant, transport, activité, bien-être, commerce, producteur local, guide, location…), mais aucun partenaire correspondant n'est enregistré pour cet établissement en ce moment.",
+      "Dis-le honnêtement, sans jamais inventer ou suggérer un nom de restaurant, taxi, activité ou commerce qui ne t'aurait pas été fourni ici — même si tu le connais par ailleurs. Tu peux proposer que le visiteur se renseigne à la réception si c'est pertinent.",
+    ].join("\n");
+  }
+
+  const lines = candidates.map(
+    (partner) =>
+      `- id="${partner.id}" — ${partner.name} (${HOTEL_PARTNER_CATEGORY_LABEL[partner.category]})${
+        partner.description ? ` : ${partner.description}` : ""
+      }${partner.opening_hours ? ` [Horaires : ${partner.opening_hours}]` : ""}`
+  );
+
+  return [
+    "PARTENAIRES LOCAUX — recommandés par l'établissement, jamais inventés :",
+    "Le visiteur exprime une demande en lien avec un partenaire local. Voici les partenaires que l'établissement a lui-même choisis et validés pour ce type de demande (id — nom (catégorie) : description [Horaires : ...]) :",
+    lines.join("\n"),
+    "Tu ne peux renseigner recommendedPartnerIds qu'avec des id EXACTS de cette liste, et UNIQUEMENT ceux réellement pertinents pour la question posée — jamais tous par défaut, jamais un id absent de cette liste. Laisse le tableau vide si aucun n'est vraiment pertinent.",
+    "N'invente JAMAIS d'horaire, de prix, de disponibilité, d'avis, d'adresse ou de coordonnée pour un partenaire — utilise uniquement la description et les horaires fournis ci-dessus, verbatim, jamais une estimation ou un calcul de ta part (par exemple ne dis jamais toi-même si un partenaire est ouvert ou fermé en ce moment). Si les horaires ne sont pas fournis ci-dessus, dis honnêtement que tu ne les connais pas. N'écris toi-même aucune URL, adresse ou numéro de téléphone : un lien ou bouton sera affiché séparément par l'interface pour chaque partenaire recommandé, à partir de ses coordonnées réellement enregistrées.",
+    "Présente ces partenaires comme des recommandations de l'établissement (par exemple « l'hôtel recommande » ou « nous vous conseillons »), jamais comme une affirmation absolue non nuancée du type « le meilleur restaurant de la région », sauf si cette affirmation figure explicitement dans la description fournie ci-dessus.",
+    "Tu peux reformuler la description dans la langue du visiteur, mais sans jamais en modifier les faits.",
   ].join("\n");
 }
 
@@ -334,7 +444,22 @@ function buildAvailabilityGuidance(state: Exclude<AvailabilityCheckState, { kind
 export function buildKnowledgeReferenceBlock(chunks: RetrievedChunk[]): string {
   if (chunks.length === 0) return "";
 
-  const body = chunks.map((chunk, i) => `[${i + 1}] (source : ${chunk.sourceTitle})\n${chunk.content}`).join("\n\n");
+  const body = chunks
+    .map((chunk, i) => {
+      // URL/date lines are only added when actually present — never
+      // fabricated (see FRESHNESS above and staleness.ts: a null
+      // lastSyncedAt means "never successfully indexed", not "just synced").
+      const header = [
+        `[${i + 1}]`,
+        `Source : ${chunk.sourceTitle}`,
+        chunk.sourceUrl ? `URL : ${chunk.sourceUrl}` : null,
+        chunk.lastSyncedAt ? `Dernière synchronisation : ${chunk.lastSyncedAt}` : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return `${header}\n\n${chunk.content}`;
+    })
+    .join("\n\n");
 
   return [
     "IMPORTANT — séparation données / instructions :",

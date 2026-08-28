@@ -50,3 +50,65 @@ describe("updateHotelInfo — booking_url / spa_booking_url", () => {
     expect(fn).not.toMatch(/\.update\(\{[^}]*\binput\.(booking_url|spa_booking_url)\b/);
   });
 });
+
+describe("updateHotelInfo — booking_action_mode / host_booking_trigger", () => {
+  function sliceFunction(exportedName: string): string {
+    const start = source.indexOf(`export async function ${exportedName}`);
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport async function", start + 1);
+    return source.slice(start, nextExport === -1 ? undefined : nextExport);
+  }
+
+  it("UpdateHotelInfoInput carries both fields", () => {
+    const start = source.indexOf("export interface UpdateHotelInfoInput");
+    const end = source.indexOf("\n}", start);
+    const iface = source.slice(start, end);
+    expect(iface).toMatch(/booking_action_mode: BookingActionMode;/);
+    expect(iface).toMatch(/host_booking_selector: string;/);
+  });
+
+  it("[re-validated at the write path] host_booking_trigger is assembled via hostBookingTriggerSchema.parse, never a raw passthrough of the form's flat selector string", () => {
+    const fn = sliceFunction("updateHotelInfo");
+    expect(fn).toMatch(/hostBookingTriggerSchema\.parse\(\{\s*strategy:\s*"click",\s*selector:\s*parsed\.data\.host_booking_selector\s*\}\)/);
+    expect(fn).not.toMatch(/host_booking_trigger:\s*parsed\.data\.host_booking_selector/);
+  });
+
+  it("[mode-gated] host_booking_trigger is only assembled when booking_action_mode === \"host_widget\" — null otherwise, clearing any stale selector", () => {
+    const fn = sliceFunction("updateHotelInfo");
+    expect(fn).toMatch(/parsed\.data\.booking_action_mode === "host_widget"\s*\n\s*\?\s*hostBookingTriggerSchema\.parse/);
+  });
+});
+
+describe("deleteHotel", () => {
+  function sliceFunction(exportedName: string): string {
+    const start = source.indexOf(`export async function ${exportedName}`);
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport async function", start + 1);
+    return source.slice(start, nextExport === -1 ? undefined : nextExport);
+  }
+
+  it("[requireSuperadmin first] the guard runs before any Supabase call", () => {
+    const fn = sliceFunction("deleteHotel");
+    const guardIndex = fn.indexOf("requireSuperadmin()");
+    const deleteIndex = fn.indexOf(".delete()");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(deleteIndex).toBeGreaterThan(guardIndex);
+  });
+
+  it("[deletes by id] issues .from(\"hotels\").delete().eq(\"id\", id) on the session-bound client — never the admin client", () => {
+    const fn = sliceFunction("deleteHotel");
+    expect(fn).toMatch(/\.from\("hotels"\)\s*\.delete\(\)\s*\.eq\("id",\s*id\)/);
+    expect(fn).not.toMatch(/createAdminClient/);
+  });
+
+  it("[FK restrict violation] SQLSTATE 23503 (site_analysis_consents / reservation_audit_log audit trails) is translated into a specific, actionable message — not the generic failure", () => {
+    const fn = sliceFunction("deleteHotel");
+    expect(fn).toMatch(/FOREIGN_KEY_VIOLATION/);
+    expect(fn).toMatch(/historique/i);
+  });
+
+  it("[success] revalidates the establishments list", () => {
+    const fn = sliceFunction("deleteHotel");
+    expect(fn).toMatch(/revalidatePath\("\/etablissements"\)/);
+  });
+});

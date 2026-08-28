@@ -70,6 +70,7 @@ export const crawlPageSchema = z.object({
   finalUrl: z.string().url(),
   canonicalUrl: z.string().url().nullable(),
   title: z.string(),
+  headings: z.array(z.string()),
   language: z.string().nullable(),
   contentLength: z.number().int().nonnegative(),
   status: crawlPageStatusSchema,
@@ -136,6 +137,14 @@ const accommodationPhotoInputSchema = z.object({
   altText: z.string().trim().nullable(),
   /** The page this image was found on — becomes room_photos.source_page_url. */
   sourceUrl: z.string().trim().url().nullable(),
+  /**
+   * Every distinct detected photo is sent here, not just the ones checked
+   * in the curation UI — this flag is what becomes room_photos.is_selected.
+   * An unchecked photo is still persisted (isSelected: false), never
+   * dropped: the client can select it later from their own portal. See
+   * accommodationGrouping.ts's buildAccommodationTypesPayload.
+   */
+  isSelected: z.boolean(),
 });
 
 export const saveAccommodationTypesSchema = z.object({
@@ -149,9 +158,16 @@ export const saveAccommodationTypesSchema = z.object({
         // suggested capacity sends null here, and null is what gets stored —
         // see AccommodationType.max_guests in src/types/database.ts.
         maxGuests: z.number().int().positive().max(100).nullable(),
+        // No cap tied to a curation-UI display limit anymore (see
+        // accommodationGrouping.ts — PHOTOS_PER_ACCOMMODATION_CAP was
+        // removed): every distinct photo detected for the accommodation is
+        // sent. 50 stays as a generous sanity bound only, not a product cap.
         photos: z.array(accommodationPhotoInputSchema).max(50, "Trop de photos pour un seul hébergement."),
       })
     )
+    // An hébergement can be confirmed with zero photos at all — "Créer/
+    // enregistrer un accommodation_type ne doit PAS exiger qu'une photo
+    // soit sélectionnée." (see buildAccommodationTypesPayload).
     .min(1, "Sélectionnez au moins un hébergement.")
     .max(100, "Trop d'hébergements sélectionnés."),
 });

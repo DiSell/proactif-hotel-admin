@@ -11,6 +11,8 @@ import { useToast } from "@/components/ui/Toast";
 import { importCrawledPages, confirmSiteAnalysisConsent, saveAccommodationTypes } from "./actions";
 import { SITE_ANALYSIS_CONSENT_TEXT } from "./siteAnalysisConsent";
 import type { AnalyzeSiteConsentRequiredResponse, AnalyzeSiteErrorResponse, AnalyzeSiteResponse } from "./schema";
+import { classifyAccommodationPage } from "@/features/crawler/accommodationPage";
+import { buildAccommodationGroups, buildAccommodationTypesPayload } from "./accommodationGrouping";
 
 type CrawlPage = AnalyzeSiteResponse["pages"][number];
 
@@ -23,7 +25,7 @@ const STATUS_LABEL: Record<CrawlPage["status"], { label: string; tone: "success"
   duplicate: { label: "Doublon", tone: "neutral" },
 };
 
-function hasImportableContent(status: CrawlPage["status"]): boolean {
+function hasImportableContent(status: string): boolean {
   // Only relevant/probably_technical pages carry content worth importing.
   // duplicate/insufficient_content/unreachable/robots_disallowed must never
   // be selectable — a duplicate in particular already has a live copy
@@ -50,6 +52,7 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
   const router = useRouter();
   const toast = useToast();
   const [step, setStep] = useState<"input" | "consent" | "results">("input");
+  const [expanded, setExpanded] = useState(false);
   const [url, setUrl] = useState(websiteUrl || "");
   const [analyzing, setAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
@@ -73,78 +76,107 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [isImporting, startImport] = useTransition();
 
-  // Keyed by "pageIndex-imageIndex", not image URL — the same photo URL can
-  // (rarely) appear on two different pages, and the room_photos content_hash
-  // dedup on the server is the real backstop, not this key choice.
-  const [photoState, setPhotoState] = useState<Record<string, { checked: boolean; name: string }>>({});
-  // Keyed by trimmed accommodation name (as currently typed) -> capacity
-  // input string. Never pre-filled with a value the admin didn't see land
-  // in the field — see togglePhoto, which seeds it once, from the page's own
-  // guessedCapacity suggestion, only at the moment a photo is checked.
-  const [capacityByName, setCapacityByName] = useState<Record<string, string>>({});
+  // Keyed by group.key (canonical identity — see accommodationGrouping.ts's
+  // canonicalGroupKey; NOT sourceUrl, since one group can now merge several
+  // source pages for the same accommodation). Photo checkboxes are keyed by
+  // the photo's own normalized URL (globally unique after dedup), not a
+  // composite pageIndex-imageIndex.
+  const [checkedPhotoKeys, setCheckedPhotoKeys] = useState<Set<string>>(new Set());
+  // Whether a group is saved at all as an accommodation_type — independent
+  // of checkedPhotoKeys. Proactif detects and pre-includes every group
+  // automatically (seeded below, once, when groups first appear); the admin
+  // only needs to act to EXCLUDE a wrongly-detected one, never to opt every
+  // real accommodation in one by one. A group can stay included with zero
+  // checked photos — see buildAccommodationTypesPayload.
+  const [includedGroupKeys, setIncludedGroupKeys] = useState<Set<string>>(new Set());
+  // Editable accommodation name per group — falls back to the group's own
+  // suggestedName (page title / heading / nearbyHeading) until edited.
+  const [groupNames, setGroupNames] = useState<Record<string, string>>({});
+  // Editable capacity per group. Never pre-filled with a value the admin
+  // didn't see land in the field — see togglePhoto, which seeds it once,
+  // from the page's own guessedCapacity suggestion, only at the moment the
+  // FIRST photo in that group is checked.
+  const [groupCapacities, setGroupCapacities] = useState<Record<string, string>>({});
   const [isSavingAccommodations, startSavingAccommodations] = useTransition();
 
   const selectableCount = useMemo(() => pages.filter((p) => hasImportableContent(p.status)).length, [pages]);
 
-  const photoCandidates = useMemo(() => {
-    const list: {
-      key: string;
-      url: string;
-      alt: string | null;
-      sourceUrl: string;
-      suggestedName: string | null;
-      suggestedCapacity: number | null;
-    }[] = [];
-    pages.forEach((page, pageIndex) => {
-      if (!hasImportableContent(page.status)) return;
-      page.images.forEach((image, imageIndex) => {
-        list.push({
-          key: `${pageIndex}-${imageIndex}`,
-          url: image.url,
-          alt: image.alt,
-          sourceUrl: page.finalUrl,
-          suggestedName: image.nearbyHeading,
-          suggestedCapacity: page.guessedCapacity?.value ?? null,
-        });
-      });
+  // The actual fix for both the "413 photos" bug AND "1 page = 1
+  // accommodation_type": only pages classifyAccommodationPage judges
+  // "detail" ever produce a group — "listing" (pricing/category/overview)
+  // and "not_accommodation" (blog, spa, restaurant, gallery, author,
+  // legal, nearby-attractions, editorial/business-for-sale pages...) never
+  // do, even when they have images, and two "detail" pages for the SAME
+  // accommodation are merged into one group — see accommodationGrouping.ts's
+  // own doc comments. This has NO effect on hasImportableContent/handleImport
+  // above: the general RAG page table and import still consider every
+  // relevant/probably_technical page, unchanged — a "listing" page stays
+  // fully importable as a knowledge_source.
+  const accommodationGroups = useMemo(
+    () => buildAccommodationGroups(pages, { isImportable: hasImportableContent, classifyAccommodationPage }),
+    [pages]
+  );
+
+  const totalPhotosShown = useMemo(() => accommodationGroups.reduce((sum, g) => sum + g.photos.length, 0), [accommodationGroups]);
+
+  function toggleGroupIncluded(group: (typeof accommodationGroups)[number]) {
+    setIncludedGroupKeys((current) => {
+      const next = new Set(current);
+      if (next.has(group.key)) next.delete(group.key);
+      else next.add(group.key);
+      return next;
     });
-    return list;
-  }, [pages]);
+  }
 
-  function togglePhoto(key: string, suggestedName: string | null, suggestedCapacity: number | null) {
-    const existing = photoState[key] ?? { checked: false, name: suggestedName ?? "" };
-    const nextChecked = !existing.checked;
-    setPhotoState((current) => ({ ...current, [key]: { ...existing, checked: nextChecked } }));
+  function togglePhoto(group: (typeof accommodationGroups)[number], photoKey: string) {
+    const willCheck = !checkedPhotoKeys.has(photoKey);
+    setCheckedPhotoKeys((current) => {
+      const next = new Set(current);
+      if (willCheck) next.add(photoKey);
+      else next.delete(photoKey);
+      return next;
+    });
 
-    // Seed a capacity suggestion for this name ONCE, only when checking a
-    // photo (never when unchecking, and never overwriting a value already
-    // present — an admin who already typed/cleared a capacity keeps it).
-    const trimmedName = existing.name.trim();
-    if (nextChecked && trimmedName && suggestedCapacity !== null) {
-      setCapacityByName((current) => (trimmedName in current ? current : { ...current, [trimmedName]: String(suggestedCapacity) }));
+    // Seed the group's capacity suggestion ONCE, only when checking a photo
+    // (never when unchecking), and never overwrite a value already present.
+    if (willCheck && group.suggestedCapacity !== null) {
+      setGroupCapacities((current) => (group.key in current ? current : { ...current, [group.key]: String(group.suggestedCapacity) }));
     }
   }
 
-  function updatePhotoName(key: string, suggestedName: string | null, name: string) {
-    setPhotoState((current) => ({ ...current, [key]: { checked: current[key]?.checked ?? false, name } }));
+  // The two explicit, distinct actions per accommodation the product spec
+  // calls for ("Tout sélectionner" / "Tout désélectionner"), on top of
+  // individual photo clicks (togglePhoto above) — never a single ambiguous
+  // toggle standing in for both.
+  function selectAllPhotos(group: (typeof accommodationGroups)[number]) {
+    setCheckedPhotoKeys((current) => {
+      const next = new Set(current);
+      for (const photo of group.photos) next.add(photo.key);
+      return next;
+    });
+    if (group.suggestedCapacity !== null) {
+      setGroupCapacities((current) => (group.key in current ? current : { ...current, [group.key]: String(group.suggestedCapacity) }));
+    }
   }
 
-  // Grouped live from currently-checked photos + their currently-typed name
-  // — this IS the accommodationTypes payload shape saveAccommodationTypes
-  // expects, one entry per distinct non-empty name.
-  const checkedPhotosByName = useMemo(() => {
-    const map = new Map<string, typeof photoCandidates>();
-    for (const candidate of photoCandidates) {
-      const state = photoState[candidate.key];
-      if (!state?.checked) continue;
-      const name = state.name.trim();
-      if (!name) continue;
-      const list = map.get(name) ?? [];
-      list.push(candidate);
-      map.set(name, list);
-    }
-    return map;
-  }, [photoCandidates, photoState]);
+  function deselectAllPhotos(group: (typeof accommodationGroups)[number]) {
+    setCheckedPhotoKeys((current) => {
+      const next = new Set(current);
+      for (const photo of group.photos) next.delete(photo.key);
+      return next;
+    });
+  }
+
+  const confirmedAccommodations = useMemo(
+    () =>
+      buildAccommodationTypesPayload(accommodationGroups, {
+        includedGroupKeys,
+        checkedPhotoKeys,
+        names: groupNames,
+        capacities: groupCapacities,
+      }),
+    [accommodationGroups, includedGroupKeys, checkedPhotoKeys, groupNames, groupCapacities]
+  );
 
   async function handleAnalyze() {
     setAnalyzing(true);
@@ -183,6 +215,23 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
         stoppedReason: body.stoppedReason,
       });
       setSelected(new Set(body.pages.reduce<number[]>((acc, p, i) => (p.recommended ? [...acc, i] : acc), [])));
+
+      // "Proactif détecte et prépare automatiquement" — every group detected
+      // in THIS analysis starts included, with every one of its distinct
+      // photos already checked (item 1: show ALL distinct photos, never a
+      // pre-chosen "best few"). The admin's job is then only to EXCLUDE a
+      // wrongly-detected group or DESELECT a photo they don't want — never
+      // to opt real accommodations in one by one. Computed directly from
+      // body.pages (not the accommodationGroups memo, which hasn't
+      // re-rendered yet) right here in the event handler that produced this
+      // data — never a useEffect reacting to it after the fact. A full
+      // replace (not a merge with prior state) is correct: "← Nouvelle
+      // analyse" always starts a fresh crawl result, never appends to the
+      // previous one.
+      const freshGroups = buildAccommodationGroups(body.pages, { isImportable: hasImportableContent, classifyAccommodationPage });
+      setIncludedGroupKeys(new Set(freshGroups.map((group) => group.key)));
+      setCheckedPhotoKeys(new Set(freshGroups.flatMap((group) => group.photos.map((photo) => photo.key))));
+
       setStep("results");
     } catch {
       setAnalyzeError("L’analyse a échoué. Vérifiez l’URL et réessayez.");
@@ -242,23 +291,15 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
   }
 
   function handleSaveAccommodations() {
-    const names = Array.from(checkedPhotosByName.keys());
-    if (names.length === 0) return;
+    if (confirmedAccommodations.length === 0) return;
 
     startSavingAccommodations(async () => {
-      const accommodationTypes = names.map((name) => {
-        const photosForName = checkedPhotosByName.get(name)!;
-        const capacityRaw = (capacityByName[name] ?? "").trim();
-        const parsedCapacity = capacityRaw ? Number.parseInt(capacityRaw, 10) : null;
-        // Never forced/guessed here either — an unparseable or cleared field sends null, exactly like an admin who left it blank.
-        const maxGuests = parsedCapacity !== null && Number.isFinite(parsedCapacity) && parsedCapacity > 0 ? parsedCapacity : null;
-        return {
-          name,
-          sourceUrl: photosForName[0].sourceUrl,
-          maxGuests,
-          photos: photosForName.map((p) => ({ imageUrl: p.url, altText: p.alt, sourceUrl: p.sourceUrl })),
-        };
-      });
+      const accommodationTypes = confirmedAccommodations.map(({ sourceUrl, name, maxGuests, photos }) => ({
+        name,
+        sourceUrl,
+        maxGuests,
+        photos,
+      }));
 
       const result = await saveAccommodationTypes(hotelId, { accommodationTypes });
       if (!result.ok) {
@@ -280,8 +321,31 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/40 p-4">
-      <Card className="flex max-h-[85vh] w-full max-w-3xl flex-col p-6">
-        <h2 className="mb-4 text-sm font-semibold text-ink">Analyser le site web</h2>
+      <Card
+        className={`flex w-full flex-col p-6 transition-[max-width,max-height] ${
+          expanded ? "max-h-[95vh] max-w-6xl" : "max-h-[85vh] max-w-3xl"
+        }`}
+      >
+        <div className="mb-4 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-ink">Analyser le site web</h2>
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="shrink-0 rounded-md p-1.5 text-body/60 hover:bg-canvas hover:text-ink"
+            aria-label={expanded ? "Réduire la fenêtre" : "Agrandir la fenêtre"}
+            title={expanded ? "Réduire" : "Agrandir"}
+          >
+            {expanded ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 9V4h5M15 4h5v5M4 15v5h5M15 20h5v-5" />
+              </svg>
+            )}
+          </button>
+        </div>
 
         {step === "input" && (
           <div className="flex flex-col gap-4">
@@ -412,66 +476,121 @@ export function AnalyzeSiteModal({ hotelId, websiteUrl, onClose }: { hotelId: st
               </div>
             )}
 
-            {photoCandidates.length > 0 && (
-              <div className="flex max-h-64 flex-col gap-2 rounded-lg border border-border p-3">
+            {accommodationGroups.length > 0 && (
+              <div className={`flex flex-col gap-2 rounded-lg border border-border p-3 ${expanded ? "max-h-[60vh]" : "max-h-80"}`}>
                 <p className="text-2xs font-medium text-ink">
-                  Photos de chambres détectées ({photoCandidates.length}) — cochez celles à conserver et confirmez ou
-                  corrigez le nom de l’hébergement. Une capacité suggérée n’est jamais enregistrée sans confirmation ;
+                  Hébergements détectés ({accommodationGroups.length}, {totalPhotosShown} photo(s) au total — aucune
+                  photo n’est écartée automatiquement) — seules les pages identifiées comme la fiche d’un hébergement
+                  précis alimentent cette liste (les pages de tarifs/catégories restent disponibles pour la base de
+                  connaissances, mais jamais comme hébergement). Chaque hébergement détecté est inclus par défaut ;
+                  décochez-le pour l’exclure. Le choix des photos affichées dans le chatbot reste modifiable ensuite
+                  par le client depuis son portail. Une capacité suggérée n’est jamais enregistrée sans confirmation ;
                   laissez le champ vide si elle n’est pas fiable.
                 </p>
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  <ul className="flex flex-col gap-2">
-                    {photoCandidates.map((candidate) => {
-                      const state = photoState[candidate.key] ?? { checked: false, name: candidate.suggestedName ?? "" };
-                      return (
-                        <li key={candidate.key} className="flex items-start gap-2 border-b border-border/60 pb-2 last:border-0">
+                <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+                  {accommodationGroups.map((group) => {
+                    const name = groupNames[group.key] ?? group.suggestedName;
+                    const capacity = groupCapacities[group.key] ?? "";
+                    const included = includedGroupKeys.has(group.key);
+                    const checkedInGroup = group.photos.filter((photo) => checkedPhotoKeys.has(photo.key)).length;
+                    const allChecked = group.photos.length > 0 && checkedInGroup === group.photos.length;
+                    const noneChecked = checkedInGroup === 0;
+                    return (
+                      <div
+                        key={group.key}
+                        className={`flex flex-col gap-2 rounded-lg border p-2.5 ${included ? "border-ink/40 bg-canvas" : "border-border/70 opacity-60"}`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
                           <input
                             type="checkbox"
-                            checked={state.checked}
-                            onChange={() => togglePhoto(candidate.key, candidate.suggestedName, candidate.suggestedCapacity)}
-                            className="mt-1 h-4 w-4 shrink-0 accent-ink"
-                            aria-label={`Sélectionner la photo ${candidate.alt ?? candidate.url}`}
+                            checked={included}
+                            onChange={() => toggleGroupIncluded(group)}
+                            className="h-4 w-4 shrink-0 accent-ink"
+                            aria-label={`Inclure l’hébergement ${name || "sans nom"} (${group.photos.length} photo(s) détectée(s))`}
                           />
-                          {/* eslint-disable-next-line @next/next/no-img-element -- crawled site's own image URL, previewed before any download/upload. */}
-                          <img src={candidate.url} alt={candidate.alt ?? ""} className="h-12 w-16 shrink-0 rounded object-cover" />
-                          <div className="flex min-w-0 flex-1 flex-col gap-1">
-                            <input
-                              value={state.name}
-                              onChange={(event) => updatePhotoName(candidate.key, candidate.suggestedName, event.target.value)}
-                              placeholder="Nom de l’hébergement (ex. Junior Suite)"
-                              className={inputClassName()}
-                            />
-                            <p className="truncate text-2xs text-body/50">{candidate.sourceUrl}</p>
+                          <input
+                            value={name}
+                            onChange={(event) => setGroupNames((current) => ({ ...current, [group.key]: event.target.value }))}
+                            placeholder="Nom de l’hébergement (ex. Junior Suite)"
+                            className={`${inputClassName()} min-w-40 flex-1`}
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            value={capacity}
+                            onChange={(event) => setGroupCapacities((current) => ({ ...current, [group.key]: event.target.value }))}
+                            placeholder="Capacité inconnue"
+                            className={`${inputClassName()} w-32`}
+                          />
+                          <span className="shrink-0 text-2xs text-body/60">
+                            {checkedInGroup}/{group.photos.length} photo(s) sélectionnée(s)
+                          </span>
+                        </div>
+                        <p className="truncate text-2xs text-body/50">
+                          {group.mergedSourceUrls.length > 1
+                            ? `regroupé depuis ${group.mergedSourceUrls.length} pages : ${group.mergedSourceUrls.join(", ")}`
+                            : `source : ${group.sourceUrl}`}
+                        </p>
+                        {group.photos.length > 0 && (
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => selectAllPhotos(group)}
+                              disabled={allChecked}
+                              className="rounded-md border border-border px-2 py-1 text-2xs font-medium text-ink hover:bg-canvas disabled:opacity-40"
+                            >
+                              Tout sélectionner
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deselectAllPhotos(group)}
+                              disabled={noneChecked}
+                              className="rounded-md border border-border px-2 py-1 text-2xs font-medium text-ink hover:bg-canvas disabled:opacity-40"
+                            >
+                              Tout désélectionner
+                            </button>
                           </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-                {checkedPhotosByName.size > 0 && (
-                  <div className="flex flex-col gap-1.5 border-t border-border pt-2">
-                    {Array.from(checkedPhotosByName.keys()).map((name) => (
-                      <div key={name} className="flex items-center gap-2 text-2xs">
-                        <span className="min-w-0 flex-1 truncate text-body/80">{name}</span>
-                        <input
-                          type="number"
-                          min={1}
-                          value={capacityByName[name] ?? ""}
-                          onChange={(event) => setCapacityByName((current) => ({ ...current, [name]: event.target.value }))}
-                          placeholder="Capacité inconnue"
-                          className={`${inputClassName()} w-32`}
-                        />
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          {group.photos.map((photo) => {
+                            const checked = checkedPhotoKeys.has(photo.key);
+                            return (
+                              <label key={photo.key} className="relative cursor-pointer" title={photo.alt ?? undefined}>
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => togglePhoto(group, photo.key)}
+                                  className="sr-only"
+                                  aria-label={`Sélectionner la photo ${photo.alt ?? ""}`}
+                                />
+                                {/* eslint-disable-next-line @next/next/no-img-element -- crawled site's own image URL, previewed before any download/upload; the raw URL itself is never shown as text (see AnalyzeSiteModal fix), only the thumbnail and the group's own name/source. */}
+                                <img
+                                  src={photo.url}
+                                  alt={photo.alt ?? ""}
+                                  className={`h-14 w-20 rounded object-cover ${checked ? "ring-2 ring-ink" : "opacity-70 hover:opacity-100"}`}
+                                />
+                                {checked && (
+                                  <span className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-ink text-canvas">
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M20 6L9 17l-5-5" />
+                                    </svg>
+                                  </span>
+                                )}
+                              </label>
+                            );
+                          })}
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  })}
+                </div>
                 <div className="flex justify-end">
                   <Button
                     variant="ghost"
                     onClick={handleSaveAccommodations}
-                    disabled={isSavingAccommodations || checkedPhotosByName.size === 0}
+                    disabled={isSavingAccommodations || confirmedAccommodations.length === 0}
                   >
-                    {isSavingAccommodations ? "Enregistrement…" : `Enregistrer les hébergements (${checkedPhotosByName.size})`}
+                    {isSavingAccommodations ? "Enregistrement…" : `Enregistrer les hébergements (${confirmedAccommodations.length})`}
                   </Button>
                 </div>
               </div>

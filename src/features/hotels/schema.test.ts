@@ -15,6 +15,8 @@ function validUpdateInput(overrides: Record<string, unknown> = {}) {
     secondary_color: "#8A6A3E",
     booking_url: "",
     spa_booking_url: "",
+    booking_action_mode: "url",
+    host_booking_selector: "",
     ...overrides,
   };
 }
@@ -57,6 +59,35 @@ describe("updateHotelInfoSchema — booking_url / spa_booking_url", () => {
 
   it("rejects an unrelated scheme like ftp:", () => {
     const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_url: "ftp://example.com/file" }));
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("updateHotelInfoSchema — booking_action_mode / host_booking_selector", () => {
+  it("[url mode, default] accepts an empty selector — irrelevant in this mode", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_action_mode: "url", host_booking_selector: "" }));
+    expect(result.success).toBe(true);
+  });
+
+  it("[host_widget mode, selector provided] accepted", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_action_mode: "host_widget", host_booking_selector: "#resa-toggle-menu" }));
+    expect(result.success).toBe(true);
+  });
+
+  it("[host_widget mode, empty selector] rejected — a selector is required in this mode", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_action_mode: "host_widget", host_booking_selector: "" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("[host_widget mode, selector too long] rejected — 201 characters exceeds the 200-char bound", () => {
+    const result = updateHotelInfoSchema.safeParse(
+      validUpdateInput({ booking_action_mode: "host_widget", host_booking_selector: "#" + "a".repeat(200) })
+    );
+    expect(result.success).toBe(false);
+  });
+
+  it("[invalid mode] rejects a value outside the closed enum", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_action_mode: "iframe_scrape" }));
     expect(result.success).toBe(false);
   });
 });

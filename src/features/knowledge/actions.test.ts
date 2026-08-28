@@ -77,6 +77,17 @@ describe("saveAccommodationTypes", () => {
     expect(fn).toMatch(/hotel_id:\s*hotelId/);
     expect(fn).toMatch(/\.eq\("hotel_id", hotelId\)/);
   });
+
+  it("[is_selected persisted per photo] room_photos.is_selected is written straight from photo.isSelected — never forced true/false regardless of curation-time state", () => {
+    const fn = sliceFunction("saveAccommodationTypes");
+    expect(fn).toMatch(/is_selected:\s*photo\.isSelected/);
+  });
+
+  it("[0-photo accommodation_type saveable] the accommodation_types insert/update is never gated on accommodation.photos.length — a group with zero photos still creates/updates its row, only the photo for-loop below has nothing to iterate", () => {
+    const fn = sliceFunction("saveAccommodationTypes");
+    const accommodationTypeSection = fn.slice(0, fn.indexOf("for (let position"));
+    expect(accommodationTypeSection).not.toMatch(/photos\.length/);
+  });
 });
 
 /**

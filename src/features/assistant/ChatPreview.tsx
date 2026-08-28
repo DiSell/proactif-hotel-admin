@@ -19,6 +19,22 @@ interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
+type PartnerAction = { type: "partner_booking"; label: string; url: string } | { type: "partner_website"; label: string; url: string };
+
+/** Mirrors features/rag/types.ts's PartnerRecommendation — see that type's own doc comment. */
+interface PartnerRecommendation {
+  id: string;
+  name: string;
+  category: string;
+  description: string | null;
+  address: string | null;
+  phone: string | null;
+  openingHours: string | null;
+  websiteUrl: string | null;
+  bookingUrl: string | null;
+  action: PartnerAction | null;
+}
+
 /**
  * Generic CTA, independent of RoomRecommendation — see
  * features/rag/types.ts (ChatAction) for the server-side contract. `url` is
@@ -39,6 +55,7 @@ interface ChatMessage {
   sources?: MessageSource[];
   roomRecommendation?: RoomRecommendation | null;
   action?: ChatAction | null;
+  partnerRecommendations?: PartnerRecommendation[];
 }
 
 interface ChatApiResponse {
@@ -48,6 +65,7 @@ interface ChatApiResponse {
   answerStatus: AnswerStatus;
   roomRecommendation: RoomRecommendation | null;
   action: ChatAction | null;
+  partnerRecommendations: PartnerRecommendation[];
 }
 
 interface ChatPreviewProps {
@@ -55,9 +73,27 @@ interface ChatPreviewProps {
   assistantName: string;
   welcomeMessage: string;
   fullScreen?: boolean;
+  /**
+   * Defaults to true — preserves the admin dashboard's existing behavior
+   * exactly. The client portal's "Tester mon chatbot" (features/client)
+   * passes false: similarity scores and source titles stay an admin-only
+   * debug affordance, not part of what a hotel's own client sees.
+   */
+  showSources?: boolean;
+  /**
+   * Defaults to /api/hotels/${hotelId}/chat (the back-office route,
+   * requireHotelAccess(hotelId, "backoffice")) — preserves the admin
+   * dashboard's existing behavior exactly. The client portal's "Tester mon
+   * chatbot" (ChatbotPersonalizationForm.tsx) passes
+   * /api/client/hotels/${hotelId}/chat instead (requireHotelAccess(hotelId,
+   * "client")) — a dedicated route, not the same one with an inferred
+   * scope, so this component never has to know which space it's rendered
+   * in itself.
+   */
+  apiPath?: string;
 }
 
-export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen }: ChatPreviewProps) {
+export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen, showSources = true, apiPath }: ChatPreviewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: welcomeMessage }]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -74,7 +110,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
     setLoading(true);
 
     try {
-      const response = await fetch(`/api/hotels/${hotelId}/chat`, {
+      const response = await fetch(apiPath ?? `/api/hotels/${hotelId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId, message: trimmed }),
@@ -96,6 +132,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
           sources: data.sources,
           roomRecommendation: data.roomRecommendation,
           action: data.action,
+          partnerRecommendations: data.partnerRecommendations,
         },
       ]);
     } catch (err) {
@@ -139,7 +176,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
             >
               {message.content}
             </div>
-            {message.role === "assistant" && message.answerStatus && (
+            {showSources && message.role === "assistant" && message.answerStatus && (
               <SourcesDebugPanel answerStatus={message.answerStatus} sources={message.sources ?? []} />
             )}
             {message.role === "assistant" && message.roomRecommendation && (
@@ -161,6 +198,33 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
               >
                 {message.action.label}
               </a>
+            )}
+            {message.role === "assistant" && message.partnerRecommendations && message.partnerRecommendations.length > 0 && (
+              <div className="flex max-w-[78%] flex-col gap-2">
+                {message.partnerRecommendations.map((partner) => (
+                  <div key={partner.id} className="rounded-lg border border-border bg-canvas px-3 py-2 text-2xs">
+                    <p className="font-medium text-ink">{partner.name}</p>
+                    {partner.description && <p className="mt-0.5 text-body/80">{partner.description}</p>}
+                    {partner.address && <p className="mt-0.5 text-body/60">{partner.address}</p>}
+                    {partner.phone && (
+                      <a href={`tel:${partner.phone.replace(/[^+\d]/g, "")}`} className="mt-0.5 block text-body/60 hover:text-ink hover:underline">
+                        {partner.phone}
+                      </a>
+                    )}
+                    {partner.openingHours && <p className="mt-0.5 text-body/60">{partner.openingHours}</p>}
+                    {partner.action && (
+                      <a
+                        href={partner.action.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1.5 inline-block rounded-full bg-ink px-3 py-1 text-2xs font-medium text-canvas hover:opacity-90"
+                      >
+                        {partner.action.label}
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         ))}

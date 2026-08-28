@@ -159,16 +159,17 @@ describe("answer.ts — generic booking CTA (action)", () => {
     expect(answerQuestionFn.slice(noContextCallStart, noContextCallEnd)).toMatch(/bookingIntentDetected,/);
   });
 
-  it("[no_context — works with no RoomRecommendation at all] answerNoContext attaches action from bookingIntentDetected + hotel.booking_url directly, and returns it", () => {
+  it("[no_context — works with no RoomRecommendation at all] answerNoContext attaches action from bookingIntentDetected + the hotel's own booking config directly, and returns it", () => {
     const fn = sliceFn("answerNoContext", "loadHistory");
-    expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected, hotel\.booking_url\);/);
-    expect(fn).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action \};/);
+    expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected, hotel\);/);
+    expect(fn).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations \};/);
   });
 
-  it("[grounded — dedup with RoomRecommendation] answerGrounded suppresses the generic action (passes null) whenever a RoomRecommendation was already produced this turn — never both for the same URL", () => {
+  it("[grounded — dedup with RoomRecommendation] answerGrounded suppresses the generic action ONLY when a RoomRecommendation already renders its own working booking link (booking_action_mode === \"url\") — never when the hotel is in host_widget mode, where RoomPhotoModal has no button of its own", () => {
     const fn = sliceFn("answerGrounded", "answerNoContext");
-    expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected, roomRecommendation \? null : hotel\.booking_url\);/);
-    expect(fn).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action \};/);
+    expect(fn).toMatch(/const hasDuplicateBookingLink = Boolean\(roomRecommendation\) && bookingCtaKind\(hotel\) === "url";/);
+    expect(fn).toMatch(/const action = hasDuplicateBookingLink \? null : buildBookingAction\(bookingIntentDetected, hotel\);/);
+    expect(fn).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations \};/);
   });
 
   it("[single source of truth] buildBookingAction is the ONLY place an action object literal ({ type: \"booking\", ... }) is constructed — never inlined again at either call site", () => {

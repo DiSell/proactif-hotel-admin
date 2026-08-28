@@ -30,8 +30,11 @@ function makeWidgetContext(): PublicWidgetContext {
       default_language: "fr",
       booking_url: "https://booking.example.com",
       spa_booking_url: null,
+      booking_action_mode: "url",
+      host_booking_trigger: null,
       assistant_name: "Camille",
       assistant_enabled: true,
+      photo_management: "client",
       status: "active",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
@@ -65,7 +68,33 @@ describe("GET /api/widget/[widgetKey]/config", () => {
       position: "top-right",
       icon: "help",
       logoUrl: "https://cdn.example.com/logo.png",
+      bookingActionMode: "url",
+      hostBookingTrigger: null,
     });
+  });
+
+  it("[host_widget mode] exposes bookingActionMode and the validated trigger — never a URL", async () => {
+    const widgetContext = makeWidgetContext();
+    widgetContext.hotel.booking_action_mode = "host_widget";
+    widgetContext.hotel.host_booking_trigger = { strategy: "click", selector: "#resa-toggle-menu" };
+    const deps = makeDeps({ resolveWidgetContext: vi.fn(async () => widgetContext) });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    const body = await response.json();
+    expect(body.bookingActionMode).toBe("host_widget");
+    expect(body.hostBookingTrigger).toEqual({ strategy: "click", selector: "#resa-toggle-menu" });
+  });
+
+  it("[host_widget mode, malformed trigger] fails safe — hostBookingTrigger is null, never a broken payload", async () => {
+    const widgetContext = makeWidgetContext();
+    widgetContext.hotel.booking_action_mode = "host_widget";
+    widgetContext.hotel.host_booking_trigger = { strategy: "javascript", code: "alert(1)" };
+    const deps = makeDeps({ resolveWidgetContext: vi.fn(async () => widgetContext) });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    const body = await response.json();
+    expect(body.bookingActionMode).toBe("host_widget");
+    expect(body.hostBookingTrigger).toBeNull();
   });
 
   it("[not found] returns 404", async () => {

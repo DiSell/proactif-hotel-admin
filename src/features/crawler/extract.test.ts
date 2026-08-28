@@ -94,6 +94,114 @@ describe("extractPage", () => {
   });
 });
 
+describe("extractPage — structured text (heading markers)", () => {
+  it("marks real H1/H2 as their own '#'/'##' line, in place, without dropping surrounding paragraphs", () => {
+    const result = extractPage(SAMPLE_HTML, "https://example.com/chambres", ["fr"]);
+    expect(result.text).toContain("# Nos chambres");
+    expect(result.text).toContain("## Tarifs");
+    expect(result.text).toContain("L'hôtel propose 12 chambres avec vue sur mer");
+    expect(result.text).toContain("À partir de 120€ la nuit");
+  });
+
+  it("marks H3 and H4 too, at their own level", () => {
+    const html = `<html><body><main>
+      <h1>Page</h1>
+      <h3>Sous-section</h3>
+      <p>${"contenu ".repeat(10)}</p>
+      <h4>Détail</h4>
+      <p>${"autre contenu ".repeat(10)}</p>
+    </main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).toContain("# Page");
+    expect(result.text).toContain("### Sous-section");
+    expect(result.text).toContain("#### Détail");
+  });
+
+  it("preserves DOM order — a heading appears before the content that follows it and after the content that precedes it", () => {
+    const html = `<html><body><main>
+      <p>Introduction avant tout titre.</p>
+      <h2>Première section</h2>
+      <p>Contenu de la première section.</p>
+      <h2>Deuxième section</h2>
+      <p>Contenu de la deuxième section.</p>
+    </main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    const introIdx = result.text.indexOf("Introduction avant tout titre");
+    const h1Idx = result.text.indexOf("## Première section");
+    const c1Idx = result.text.indexOf("Contenu de la première section");
+    const h2Idx = result.text.indexOf("## Deuxième section");
+    const c2Idx = result.text.indexOf("Contenu de la deuxième section");
+    expect(introIdx).toBeGreaterThanOrEqual(0);
+    expect(introIdx).toBeLessThan(h1Idx);
+    expect(h1Idx).toBeLessThan(c1Idx);
+    expect(c1Idx).toBeLessThan(h2Idx);
+    expect(h2Idx).toBeLessThan(c2Idx);
+  });
+
+  it("keeps content before the first heading — never dropped just because it precedes a heading", () => {
+    const html = `<html><body><main>
+      <p>Ce paragraphe précède tout titre et doit être conservé intégralement.</p>
+      <h2>Un titre</h2>
+      <p>Contenu après le titre.</p>
+    </main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).toContain("Ce paragraphe précède tout titre et doit être conservé intégralement.");
+  });
+
+  it("a page with no heading at all keeps its text exploitable, unchanged from the pre-existing behavior (no '#' introduced anywhere)", () => {
+    const html = `<html><body><main><p>${"Un simple paragraphe sans aucun titre. ".repeat(10)}</p></main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).not.toMatch(/^#{1,6}\s/m);
+    expect(result.text).toContain("Un simple paragraphe sans aucun titre.");
+  });
+
+  it("drops an empty heading (no text at all) instead of emitting a bare '#' marker", () => {
+    const html = `<html><body><main><h2></h2><p>${"contenu ".repeat(10)}</p></main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).not.toMatch(/^#{1,6}\s*$/m);
+  });
+
+  it("a heading nested inside inline markup (span/div) still yields its full combined text, not a fragment", () => {
+    const html = `<html><body><main>
+      <h1><span class="subtitle">Sous-titre</span> <div class="title">Titre principal</div></h1>
+      <p>${"contenu ".repeat(10)}</p>
+    </main></body></html>`;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).toContain("# Sous-titre Titre principal");
+  });
+
+  it("does not leak the '#' marker into images' nearbyHeading (extractImages reads the ORIGINAL heading text)", () => {
+    const html = `
+      <html><body><main>
+        <h2>Junior Suite</h2>
+        <img src="/photos/junior-suite.jpg" alt="Junior Suite avec vue mer">
+        <p>${"Une belle suite ".repeat(20)}</p>
+      </main></body></html>
+    `;
+    const result = extractPage(html, "https://example.com/chambres", ["fr"]);
+    expect(result.images[0].nearbyHeading).toBe("Junior Suite");
+  });
+
+  it("does not leak the '#' marker into the plain headings[] array (used for relevance scoring / capacity guessing, unaffected by the structured-text change)", () => {
+    const result = extractPage(SAMPLE_HTML, "https://example.com/chambres", ["fr"]);
+    expect(result.headings).toEqual(["Nos chambres", "Tarifs"]);
+  });
+
+  it("a heading inside NOISE_SELECTORS (nav/footer/header) never reaches the text at all, marked or not", () => {
+    const html = `
+      <html><body>
+        <header><h1>Menu du site</h1></header>
+        <main><h1>Titre réel</h1><p>${"contenu ".repeat(10)}</p></main>
+        <footer><h2>Pied de page</h2></footer>
+      </body></html>
+    `;
+    const result = extractPage(html, "https://example.com/page", []);
+    expect(result.text).not.toContain("Menu du site");
+    expect(result.text).not.toContain("Pied de page");
+    expect(result.text).toContain("# Titre réel");
+  });
+});
+
 describe("extractPage — images", () => {
   it("extracts img src (resolved to absolute), alt text, and the nearest preceding heading", () => {
     const html = `

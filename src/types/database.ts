@@ -9,11 +9,30 @@ export interface Profile {
   id: string;
   email: string;
   role: ProfileRole;
+  /** Mirrors supabase/migrations/0011_hotel_client_portal.sql — PROPOSED, not yet applied. Nullable: existing superadmin rows are never backfilled. */
+  first_name: string | null;
+  last_name: string | null;
   created_at: string;
   updated_at: string;
 }
 
+/**
+ * Mirrors supabase/migrations/0011_hotel_client_portal.sql — PROPOSED, not
+ * yet applied. The ONLY place a user is linked to a hotel. MVP: at most one
+ * row per user_id (hotel_users_user_key, a DB-level constraint, not just an
+ * application convention) — one hotel per client account. A hotel can still
+ * have several users later without a schema change.
+ */
+export interface HotelUser {
+  id: string;
+  hotel_id: string;
+  user_id: string;
+  created_at: string;
+}
+
 export type HotelStatus = "draft" | "active" | "inactive";
+
+export type BookingActionMode = "url" | "host_widget";
 
 export interface Hotel {
   id: string;
@@ -34,8 +53,27 @@ export interface Hotel {
   default_language: string | null;
   booking_url: string | null;
   spa_booking_url: string | null;
+  /** Mirrors supabase/migrations/0010_host_booking_action.sql — PROPOSED, not yet applied. Defaults to "url" (existing behavior). */
+  booking_action_mode: BookingActionMode;
+  /**
+   * Raw jsonb — NEVER trusted as already-validated just because it came
+   * from the database. Only ever consumed through
+   * features/hotels/hostBookingTrigger.ts's parseHostBookingTrigger, which
+   * returns null for anything that doesn't match the closed
+   * {strategy:"click", selector} shape.
+   */
+  host_booking_trigger: unknown | null;
   assistant_name: string | null;
   assistant_enabled: boolean;
+  /**
+   * Mirrors supabase/migrations/0014_chatbot_personalization.sql —
+   * PROPOSED, not yet applied. "Je gère mes photos" (client) vs "Je délègue
+   * la gestion à Proactif System" (proactif) — see
+   * features/client/actions.ts:setPhotoManagementMode. Defaults to
+   * 'client': the client keeps the final say unless they explicitly
+   * delegate it.
+   */
+  photo_management: "client" | "proactif";
   status: HotelStatus;
   created_at: string;
   updated_at: string;
@@ -155,6 +193,16 @@ export interface RoomPhoto {
   content_hash: string;
   alt_text: string | null;
   position: number;
+  /**
+   * Mirrors supabase/migrations/0014_chatbot_personalization.sql —
+   * PROPOSED, not yet applied. Whether this photo is actually shown in the
+   * chatbot — decoupled from "was this photo detected/imported at all".
+   * Defaults to true (existing rows, created before this column existed,
+   * keep behaving exactly as before). The client — or the superadmin
+   * curating on their behalf when photo_management = 'proactif' — is the
+   * only one who changes this after import; see features/photos/actions.ts.
+   */
+  is_selected: boolean;
   created_at: string;
 }
 
@@ -372,6 +420,53 @@ export interface MessageSource {
   created_at: string;
 }
 
+export type HotelPartnerCategory =
+  | "restaurant"
+  | "transport"
+  | "activity"
+  | "wellness"
+  | "shopping"
+  | "local_product"
+  | "guide"
+  | "rental"
+  | "other";
+
+export type HotelPartnerConsentStatus = "not_requested" | "pending" | "accepted" | "declined";
+
+/**
+ * Mirrors supabase/migrations/0015_hotel_partners.sql (+ 0016_rag_freshness.sql's
+ * unrelated columns elsewhere, + 0017_hotel_partner_consent.sql) — PROPOSED,
+ * not yet applied. A local partner (restaurant, taxi, activity, ...) the
+ * hotel itself chose and validated — never invented, never a "fake
+ * accommodation" (independent of accommodation_types/room_photos/
+ * knowledge_sources — see features/rag/partners.ts). is_active AND
+ * consent_status === "accepted" BOTH gate whether the chatbot may ever
+ * recommend it (features/rag/partners.ts::loadActiveHotelPartners) —
+ * independent switches: the hotel's own on/off toggle, and the partner's
+ * own confirmation. priority (higher first) then name (A-Z) is the sole
+ * ordering rule — see rankPartnerCandidates.
+ */
+export interface HotelPartner {
+  id: string;
+  hotel_id: string;
+  name: string;
+  category: HotelPartnerCategory;
+  description: string | null;
+  address: string | null;
+  phone: string | null;
+  opening_hours: string | null;
+  website_url: string | null;
+  booking_url: string | null;
+  email: string | null;
+  consent_status: HotelPartnerConsentStatus;
+  consent_requested_at: string | null;
+  consent_responded_at: string | null;
+  is_active: boolean;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Row shape returned by the match_knowledge_chunks() RPC. */
 export interface MatchedChunk {
   chunk_id: string;
@@ -379,4 +474,19 @@ export interface MatchedChunk {
   source_title: string;
   content: string;
   similarity: number;
+  /** knowledge_sources.source_url / last_synced_at — see 0016_rag_freshness.sql. */
+  source_url: string | null;
+  last_synced_at: string | null;
+}
+
+/** Row shape returned by the match_knowledge_chunks_hybrid() RPC (0013_hybrid_retrieval.sql, extended by 0016_rag_freshness.sql). */
+export interface HybridMatchedChunk {
+  chunk_id: string;
+  source_id: string;
+  source_title: string;
+  content: string;
+  vector_score: number;
+  lexical_score: number;
+  source_url: string | null;
+  last_synced_at: string | null;
 }

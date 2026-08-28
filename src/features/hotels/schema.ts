@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { bookingActionModeSchema } from "./hostBookingTrigger";
 
 const LANGUAGE_OPTIONS = ["fr", "en", "es", "nl", "de", "it"] as const;
 
@@ -28,6 +29,30 @@ const hotelBookingLinksSchema = z.object({
   booking_url: httpUrlSchema.optional().or(z.literal("")),
   spa_booking_url: httpUrlSchema.optional().or(z.literal("")),
 });
+
+/**
+ * Hotel-info editing only (updateHotelInfoSchema) — not part of the
+ * creation wizard, which has no equivalent step yet. `host_booking_selector`
+ * is a single flat string on the form (V1 only implements the "click"
+ * strategy — see hostBookingTrigger.ts — so there's nothing else to
+ * configure); the server action (actions.ts) is the ONLY place that
+ * assembles it into the actual {strategy:"click", selector} shape,
+ * re-validated there through hostBookingTriggerSchema before ever being
+ * written to hotels.host_booking_trigger.
+ */
+const hotelBookingActionShape = z.object({
+  booking_action_mode: bookingActionModeSchema,
+  host_booking_selector: z.string().trim().max(200, "Sélecteur trop long (200 caractères maximum)."),
+});
+
+const hostBookingSelectorRequiredWhenHostWidget = {
+  check: (data: { booking_action_mode: string; host_booking_selector: string }) =>
+    data.booking_action_mode !== "host_widget" || data.host_booking_selector.length > 0,
+  issue: {
+    message: "Indiquez le sélecteur du bouton de réservation du site.",
+    path: ["host_booking_selector"] as (string | number)[],
+  },
+};
 
 export const hotelInfoSchema = z.object({
   name: z.string().trim().min(1, "Le nom est obligatoire."),
@@ -97,7 +122,11 @@ export const createHotelSchema = z
 
 export type CreateHotelInput = z.infer<typeof createHotelSchema>;
 
-export const updateHotelInfoSchema = hotelInfoSchema.merge(hotelIdentitySchema).merge(hotelBookingLinksSchema);
+export const updateHotelInfoSchema = hotelInfoSchema
+  .merge(hotelIdentitySchema)
+  .merge(hotelBookingLinksSchema)
+  .merge(hotelBookingActionShape)
+  .refine(hostBookingSelectorRequiredWhenHostWidget.check, hostBookingSelectorRequiredWhenHostWidget.issue);
 export type UpdateHotelInfoInput = z.infer<typeof updateHotelInfoSchema>;
 
 export { LANGUAGE_OPTIONS };

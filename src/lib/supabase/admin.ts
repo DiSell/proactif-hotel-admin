@@ -2,13 +2,16 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { supabaseUrl } from "./env";
 
 /**
- * Service-role client — bypasses RLS entirely. NOT used by any Server
- * Action in this milestone: every dashboard CRUD path uses the
- * session-bound client in ./server.ts so RLS stays the actual gate.
- *
- * Reserved for later, genuinely session-less server work (background jobs,
- * data migrations). Never import this from a Client Component or route
- * that renders in the browser.
+ * Service-role client — bypasses RLS entirely. Used only after an explicit,
+ * prior server-side authorization check, never as a substitute for one:
+ * the public widget routes (features/widget/publicHotel.ts) and
+ * /api/hotels/[id]/chat/route.ts (after requireHotelAccess()) both resolve
+ * "who is allowed to see what" themselves, in application code, before
+ * ever touching this client — RLS is not the gate on those paths, the
+ * authorization check that runs first is. Every ordinary dashboard CRUD
+ * path still uses the session-bound client in ./server.ts, where RLS
+ * remains the actual gate. Never import this from a Client Component or
+ * route that renders in the browser.
  */
 export function createAdminClient() {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;

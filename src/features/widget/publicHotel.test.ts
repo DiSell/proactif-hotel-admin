@@ -23,8 +23,11 @@ function makeHotel(overrides: Partial<Hotel> = {}): Hotel {
     default_language: "fr",
     booking_url: "https://booking.example.com/le1837",
     spa_booking_url: null,
+    booking_action_mode: "url",
+    host_booking_trigger: null,
     assistant_name: "Camille",
     assistant_enabled: true,
+    photo_management: "client",
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
@@ -154,18 +157,78 @@ describe("buildPublicWidgetConfig", () => {
       position: "bottom-right",
       icon: "chat",
       logoUrl: null,
+      bookingActionMode: "url",
+      hostBookingTrigger: null,
     });
   });
 
   it("[no internal leakage] never includes hotelId/booking_url/widget_key/status", () => {
     const config = buildPublicWidgetConfig(makeContext());
     expect(Object.keys(config).sort()).toEqual(
-      ["assistantName", "hotelName", "icon", "logoUrl", "position", "primaryColor", "secondaryColor", "welcomeMessage"].sort()
+      [
+        "assistantName",
+        "bookingActionMode",
+        "hostBookingTrigger",
+        "hotelName",
+        "icon",
+        "logoUrl",
+        "position",
+        "primaryColor",
+        "secondaryColor",
+        "welcomeMessage",
+      ].sort()
     );
     expect("hotelId" in config).toBe(false);
     expect("booking_url" in config).toBe(false);
     expect("widget_key" in config).toBe(false);
     expect("status" in config).toBe(false);
+  });
+
+  it("[host_widget mode, valid trigger] exposes bookingActionMode and the validated, closed-shape trigger", () => {
+    const config = buildPublicWidgetConfig(
+      makeContext({
+        hotel: makeHotel({ booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#resa-toggle-menu" } }),
+      })
+    );
+    expect(config.bookingActionMode).toBe("host_widget");
+    expect(config.hostBookingTrigger).toEqual({ strategy: "click", selector: "#resa-toggle-menu" });
+  });
+
+  it("[host_widget mode, malformed trigger] fails safe — hostBookingTrigger is null, never a raw/broken JSON blob leaked to the client", () => {
+    const config = buildPublicWidgetConfig(
+      makeContext({
+        hotel: makeHotel({ booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "javascript", code: "alert(1)" } }),
+      })
+    );
+    expect(config.bookingActionMode).toBe("host_widget");
+    expect(config.hostBookingTrigger).toBeNull();
+  });
+
+  it("[url mode] never exposes a stale host_booking_trigger even if one happens to still be stored", () => {
+    const config = buildPublicWidgetConfig(
+      makeContext({
+        hotel: makeHotel({ booking_action_mode: "url", booking_url: "https://booking.example.com", host_booking_trigger: { strategy: "click", selector: "#old-selector" } }),
+      })
+    );
+    expect(config.bookingActionMode).toBe("url");
+    expect(config.hostBookingTrigger).toBeNull();
+  });
+
+  it("[multi-tenant isolation] each hotel's own trigger is independent — hotel A's selector never appears for hotel B", () => {
+    const configA = buildPublicWidgetConfig(
+      makeContext({
+        hotelId: "hotel-a",
+        hotel: makeHotel({ id: "hotel-a", booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#a" } }),
+      })
+    );
+    const configB = buildPublicWidgetConfig(
+      makeContext({
+        hotelId: "hotel-b",
+        hotel: makeHotel({ id: "hotel-b", booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#b" } }),
+      })
+    );
+    expect(configA.hostBookingTrigger).toEqual({ strategy: "click", selector: "#a" });
+    expect(configB.hostBookingTrigger).toEqual({ strategy: "click", selector: "#b" });
   });
 
   it("[.strict() really throws] the schema buildPublicWidgetConfig uses rejects an object with an excess key, at runtime — not silently stripped", () => {

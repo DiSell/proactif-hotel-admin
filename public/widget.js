@@ -12,6 +12,22 @@
  * value here is the widget key from the host page's own <script> tag,
  * which is only ever used as a URL path segment (encodeURIComponent'd),
  * never as HTML or a script source.
+ *
+ * HOST-BOOKING BRIDGE — runs on the HOST page (unlike the chat iframe,
+ * which is Proactif's own origin), so this is the only place able to
+ * trigger the hotel's own booking module already embedded on its site.
+ * The bridge is a closed, namespaced postMessage contract with exactly two
+ * message shapes, nothing else:
+ *   iframe -> here : {type:"proactif:booking"}
+ *   here -> iframe  : {type:"proactif:booking-result", status:"triggered"|"unavailable"}
+ * No selector, URL, or JS ever travels through either message — the
+ * selector lives ONLY in this hotel's own trusted config, fetched
+ * independently from the public config endpoint below (never relayed
+ * through the iframe). This file never eval()s, never Function()-
+ * constructs, never sets innerHTML from any of this — the sole DOM
+ * operation is `document.querySelector(selector).click()`, where
+ * `selector` is a plain string used exactly as a CSS selector, never
+ * executed as code.
  */
 (function () {
   "use strict";
@@ -29,7 +45,27 @@
     return;
   }
 
-  var widgetUrl = origin + "/widget/" + encodeURIComponent(widgetKey);
+  // The host page's OWN origin — window.location.origin is always exactly
+  // an origin (scheme+host+port, no path/query/credentials), so it needs
+  // no further validation before being encoded into the iframe URL. The
+  // iframe (features/widget/hostOrigin.ts's parseHostOrigin) re-validates
+  // it anyway before ever using it as a postMessage targetOrigin — this
+  // script is not the trust boundary for that value, the iframe's own
+  // parsing is.
+  var hostOrigin = window.location.origin;
+  var widgetUrl = origin + "/widget/" + encodeURIComponent(widgetKey) + "?hostOrigin=" + encodeURIComponent(hostOrigin);
+
+  // Fetched once, eagerly, so it's ready (or already resolved) by the time
+  // a "proactif:booking" message actually arrives — widget.js retrieves
+  // this itself rather than trusting anything the iframe might relay,
+  // exactly so the postMessage payload never needs to carry configuration.
+  var configPromise = fetch(origin + "/api/widget/" + encodeURIComponent(widgetKey) + "/config")
+    .then(function (res) {
+      return res.ok ? res.json() : null;
+    })
+    .catch(function () {
+      return null;
+    });
 
   var isOpen = false;
   var iframe = null;
@@ -93,6 +129,62 @@
     bubble.setAttribute("aria-label", "Ouvrir le chat");
     isOpen = false;
   }
+
+  // Reply to the iframe with the exact, closed result vocabulary — no other
+  // status value ever exists. Uses `origin` (Proactif's own origin, already
+  // derived from this script's own src) as targetOrigin: the iframe only
+  // ever runs at that exact origin, so this is precise, never "*".
+  function postResult(status) {
+    if (!iframe) return;
+    iframe.contentWindow.postMessage({ type: "proactif:booking-result", status: status }, origin);
+  }
+
+  function triggerHostBooking() {
+    configPromise.then(function (config) {
+      if (!config || config.bookingActionMode !== "host_widget" || !config.hostBookingTrigger) {
+        postResult("unavailable");
+        return;
+      }
+      var trigger = config.hostBookingTrigger;
+      if (trigger.strategy !== "click" || typeof trigger.selector !== "string") {
+        postResult("unavailable");
+        return;
+      }
+
+      var el;
+      try {
+        // A malformed/legacy selector string must never throw past this
+        // point — document.querySelector raises a SyntaxError for an
+        // invalid selector, which must degrade to "unavailable", not an
+        // uncaught error on the host page.
+        el = document.querySelector(trigger.selector);
+      } catch {
+        el = null;
+      }
+
+      if (!el) {
+        // Element not found: do NOT close the chat panel, do NOT click
+        // anything — nothing on the host page is touched.
+        postResult("unavailable");
+        return;
+      }
+
+      // Only now, once we know there is something real to reveal, reduce
+      // the Proactif panel so the host page's own booking module isn't
+      // hidden underneath it.
+      closeWidget();
+      el.click();
+      postResult("triggered");
+    });
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!iframe || event.source !== iframe.contentWindow) return;
+    if (event.origin !== origin) return;
+    if (!event.data || typeof event.data !== "object") return;
+    if (event.data.type !== "proactif:booking") return;
+    triggerHostBooking();
+  });
 
   bubble.addEventListener("click", function () {
     if (isOpen) {

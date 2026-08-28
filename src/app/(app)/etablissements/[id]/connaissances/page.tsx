@@ -3,6 +3,7 @@ import { getHotel } from "@/features/hotels/queries";
 import { listKnowledgeSources } from "@/features/knowledge/queries";
 import { AddSourceMenu } from "@/features/knowledge/AddSourceMenu";
 import { SourcesTable } from "@/features/knowledge/SourcesTable";
+import { StalenessBanner } from "@/features/knowledge/StalenessBanner";
 
 export default async function ConnaissancesPage({ params }: PageProps<"/etablissements/[id]/connaissances">) {
   const { id } = await params;
@@ -20,6 +21,8 @@ export default async function ConnaissancesPage({ params }: PageProps<"/etabliss
         </div>
         <AddSourceMenu hotelId={hotel.id} websiteUrl={hotel.website ?? ""} />
       </div>
+
+      <StalenessBanner hotelId={hotel.id} websiteUrl={hotel.website ?? ""} sources={sources} />
 
       <SourcesTable hotelId={hotel.id} sources={sources} />
     </div>

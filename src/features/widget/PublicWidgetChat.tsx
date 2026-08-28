@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { RoomPhotoModal } from "@/features/assistant/RoomPhotoModal";
 import type { PublicWidgetConfig } from "./publicHotel";
 
@@ -14,10 +14,22 @@ interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
-interface ChatAction {
-  type: "booking";
-  label: string;
-  url: string;
+type ChatAction = { type: "booking"; label: string; url: string } | { type: "host_booking"; label: string };
+
+type PartnerAction = { type: "partner_booking"; label: string; url: string } | { type: "partner_website"; label: string; url: string };
+
+/** Mirrors features/rag/types.ts's PartnerRecommendation — see that type's own doc comment. */
+interface PartnerRecommendation {
+  id: string;
+  name: string;
+  category: string;
+  description: string | null;
+  address: string | null;
+  phone: string | null;
+  openingHours: string | null;
+  websiteUrl: string | null;
+  bookingUrl: string | null;
+  action: PartnerAction | null;
 }
 
 interface ChatMessage {
@@ -26,6 +38,7 @@ interface ChatMessage {
   answerStatus?: AnswerStatus;
   roomRecommendation?: RoomRecommendation | null;
   action?: ChatAction | null;
+  partnerRecommendations?: PartnerRecommendation[];
 }
 
 interface ChatApiResponse {
@@ -34,11 +47,42 @@ interface ChatApiResponse {
   answerStatus: AnswerStatus;
   roomRecommendation: RoomRecommendation | null;
   action: ChatAction | null;
+  partnerRecommendations: PartnerRecommendation[];
 }
 
 interface PublicWidgetChatProps {
   widgetKey: string;
   config: PublicWidgetConfig;
+  /**
+   * The validated host page origin (see features/widget/hostOrigin.ts),
+   * resolved server-side by page.tsx from the ?hostOrigin= query param
+   * public/widget.js appends when it creates this iframe. null when
+   * missing/invalid (e.g. this page opened directly, outside a real
+   * widget.js embed) — in that case the host-booking CTA degrades
+   * gracefully (see requestHostBooking) rather than ever falling back to
+   * a wildcard postMessage targetOrigin.
+   */
+  hostOrigin: string | null;
+}
+
+const HOST_BOOKING_UNAVAILABLE_MESSAGE = "Le module de réservation n'a pas pu être ouvert. Vous pouvez utiliser le bouton Réserver du site.";
+// Defensive only — see the effect below: guards against public/widget.js
+// never replying (e.g. a version predating this feature cached on the
+// host page), never a normal/expected wait.
+const HOST_BOOKING_REPLY_TIMEOUT_MS = 4000;
+
+/**
+ * The closed reply vocabulary from public/widget.js's postResult() — a
+ * pure, directly-testable shape check (unlike the event.source/event.origin
+ * checks in the effect below, which need a real MessageEvent). Anything
+ * else — wrong type, missing/foreign status, not an object — is not a
+ * valid reply and is ignored.
+ */
+export function isValidBookingResultMessage(data: unknown): data is { type: "proactif:booking-result"; status: "triggered" | "unavailable" } {
+  if (!data || typeof data !== "object") return false;
+  const value = data as Record<string, unknown>;
+  if (value.type !== "proactif:booking-result") return false;
+  return value.status === "triggered" || value.status === "unavailable";
 }
 
 /**
@@ -139,7 +183,7 @@ export function getOrCreateSessionToken(widgetKey: string): string {
  * presentational (no fetch, no auth), so pulling it in doesn't drag any
  * admin dependency along.
  */
-export function PublicWidgetChat({ widgetKey, config }: PublicWidgetChatProps) {
+export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidgetChatProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: config.welcomeMessage }]);
   const [input, setInput] = useState("");
   // Lazy initializer: runs once, on the client only (typeof window guard —
@@ -154,6 +198,56 @@ export function PublicWidgetChat({ widgetKey, config }: PublicWidgetChatProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+  // Tracks the one host-booking request in flight, if any, and which
+  // message's button triggered it — never a booking, never a reservation,
+  // just "did widget.js manage to open the site's existing module".
+  const [hostBookingState, setHostBookingState] = useState<{ messageIndex: number; status: "pending" | "unavailable" } | null>(null);
+
+  function requestHostBooking(messageIndex: number) {
+    if (hostBookingState?.status === "pending") return; // one in flight at a time
+    if (!hostOrigin) {
+      // No validated host origin (e.g. this page opened outside a real
+      // widget.js embed) — never fall back to "*"; just show the same
+      // graceful fallback immediately, without ever calling postMessage.
+      setHostBookingState({ messageIndex, status: "unavailable" });
+      return;
+    }
+    setHostBookingState({ messageIndex, status: "pending" });
+    window.parent.postMessage({ type: "proactif:booking" }, hostOrigin);
+  }
+
+  // Only listens while a request is actually pending — no listener sits
+  // around for the component's whole lifetime.
+  useEffect(() => {
+    if (!hostBookingState || hostBookingState.status !== "pending" || !hostOrigin) return;
+
+    function handleMessage(event: MessageEvent) {
+      if (event.source !== window.parent) return;
+      if (event.origin !== hostOrigin) return;
+      if (!isValidBookingResultMessage(event.data)) return;
+
+      if (event.data.status === "unavailable") {
+        setHostBookingState((current) => (current && current.status === "pending" ? { ...current, status: "unavailable" } : current));
+      } else {
+        // "triggered": widget.js already reduced/closed the whole Proactif
+        // panel on the host page — nothing left to reflect here.
+        setHostBookingState(null);
+      }
+    }
+
+    window.addEventListener("message", handleMessage);
+    // Defensive only (see HOST_BOOKING_REPLY_TIMEOUT_MS's own comment) —
+    // never leaves the visitor staring at a button that silently did
+    // nothing if a stale/older widget.js on the host page never replies.
+    const timeoutId = window.setTimeout(() => {
+      setHostBookingState((current) => (current && current.status === "pending" ? { ...current, status: "unavailable" } : current));
+    }, HOST_BOOKING_REPLY_TIMEOUT_MS);
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      window.clearTimeout(timeoutId);
+    };
+  }, [hostBookingState, hostOrigin]);
 
   function updateConversationId(id: string) {
     setConversationId(id);
@@ -202,6 +296,7 @@ export function PublicWidgetChat({ widgetKey, config }: PublicWidgetChatProps) {
           answerStatus: data.answerStatus,
           roomRecommendation: data.roomRecommendation,
           action: data.action,
+          partnerRecommendations: data.partnerRecommendations,
         },
       ]);
     } catch (err) {
@@ -280,8 +375,8 @@ export function PublicWidgetChat({ widgetKey, config }: PublicWidgetChatProps) {
                 Voir la chambre — {message.roomRecommendation.name}
               </button>
             )}
-            {/* Server guarantees roomRecommendation and action are never both present for the same turn — no dedup needed here (see answer.ts's buildBookingAction). */}
-            {message.role === "assistant" && message.action && (
+            {/* Server guarantees roomRecommendation and a "booking" action are never both present for the same turn (a duplicate link would result) — but "host_booking" CAN coexist with a roomRecommendation, precisely when the hotel is in host_widget mode and RoomPhotoModal has no button of its own to offer (see answer.ts's answerGrounded). */}
+            {message.role === "assistant" && message.action?.type === "booking" && (
               <a
                 href={message.action.url}
                 target="_blank"
@@ -300,6 +395,73 @@ export function PublicWidgetChat({ widgetKey, config }: PublicWidgetChatProps) {
               >
                 {message.action.label}
               </a>
+            )}
+            {message.role === "assistant" && message.action?.type === "host_booking" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-start" }}>
+                <button
+                  type="button"
+                  onClick={() => requestHostBooking(index)}
+                  style={{
+                    maxWidth: "82%",
+                    borderRadius: 9999,
+                    border: "none",
+                    background: config.primaryColor,
+                    color: config.secondaryColor,
+                    padding: "8px 16px",
+                    textAlign: "center",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: "pointer",
+                  }}
+                >
+                  {message.action.label}
+                </button>
+                {hostBookingState?.messageIndex === index && hostBookingState.status === "unavailable" && (
+                  <p style={{ margin: 0, maxWidth: "82%", fontSize: 11, lineHeight: 1.5, color: "#B23B3B" }}>{HOST_BOOKING_UNAVAILABLE_MESSAGE}</p>
+                )}
+              </div>
+            )}
+            {message.role === "assistant" && message.partnerRecommendations && message.partnerRecommendations.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: "82%" }}>
+                {message.partnerRecommendations.map((partner) => (
+                  <div key={partner.id} style={{ borderRadius: 8, border: "1px solid #E5E1D8", background: "#fff", padding: "8px 12px", fontSize: 12 }}>
+                    <p style={{ margin: 0, fontWeight: 500, color: "#1A1D1A" }}>{partner.name}</p>
+                    {partner.description && (
+                      <p style={{ margin: "2px 0 0", color: "#4A4E48" }}>{partner.description}</p>
+                    )}
+                    {partner.address && <p style={{ margin: "2px 0 0", color: "#6b6b6b" }}>{partner.address}</p>}
+                    {partner.phone && (
+                      <a
+                        href={`tel:${partner.phone.replace(/[^+\d]/g, "")}`}
+                        style={{ display: "block", margin: "2px 0 0", color: "#6b6b6b", textDecoration: "none" }}
+                      >
+                        {partner.phone}
+                      </a>
+                    )}
+                    {partner.openingHours && <p style={{ margin: "2px 0 0", color: "#6b6b6b" }}>{partner.openingHours}</p>}
+                    {partner.action && (
+                      <a
+                        href={partner.action.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "inline-block",
+                          marginTop: 6,
+                          borderRadius: 9999,
+                          background: config.primaryColor,
+                          color: config.secondaryColor,
+                          padding: "6px 14px",
+                          fontSize: 11,
+                          fontWeight: 500,
+                          textDecoration: "none",
+                        }}
+                      >
+                        {partner.action.label}
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         ))}

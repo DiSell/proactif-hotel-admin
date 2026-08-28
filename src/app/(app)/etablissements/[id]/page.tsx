@@ -1,12 +1,15 @@
 import { notFound } from "next/navigation";
 import { getHotel } from "@/features/hotels/queries";
 import { HotelInfoForm } from "@/features/hotels/HotelInfoForm";
+import { DeleteHotelButton } from "@/features/hotels/DeleteHotelButton";
+import { listHotelUsers } from "@/features/hotelUsers/queries";
+import { InviteClientForm } from "@/features/hotelUsers/InviteClientForm";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 
 export default async function HotelOverviewPage({ params }: PageProps<"/etablissements/[id]">) {
   const { id } = await params;
-  const hotel = await getHotel(id);
+  const [hotel, hotelUsers] = await Promise.all([getHotel(id), listHotelUsers(id)]);
   if (!hotel) notFound();
 
   return (
@@ -42,6 +45,23 @@ export default async function HotelOverviewPage({ params }: PageProps<"/etabliss
             </div>
           </Card>
         )}
+
+        <Card className="p-6">
+          <span className="text-2xs font-medium uppercase tracking-wide text-body/65">Accès client</span>
+          <div className="mt-3">
+            <InviteClientForm hotelId={hotel.id} existingUsers={hotelUsers} />
+          </div>
+        </Card>
+
+        <Card className="border-danger/30 p-6">
+          <span className="text-2xs font-medium uppercase tracking-wide text-danger/80">Zone dangereuse</span>
+          <p className="mt-2 text-xs text-body">
+            Supprime définitivement cet établissement et toutes ses données associées.
+          </p>
+          <div className="mt-3">
+            <DeleteHotelButton hotelId={hotel.id} hotelName={hotel.name} />
+          </div>
+        </Card>
       </div>
     </div>
   );

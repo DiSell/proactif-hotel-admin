@@ -60,6 +60,8 @@ export default async function HotelLayout({ children, params }: LayoutProps<"/et
           { href: `/etablissements/${hotel.id}`, label: "Vue générale" },
           { href: `/etablissements/${hotel.id}/assistant`, label: "Assistant" },
           { href: `/etablissements/${hotel.id}/connaissances`, label: "Connaissances" },
+          { href: `/etablissements/${hotel.id}/photos`, label: "Photos" },
+          { href: `/etablissements/${hotel.id}/partenaires`, label: "Partenaires" },
           { href: `/etablissements/${hotel.id}/widget`, label: "Widget" },
         ]}
       />

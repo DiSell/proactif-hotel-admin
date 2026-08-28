@@ -1,8 +1,15 @@
 import { z } from "zod";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { bookingActionModeSchema, hostBookingTriggerSchema, parseHostBookingTrigger } from "@/features/hotels/hostBookingTrigger";
 import type { Hotel, WidgetIcon, WidgetPosition, WidgetSettings } from "@/types/database";
 
-const DEFAULT_WELCOME_MESSAGE = "Bonjour ! Comment puis-je vous aider ?";
+// Exported so the client portal's chatbot-personalization form
+// (features/client/schema.ts) can offer the exact same value as its
+// "Réinitialiser la valeur par défaut" reset target — this is the one
+// value the real public widget actually falls back to (see
+// resolvePublicWidgetContext below), so it's the only correct default to
+// reuse rather than inventing a second one.
+export const DEFAULT_WELCOME_MESSAGE = "Bonjour ! Comment puis-je vous aider ?";
 const DEFAULT_POSITION: WidgetPosition = "bottom-right";
 const DEFAULT_ICON: WidgetIcon = "chat";
 
@@ -119,6 +126,14 @@ export const publicWidgetConfigSchema = z
     position: z.enum(["bottom-right", "bottom-left", "top-right", "top-left"]),
     icon: z.enum(["chat", "help", "message"]),
     logoUrl: z.string().nullable(),
+    // Consumed by public/widget.js (fetched independently from the host
+    // page, never relayed through the iframe's postMessage) to decide
+    // whether/how to trigger the hotel's own booking module. The selector
+    // inside hostBookingTrigger is not a secret, but it IS trusted,
+    // admin-configured data — never derived from, or influenced by,
+    // anything a visitor or the model supplies.
+    bookingActionMode: bookingActionModeSchema,
+    hostBookingTrigger: hostBookingTriggerSchema.nullable(),
   })
   .strict();
 
@@ -135,5 +150,12 @@ export function buildPublicWidgetConfig(context: PublicWidgetContext): PublicWid
     position: context.widgetDisplay.position,
     icon: context.widgetDisplay.icon,
     logoUrl: context.hotel.logo_url,
+    bookingActionMode: context.hotel.booking_action_mode,
+    // Only ever exposed for "host_widget" — irrelevant/stale DB content is
+    // never leaked when the hotel is actually in "url" mode. Re-validated
+    // here (not trusted as already-correct just because it's in the row)
+    // — a malformed/legacy value silently becomes null, same fail-safe
+    // discipline as buildBookingAction.
+    hostBookingTrigger: context.hotel.booking_action_mode === "host_widget" ? parseHostBookingTrigger(context.hotel.host_booking_trigger) : null,
   });
 }

@@ -41,6 +41,45 @@ export interface ExtractedPage {
 }
 
 /**
+ * Real heading tags (h1-h6) found anywhere in the noise-stripped tree,
+ * turned into their own markdown-style marker line (`"#".repeat(level) +
+ * " " + text`) IN PLACE, so that when the caller later reads
+ * `container.text()`, each heading survives as an isolated, identifiable
+ * paragraph at its exact original DOM position — never reordered, never
+ * fabricated. This is the ONLY structural signal added: no heading is
+ * invented, no section is guessed from CSS classes or visual layout, only
+ * tags the page's own author already marked as headings.
+ *
+ * Runs on $content (the noise-stripped tree used for `text`), never on the
+ * first-pass `$` used for title/meta/the plain `headings` array — that
+ * array must stay the original, un-prefixed heading strings (used for
+ * relevance scoring and capacity-guessing, not for structural chunking).
+ *
+ * Deliberately called AFTER extractImages(): that function also reads
+ * headings (nearAll/closest "h1, h2, h3" for `nearbyHeading`) and must see
+ * their original, unprefixed text — mutating headings first would leak a
+ * "## " prefix into that cosmetic suggestion.
+ *
+ * `\n\n` is added explicitly around the marker rather than relying on
+ * whatever incidental whitespace the source HTML happens to have between
+ * tags — minified HTML (no inter-tag whitespace at all) would otherwise
+ * fail to isolate the heading as its own paragraph once collapseWhitespace
+ * runs. An empty heading (no text at all) is removed outright rather than
+ * emitted as a bare "#" marker with nothing to head.
+ */
+function markHeadingsForStructuredText($content: cheerio.CheerioAPI): void {
+  $content("h1, h2, h3, h4, h5, h6").each((_, el) => {
+    const level = Number(el.tagName.slice(1));
+    const headingText = $content(el).text().replace(/\s+/g, " ").trim();
+    if (!headingText) {
+      $content(el).remove();
+      return;
+    }
+    $content(el).text(`\n\n${"#".repeat(level)} ${headingText}\n\n`);
+  });
+}
+
+/**
  * Elements stripped before reading the "main content" text — navigation,
  * chrome, and technical noise that document.body.innerText would otherwise
  * include verbatim. Not perfect for every site generator, but a real
@@ -187,13 +226,18 @@ export function extractPage(html: string, fetchedUrl: string, knownLanguages: st
   const $content = cheerio.load(html);
   $content(NOISE_SELECTORS).remove();
   const container = $content("main").length ? $content("main") : $content("article").length ? $content("article") : $content("body");
+
+  // Images and capacity are read from the same noise-stripped $content tree
+  // used for `text` — same reasoning: skip repeated nav/footer chrome.
+  // Must run BEFORE markHeadingsForStructuredText (see that function's own
+  // comment) so `nearbyHeading` still sees each heading's real text.
+  const images = extractImages($content, fetchedUrl);
+
+  markHeadingsForStructuredText($content);
   const text = collapseWhitespace(container.text());
 
   const likelyJsRendered = text.length < MIN_CONTENT_CHARS && scriptCount > 3;
 
-  // Images and capacity are read from the same noise-stripped $content tree
-  // used for `text` — same reasoning: skip repeated nav/footer chrome.
-  const images = extractImages($content, fetchedUrl);
   const guessedCapacity = guessCapacity(text, headings);
 
   return { canonicalUrl, title, metaDescription, headings, text, detectedLanguage, likelyJsRendered, images, guessedCapacity };

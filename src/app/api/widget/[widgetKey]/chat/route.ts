@@ -224,6 +224,7 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         answerStatus: result.answerStatus,
         roomRecommendation: result.roomRecommendation,
         action: result.action,
+        partnerRecommendations: result.partnerRecommendations,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

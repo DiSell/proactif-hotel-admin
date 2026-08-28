@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hôtel Le 1837 — site de démonstration (test embed widget)</title>
+<style>
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #1a1d1a;
+    background: #faf9f6;
+  }
+  header {
+    background: #1a1d1a;
+    color: #fff;
+    padding: 24px 32px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: 0.02em;
+  }
+  nav {
+    margin-top: 8px;
+    font-size: 14px;
+    opacity: 0.8;
+  }
+  nav span {
+    margin-right: 16px;
+  }
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 32px 120px;
+  }
+  section {
+    margin-bottom: 40px;
+  }
+  h2 {
+    font-size: 20px;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 8px;
+  }
+  .block {
+    background: #fff;
+    border: 1px solid #e5e2da;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .rooms {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+  }
+  footer {
+    padding: 24px 32px;
+    font-size: 13px;
+    color: #777;
+    border-top: 1px solid #e5e2da;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>Hôtel Le 1837</h1>
+    <nav>
+      <span>Chambres</span>
+      <span>Restaurant</span>
+      <span>Spa</span>
+      <span>Contact</span>
+    </nav>
+  </header>
+
+  <main>
+    <section>
+      <h2>Bienvenue</h2>
+      <div class="block">
+        <p>
+          Au cœur de la ville, l'Hôtel Le 1837 propose un séjour élégant entre
+          confort contemporain et charme d'époque. Cette page sert uniquement
+          à vérifier le rendu réel du widget public Proactif intégré via
+          <code>widget.js</code>, exactement comme il apparaîtrait sur le
+          vrai site de l'établissement.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Nos hébergements</h2>
+      <div class="rooms">
+        <div class="block">
+          <strong>Chambre Classique</strong>
+          <p>Idéale pour un séjour en solo ou en couple.</p>
+        </div>
+        <div class="block">
+          <strong>Suite Junior</strong>
+          <p>Espace supplémentaire, parfait pour une famille de 3.</p>
+        </div>
+        <div class="block">
+          <strong>Suite Prestige</strong>
+          <p>Notre plus bel hébergement, vue dégagée.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Services</h2>
+      <div class="block">
+        <p>
+          Restaurant gastronomique, spa, salle de sport, conciergerie 24h/24.
+          Un long paragraphe de remplissage supplémentaire pour vérifier que
+          la bulle du widget reste bien visible et cliquable même sur une
+          page avec beaucoup de contenu défilant en dessous d'elle, et que le
+          panneau de chat s'ouvre par-dessus ce contenu sans le décaler.
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Réservation (faux module — simule le site réel du 1837)</h2>
+      <div class="block">
+        <p>
+          Ce bouton et ce panneau simulent le déclencheur réel du site
+          (<code>#resa-toggle-menu</code>, module "My Groom Service") pour
+          tester localement le pont host-booking : clic sur "Réserver" dans
+          le chat Proactif → <code>postMessage</code> → <code>widget.js</code>
+          → <code>document.querySelector("#resa-toggle-menu")</code> →
+          <code>click()</code> → ce panneau apparaît.
+        </p>
+        <button id="resa-toggle-menu" type="button">Réserver sur le site</button>
+        <div id="fake-booking-panel" hidden>
+          <h3>Module de réservation ouvert</h3>
+          <p>Test local uniquement — aucune réservation réelle.</p>
+          <p><strong>TEST OK : le widget Proactif a déclenché le bouton de réservation du site.</strong></p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Page de test locale — Proactif System. Non destinée à un usage réel.
+  </footer>
+
+  <script
+    src="/widget.js"
+    data-key="ps_live_lKq5TpF5OMBc99Sah7WTTKax">
+  </script>
+
+  <!--
+    Local-page-only simulation of the 1837's real site behavior (clicking
+    #resa-toggle-menu reveals its booking panel — see the host-booking audit
+    for the real site's confirmed mechanism). This script does NOT talk to
+    widget.js, Supabase, or the network in any way — it only reacts to a
+    real click landing on #resa-toggle-menu, exactly like the real site's
+    own JS would, so widget.js's real `el.click()` call can be observed to
+    actually do something here.
+  -->
+  <script>
+    document.getElementById("resa-toggle-menu").addEventListener("click", function () {
+      document.getElementById("fake-booking-panel").hidden = false;
+    });
+  </script>
+</body>
+</html>

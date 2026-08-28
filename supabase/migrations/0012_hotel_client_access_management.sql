@@ -1,0 +1,32 @@
+-- =========================================================================
+-- Proactif System — hotel client portal: superadmin-side access management.
+--
+-- Additive only, on top of 0011_hotel_client_portal.sql. That migration's
+-- own comments explicitly anticipated this: "a future admin-side write
+-- feature — e.g. 'revoke a client's access' — needs only a GRANT added
+-- here later, no new policy" and "A future 'manage client access' admin
+-- feature adds INSERT/UPDATE/DELETE here explicitly, when it actually
+-- exists, not ahead of it." It now exists:
+-- features/hotelUsers/actions.ts's revokeHotelClientAccess and
+-- deleteHotelClient.
+--
+-- Two distinct operations, two different amounts of privilege needed:
+--
+--   1. Revoke access (keep the account, unlink the hotel) — a plain
+--      DELETE on public.hotel_users through the service_role client, same
+--      as inviteHotelClient's own writes. This is the ONLY new grant this
+--      migration needs: service_role already has SELECT/INSERT on
+--      hotel_users from 0011; UPDATE is still never granted (a link is
+--      created, deleted, or left alone — never modified in place).
+--
+--   2. Delete a client entirely — goes through
+--      admin.auth.admin.deleteUser(userId), the Supabase Auth Admin API,
+--      NOT a Data API write on any public table. That API operates on
+--      auth.users directly and needs no grant here: profiles.id and
+--      hotel_users.user_id both reference auth.users(id) ON DELETE CASCADE
+--      (0001_init.sql, 0011_hotel_client_portal.sql), so deleting the
+--      auth.users row cascades to both automatically, at the database
+--      level, regardless of what public-schema grants service_role holds.
+-- =========================================================================
+
+grant delete on public.hotel_users to service_role;

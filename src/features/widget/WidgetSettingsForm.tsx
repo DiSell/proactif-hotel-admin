@@ -9,6 +9,7 @@ import { CodeBlock } from "@/components/ui/CodeBlock";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { useToast } from "@/components/ui/Toast";
 import { saveWidgetSettings } from "./actions";
+import { buildWidgetSnippet } from "./embedSnippet";
 import { WidgetPreview } from "./WidgetPreview";
 import type { Hotel, WidgetSettings, WidgetPosition, WidgetIcon } from "@/types/database";
 
@@ -29,7 +30,7 @@ export function WidgetSettingsForm({ hotel, settings }: WidgetSettingsFormProps)
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const snippet = `<script\n  src="https://chat.proactifsystem.fr/widget.js"\n  data-key="${hotel.widget_key}">\n</script>`;
+  const snippet = buildWidgetSnippet(hotel.widget_key);
 
   function handleSubmit() {
     startTransition(async () => {

@@ -42,8 +42,11 @@ function makeWidgetContext(): PublicWidgetContext {
       default_language: "fr",
       booking_url: "https://booking.example.com",
       spa_booking_url: null,
+      booking_action_mode: "url",
+      host_booking_trigger: null,
       assistant_name: "Camille",
       assistant_enabled: true,
+      photo_management: "client",
       status: "active",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",
@@ -53,7 +56,15 @@ function makeWidgetContext(): PublicWidgetContext {
 }
 
 function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): AnswerQuestionResult {
-  return { reply: "Voici la réponse.", sources: [], answerStatus: "answered", roomRecommendation: null, action: null, ...overrides };
+  return {
+    reply: "Voici la réponse.",
+    sources: [],
+    answerStatus: "answered",
+    roomRecommendation: null,
+    action: null,
+    partnerRecommendations: [],
+    ...overrides,
+  };
 }
 
 /** Fake Supabase client covering exactly the query shapes route.ts uses — conversations (select/insert) and messages (count select). */
@@ -337,7 +348,7 @@ describe("POST /api/widget/[widgetKey]/chat — conversation possession (session
 });
 
 describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
-  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action — never sources", async () => {
+  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations — never sources", async () => {
     const deps = makeDeps({
       answerQuestion: vi.fn(async () =>
         makeAnswerResult({ action: { type: "booking", label: "Réserver", url: "https://booking.example.com" } })
@@ -347,7 +358,9 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
     const response = await handler(makeRequest({ conversationId: null, message: "hello", sessionToken: VALID_TOKEN }), context);
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(Object.keys(body).sort()).toEqual(["action", "answerStatus", "conversationId", "reply", "roomRecommendation"].sort());
+    expect(Object.keys(body).sort()).toEqual(
+      ["action", "answerStatus", "conversationId", "partnerRecommendations", "reply", "roomRecommendation"].sort()
+    );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });
   });
 

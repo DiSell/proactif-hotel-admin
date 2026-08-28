@@ -350,6 +350,7 @@ export async function saveAccommodationTypes(hotelId: string, input: SaveAccommo
         content_hash: fetched.contentHash,
         alt_text: photo.altText,
         position,
+        is_selected: photo.isSelected,
       });
       if (photoInsertError) {
         console.error("saveAccommodationTypes: room_photos insert failed", { message: photoInsertError.message });

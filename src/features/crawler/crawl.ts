@@ -24,6 +24,8 @@ export interface CrawlPage {
    */
   canonicalUrl: string | null;
   title: string;
+  /** h1/h2 headings, best-effort — see extract.ts. Empty for terminal/non-useful pages. Used (alongside url/title) by features/crawler/accommodationPage.ts's isAccommodationPage — not persisted anywhere, never reaches knowledge_sources. */
+  headings: string[];
   language: string | null;
   contentLength: number;
   status: CrawlPageStatus;
@@ -85,6 +87,7 @@ function terminalPage(requestedUrl: string, finalUrl: string, status: CrawlPageS
     finalUrl,
     canonicalUrl: null,
     title: requestedUrl,
+    headings: [],
     language: null,
     contentLength: 0,
     status,
@@ -123,6 +126,7 @@ async function processUrl(item: QueueItem, options: CrawlOptions, robotsAllowed:
       finalUrl,
       canonicalUrl: extracted.canonicalUrl,
       title: extracted.title,
+      headings: [],
       language: extracted.detectedLanguage,
       contentLength: extracted.text.length,
       status: "insufficient_content",
@@ -147,6 +151,7 @@ async function processUrl(item: QueueItem, options: CrawlOptions, robotsAllowed:
     finalUrl,
     canonicalUrl: extracted.canonicalUrl,
     title: extracted.title,
+    headings: extracted.headings,
     language: extracted.detectedLanguage,
     contentLength: extracted.text.length,
     status,

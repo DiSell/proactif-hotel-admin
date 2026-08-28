@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { embedText } from "./embeddings";
-import type { MatchedChunk } from "@/types/database";
+import type { HybridMatchedChunk, MatchedChunk } from "@/types/database";
 import type { RetrievedChunk } from "./types";
 
 /**
@@ -91,6 +91,8 @@ export async function retrieveKnowledge({
     sourceTitle: row.source_title,
     content: row.content,
     similarity: row.similarity,
+    sourceUrl: row.source_url,
+    lastSyncedAt: row.last_synced_at,
   }));
 }
 
@@ -100,4 +102,121 @@ export function selectRelevantChunks(
   threshold: number = DEFAULT_SIMILARITY_THRESHOLD
 ): RetrievedChunk[] {
   return chunks.filter((chunk) => chunk.similarity >= threshold);
+}
+
+/**
+ * Rule 2's vector floor ("reasonable", not "confirmed relevant on its
+ * own") and lexical bar ("very strong coverage"), from the hybrid
+ * retrieval audit. NOT calibrated the way DEFAULT_SIMILARITY_THRESHOLD
+ * was (see that constant's own 32-query benchmark comment) — these are
+ * PROVISIONAL values carried over from that audit's illustrative
+ * benchmark for a first working implementation. Revisit with a real
+ * calibration pass (same methodology: sweep candidate values against a
+ * labeled benchmark, measure precision/recall) before trusting them as
+ * anything more than "good enough to ship and keep measuring". Exported
+ * so selectHybridRelevantChunks's defaults are never a second hardcoded
+ * number a future change could silently diverge from.
+ */
+export const HYBRID_VECTOR_FLOOR = 0.15;
+export const HYBRID_LEXICAL_HIGH = 0.6;
+
+export type RetrieveKnowledgeHybridParams = RetrieveKnowledgeParams;
+
+/**
+ * Vector + lexical retrieval via match_knowledge_chunks_hybrid()
+ * (0013_hybrid_retrieval.sql) — the union of the vector-similarity top-k
+ * AND the lexical-coverage top-k for this hotel, each row carrying BOTH
+ * scores (never one defaulted to 0 for a candidate that only entered via
+ * the other channel — see the RPC's own comment). Does not itself decide
+ * accept/fallback; pass the result to selectHybridRelevantChunks for that.
+ *
+ * match_knowledge_chunks() (above) is untouched and still fully usable —
+ * this is an additional function, not a replacement of it at the RPC
+ * level. answerQuestion (answer.ts) is what actually switches which one
+ * it calls.
+ */
+export async function retrieveKnowledgeHybrid({
+  hotelId,
+  query,
+  limit = DEFAULT_MATCH_COUNT,
+  supabase: injectedSupabase,
+}: RetrieveKnowledgeHybridParams): Promise<RetrievedChunk[]> {
+  if (!hotelId) {
+    throw new Error("retrieveKnowledgeHybrid: hotelId is required — no retrieval may run without it.");
+  }
+
+  const queryEmbedding = await embedText(query);
+  const supabase = injectedSupabase ?? (await createClient());
+
+  const { data, error } = await supabase.rpc("match_knowledge_chunks_hybrid", {
+    p_hotel_id: hotelId,
+    p_query_embedding: queryEmbedding,
+    p_query_text: query,
+    p_match_count: limit,
+  });
+
+  if (error) {
+    throw new Error(`retrieveKnowledgeHybrid: match_knowledge_chunks_hybrid failed: ${error.message}`);
+  }
+
+  return ((data ?? []) as HybridMatchedChunk[]).map((row) => ({
+    chunkId: row.chunk_id,
+    sourceId: row.source_id,
+    sourceTitle: row.source_title,
+    content: row.content,
+    similarity: row.vector_score,
+    lexicalScore: row.lexical_score,
+    sourceUrl: row.source_url,
+    lastSyncedAt: row.last_synced_at,
+  }));
+}
+
+export interface SelectHybridRelevantChunksOptions {
+  /** Rule 1 — identical meaning and default to selectRelevantChunks' own threshold; the vector-alone path is untouched by this rule. */
+  vectorThreshold?: number;
+  /** Rule 2's floor — see HYBRID_VECTOR_FLOOR's own doc comment (provisional). */
+  vectorFloor?: number;
+  /** Rule 2's bar — see HYBRID_LEXICAL_HIGH's own doc comment (provisional). */
+  lexicalHigh?: number;
+}
+
+/**
+ * The three-rule decision from the hybrid retrieval audit, applied as a
+ * pure filter — same shape/contract as selectRelevantChunks (an array in,
+ * the relevant subset out), so every existing downstream consumer
+ * (buildKnowledgeReferenceBlock, the message_sources insert, the
+ * groundingMode check) needs no change beyond which selector answer.ts
+ * calls.
+ *
+ *   Rule 1: vector_score >= vectorThreshold -> accepted.
+ *     Exactly selectRelevantChunks' own behavior — a chunk that already
+ *     clears the vector bar alone is untouched by anything lexical.
+ *   Rule 2: vector_score >= vectorFloor AND lexical_score >= lexicalHigh
+ *     -> accepted. A chunk vector search ranked only "reasonable" but
+ *     whose lexical coverage is very strong (a real word-for-word match)
+ *     is recovered — this is the entire point of the hybrid path.
+ *   Rule 3 (implicit else): excluded — identical fallback behavior to
+ *     today for anything neither rule accepts.
+ *
+ * Deliberately NOT a weighted average of the two scores — see the audit's
+ * own reasoning: an average could let a middling result on both scores
+ * pass by accident, which these explicit either/or rules cannot.
+ *
+ * A chunk with lexicalScore === undefined (retrieved via the legacy path,
+ * see RetrievedChunk's own doc comment) is treated as lexicalScore 0 for
+ * rule 2 — it can still be accepted by rule 1, never by rule 2 alone.
+ */
+export function selectHybridRelevantChunks(
+  chunks: RetrievedChunk[],
+  options: SelectHybridRelevantChunksOptions = {}
+): RetrievedChunk[] {
+  const vectorThreshold = options.vectorThreshold ?? DEFAULT_SIMILARITY_THRESHOLD;
+  const vectorFloor = options.vectorFloor ?? HYBRID_VECTOR_FLOOR;
+  const lexicalHigh = options.lexicalHigh ?? HYBRID_LEXICAL_HIGH;
+
+  return chunks.filter((chunk) => {
+    if (chunk.similarity >= vectorThreshold) return true; // Rule 1
+    const lexicalScore = chunk.lexicalScore ?? 0;
+    return chunk.similarity >= vectorFloor && lexicalScore >= lexicalHigh; // Rule 2
+  });
 }

@@ -4,10 +4,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
-import { retrieveKnowledge, selectRelevantChunks, DEFAULT_SIMILARITY_THRESHOLD } from "./retrieve";
+import { retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import { extractPartySize, type PartySize } from "./partySize";
 import { filterAndRankAccommodations, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
+import { bookingCtaKind } from "./bookingCta";
+import {
+  ALL_PARTNERS_LIMIT,
+  DEFAULT_PARTNER_LIMIT,
+  detectRelevantPartnerCategory,
+  isPartnerIntent,
+  loadActiveHotelPartners,
+  rankPartnerCandidates,
+  toPartnerRecommendation,
+  wantsAllPartners,
+} from "./partners";
 import { shouldResolveStayContext, isAvailabilityRequest } from "../availability/gates";
 import { resolveStayRequestFromHistory } from "../availability/extractStayRequest";
 import { validateStayRequestState } from "../availability/stayRequest";
@@ -15,8 +26,8 @@ import { checkAvailability } from "../availability/checkAvailability";
 import { applyAvailabilityToCandidates } from "../availability/applyAvailabilityToCandidates";
 import { NoopAvailabilityProviderResolver } from "../availability/resolver";
 import type { AvailabilityCheckState, StayRequestState } from "../availability/types";
-import type { AnswerQuestionResult, ChatAction, GroundingMode, RetrievedChunk, RoomRecommendation } from "./types";
-import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
+import type { AnswerQuestionResult, ChatAction, GroundingMode, PartnerRecommendation, RetrievedChunk, RoomRecommendation } from "./types";
+import type { AccommodationType, ChatbotSettings, Hotel, HotelPartner } from "@/types/database";
 
 /**
  * Phase A: no hotel-configured timezone field exists yet (see
@@ -67,16 +78,25 @@ export function isBookingIntent(message: string): boolean {
 }
 
 /**
- * The only place a ChatAction is ever constructed. `bookingUrl` is null
- * either because the hotel hasn't configured one, or because the caller
- * deliberately passed null to suppress the generic CTA (see
- * answerGrounded's call site: a turn that already produced a
- * RoomRecommendation with its own "Réserver" button never also gets this
- * generic one for the same link).
+ * The only place a ChatAction is ever constructed. Delegates the "which
+ * kind" decision entirely to bookingCtaKind (features/rag/bookingCta.ts) —
+ * the exact same decision prompt.ts's buildBookingIntentGuidance makes, so
+ * the two can never disagree about what the hotel is actually configured
+ * for. Never called with a "suppress" sentinel: a caller that wants to
+ * suppress this action entirely (see answerGrounded's call site, which
+ * skips calling this function outright when a RoomRecommendation already
+ * covers the "url" case) does so by not calling it, not by falsifying the
+ * hotel it passes in.
  */
-export function buildBookingAction(bookingIntentDetected: boolean, bookingUrl: string | null): ChatAction | null {
-  if (!bookingIntentDetected || !bookingUrl) return null;
-  return { type: "booking", label: "Réserver", url: bookingUrl };
+export function buildBookingAction(
+  bookingIntentDetected: boolean,
+  hotel: Pick<Hotel, "booking_action_mode" | "booking_url" | "host_booking_trigger">
+): ChatAction | null {
+  if (!bookingIntentDetected) return null;
+  const kind = bookingCtaKind(hotel);
+  if (kind === "url") return { type: "booking", label: "Réserver", url: hotel.booking_url as string };
+  if (kind === "host_widget") return { type: "host_booking", label: "Réserver" };
+  return null;
 }
 
 export interface AnswerQuestionParams {
@@ -111,6 +131,8 @@ export interface AnswerQuestionParams {
 const noContextReplySchema = z.object({
   reply: z.string(),
   answerStatus: z.enum(["answered", "fallback", "handoff"]),
+  /** Partner intent is orthogonal to groundingMode (see isPartnerIntent) — a no-context turn can still recommend a partner. Same "unverified until matched" discipline as the grounded schema's field. */
+  recommendedPartnerIds: z.array(z.string()).nullable(),
 });
 
 /**
@@ -123,6 +145,8 @@ const noContextReplySchema = z.object({
 const groundedReplySchema = z.object({
   reply: z.string(),
   recommendedAccommodationTypeId: z.string().nullable(),
+  /** Same "unverified until matched" discipline as recommendedAccommodationTypeId — see buildPartnerRecommendations below. */
+  recommendedPartnerIds: z.array(z.string()).nullable(),
 });
 
 /**
@@ -177,8 +201,8 @@ export async function answerQuestion({
 
   let relevantChunks: RetrievedChunk[];
   try {
-    const chunks = await retrieveKnowledge({ hotelId, query: message, limit: RETRIEVAL_LIMIT, supabase });
-    relevantChunks = selectRelevantChunks(chunks, DEFAULT_SIMILARITY_THRESHOLD);
+    const chunks = await retrieveKnowledgeHybrid({ hotelId, query: message, limit: RETRIEVAL_LIMIT, supabase });
+    relevantChunks = selectHybridRelevantChunks(chunks);
   } catch (err) {
     console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -251,6 +275,22 @@ export async function answerQuestion({
   // buildBookingAction) in both branches below.
   const bookingIntentDetected = isBookingIntent(message);
 
+  // Also orthogonal to groundingMode. Loading + ranking only runs when
+  // intent was actually detected — no reason to query hotel_partners on
+  // every single turn, most of which have nothing to do with a local
+  // partner. The cap (DEFAULT_PARTNER_LIMIT, or ALL_PARTNERS_LIMIT on an
+  // explicit "tous vos ..." request) is applied HERE, before the model ever
+  // sees a candidate — see partners.ts's own doc comment on why that's
+  // where "max 3 by default" is actually enforced, not left to the model.
+  const partnerIntentDetected = isPartnerIntent(message);
+  let partnerCandidates: HotelPartner[] = [];
+  if (partnerIntentDetected) {
+    const allPartners = await loadActiveHotelPartners(supabase, hotelId);
+    const category = detectRelevantPartnerCategory(message);
+    const limit = wantsAllPartners(message) ? ALL_PARTNERS_LIMIT : DEFAULT_PARTNER_LIMIT;
+    partnerCandidates = rankPartnerCandidates(allPartners, { category, limit });
+  }
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -267,6 +307,8 @@ export async function answerQuestion({
       accommodationTypesById,
       availabilityCheckState,
       bookingIntentDetected,
+      partnerIntentDetected,
+      partnerCandidates,
     });
   }
 
@@ -281,7 +323,34 @@ export async function answerQuestion({
     startedAt,
     availabilityCheckState,
     bookingIntentDetected,
+    partnerIntentDetected,
+    partnerCandidates,
   });
+}
+
+/**
+ * The single point where raw model-provided partner ids become validated
+ * PartnerRecommendations, or don't — mirrors buildRoomRecommendation's
+ * discipline exactly. Requires each id to be present in partnerCandidates —
+ * the exact, already-filtered-and-capped list offered THIS turn — never
+ * merely "some hotel_partners row for this hotel_id". Since
+ * partnerCandidates was already capped server-side (see answerQuestion),
+ * the result can never exceed that cap either: the "max 3" rule is
+ * structural, not just a prompt instruction the model might ignore.
+ */
+function buildPartnerRecommendations(recommendedPartnerIds: string[] | null, partnerCandidates: HotelPartner[]): PartnerRecommendation[] {
+  if (!recommendedPartnerIds || recommendedPartnerIds.length === 0) return [];
+  const byId = new Map(partnerCandidates.map((partner) => [partner.id, partner]));
+  const seen = new Set<string>();
+  const result: PartnerRecommendation[] = [];
+  for (const id of recommendedPartnerIds) {
+    if (seen.has(id)) continue; // a model returning the same id twice must never produce a duplicate recommendation
+    const partner = byId.get(id);
+    if (!partner) continue; // unknown/stale/foreign id — silently dropped, never trusted
+    seen.add(id);
+    result.push(toPartnerRecommendation(partner));
+  }
+  return result;
 }
 
 type HistoryInputItem = { role: "user" | "assistant"; content: string };
@@ -364,6 +433,8 @@ async function answerGrounded(
     accommodationTypesById: Map<string, AccommodationType>;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    partnerIntentDetected: boolean;
+    partnerCandidates: HotelPartner[];
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -381,6 +452,8 @@ async function answerGrounded(
     accommodationTypesById,
     availabilityCheckState,
     bookingIntentDetected,
+    partnerIntentDetected,
+    partnerCandidates,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -391,6 +464,8 @@ async function answerGrounded(
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    partnerIntentDetected,
+    partnerCandidates,
   });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
@@ -401,6 +476,7 @@ async function answerGrounded(
 
   let reply: string;
   let recommendedAccommodationTypeId: string | null;
+  let recommendedPartnerIds: string[] | null;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
 
@@ -417,6 +493,7 @@ async function answerGrounded(
     }
     reply = response.output_parsed.reply;
     recommendedAccommodationTypeId = response.output_parsed.recommendedAccommodationTypeId;
+    recommendedPartnerIds = response.output_parsed.recommendedPartnerIds;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
   } catch (err) {
@@ -459,15 +536,20 @@ async function answerGrounded(
     bookingUrl: hotel.booking_url,
   });
 
-  // A RoomRecommendation with its own "Réserver" button already covers the
-  // booking intent for this turn — never a second, generic CTA pointing at
-  // the exact same URL. Passing null here (instead of skipping
-  // buildBookingAction outright) keeps the "no booking_url configured"
-  // and "already covered by roomRecommendation" cases going through the
-  // same single code path.
-  const action = buildBookingAction(bookingIntentDetected, roomRecommendation ? null : hotel.booking_url);
+  // A RoomRecommendation's own "Réserver" button already covers the
+  // booking intent for this turn ONLY in the "url" case — RoomPhotoModal
+  // shows that button exclusively when bookingUrl is truthy (see
+  // RoomPhotoModal.tsx), which only ever happens for booking_action_mode =
+  // "url". In "host_widget" mode a RoomRecommendation never renders a
+  // button of its own, so the generic host_booking CTA must still be
+  // offered — otherwise a visitor shown a room recommendation would have
+  // no way to act on it at all.
+  const hasDuplicateBookingLink = Boolean(roomRecommendation) && bookingCtaKind(hotel) === "url";
+  const action = hasDuplicateBookingLink ? null : buildBookingAction(bookingIntentDetected, hotel);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action };
+  const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
+
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations };
 }
 
 /**
@@ -492,16 +574,39 @@ async function answerNoContext(
     startedAt: number;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    partnerIntentDetected: boolean;
+    partnerCandidates: HotelPartner[];
   }
 ): Promise<AnswerQuestionResult> {
-  const { hotelId, conversationId, message, hotel, settings, model, historyInput, startedAt, availabilityCheckState, bookingIntentDetected } =
-    params;
+  const {
+    hotelId,
+    conversationId,
+    message,
+    hotel,
+    settings,
+    model,
+    historyInput,
+    startedAt,
+    availabilityCheckState,
+    bookingIntentDetected,
+    partnerIntentDetected,
+    partnerCandidates,
+  } = params;
 
-  const instructions = buildHotelInstructions({ hotel, settings, groundingMode: "no_context", availabilityCheckState, bookingIntentDetected });
+  const instructions = buildHotelInstructions({
+    hotel,
+    settings,
+    groundingMode: "no_context",
+    availabilityCheckState,
+    bookingIntentDetected,
+    partnerIntentDetected,
+    partnerCandidates,
+  });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
   let reply: string;
   let answerStatus: "answered" | "fallback" | "handoff";
+  let recommendedPartnerIds: string[] | null;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
 
@@ -518,6 +623,7 @@ async function answerNoContext(
     }
     reply = response.output_parsed.reply;
     answerStatus = response.output_parsed.answerStatus;
+    recommendedPartnerIds = response.output_parsed.recommendedPartnerIds;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
   } catch (err) {
@@ -539,9 +645,11 @@ async function answerNoContext(
   });
 
   // no_context never produces a RoomRecommendation (see answer.groundingMode.test.ts) — nothing to deduplicate against, unlike answerGrounded.
-  const action = buildBookingAction(bookingIntentDetected, hotel.booking_url);
+  const action = buildBookingAction(bookingIntentDetected, hotel);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action };
+  const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
+
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -602,5 +710,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [] };
 }

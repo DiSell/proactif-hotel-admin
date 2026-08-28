@@ -1,8 +1,13 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import { supabasePublishableKey, supabaseUrl } from "./env";
+import { CLIENT_PORTAL_COOKIE_NAME, isClientScopedPath } from "./cookieScope";
 
-const PUBLIC_PATHS = ["/login"];
+// /partenaires/consentement: the partner has no account in this app at
+// all (see features/partners/consentLookup.ts's own doc comment) — the
+// one-time token in its own ?token= query param is the sole
+// authorization, same principle as a Supabase Auth magic link.
+const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement"];
 // The public widget — embed script, its config/chat API, and the standalone
 // chat page rendered inside the embed iframe — must be reachable by an
 // anonymous visitor on a hotel's own site. Nobody browsing a hotel's
@@ -20,44 +25,68 @@ export function isPublicPath(pathname: string) {
 }
 
 /**
- * Refreshes the Supabase session cookie on every request and gates access
- * to the dashboard. Verifies the JWT locally via getClaims() rather than
- * round-tripping to the Auth server on every navigation.
+ * Probes ONE cookie scope (back-office by default, client-portal when
+ * `cookieName` is CLIENT_PORTAL_COOKIE_NAME — see cookieScope.ts) for an
+ * authenticated session, writing any refreshed token back onto
+ * `responseHolder.current` exactly like the single-scope version this
+ * replaced did. Returns whether that scope is authenticated.
  */
-export async function updateSession(request: NextRequest) {
-  let response = NextResponse.next({ request });
-
+async function probeAuthenticated(request: NextRequest, responseHolder: { current: NextResponse }, cookieName?: string): Promise<boolean> {
   const supabase = createServerClient(supabaseUrl(), supabasePublishableKey(), {
+    ...(cookieName ? { cookieOptions: { name: cookieName } } : null),
     cookies: {
       getAll() {
         return request.cookies.getAll();
       },
       setAll(cookiesToSet) {
         cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+        responseHolder.current = NextResponse.next({ request });
+        cookiesToSet.forEach(({ name, value, options }) => responseHolder.current.cookies.set(name, value, options));
       },
     },
   });
 
   const { data } = await supabase.auth.getClaims();
-  const isAuthenticated = Boolean(data?.claims);
+  return Boolean(data?.claims);
+}
 
+/**
+ * Refreshes the Supabase session cookie on every request and gates access
+ * to the dashboard. Verifies the JWT locally via getClaims() rather than
+ * round-tripping to the Auth server on every navigation.
+ *
+ * Back-office (/etablissements/*, /dashboard, /login) and the client portal
+ * (/client/*, /api/client/*) use DIFFERENT session cookies (see
+ * cookieScope.ts) so both can stay signed in at once in the same browser —
+ * this function picks EXACTLY ONE scope to check, based on the request's
+ * own path (isClientScopedPath), never both. There is no longer a route
+ * genuinely reachable from either space: the chat routes were split
+ * (/api/hotels/[id]/chat vs /api/client/hotels/[id]/chat) specifically so
+ * this coarse gate — and requireHotelAccess() itself — never has to guess
+ * or try a fallback scope.
+ */
+export async function updateSession(request: NextRequest) {
+  const responseHolder = { current: NextResponse.next({ request }) };
   const { pathname } = request.nextUrl;
+  const clientScoped = isClientScopedPath(pathname);
+
+  const isAuthenticated = await probeAuthenticated(request, responseHolder, clientScoped ? CLIENT_PORTAL_COOKIE_NAME : undefined);
+  const loginPath = clientScoped ? "/client/login" : "/login";
+  const homePath = clientScoped ? "/client/dashboard" : "/dashboard";
 
   if (!isAuthenticated && !isPublicPath(pathname)) {
     const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
+    loginUrl.pathname = loginPath;
     loginUrl.searchParams.set("redirectTo", pathname);
     return NextResponse.redirect(loginUrl);
   }
 
-  if (isAuthenticated && pathname === "/login") {
-    const dashboardUrl = request.nextUrl.clone();
-    dashboardUrl.pathname = "/dashboard";
-    dashboardUrl.search = "";
-    return NextResponse.redirect(dashboardUrl);
+  if (isAuthenticated && pathname === loginPath) {
+    const homeUrl = request.nextUrl.clone();
+    homeUrl.pathname = homePath;
+    homeUrl.search = "";
+    return NextResponse.redirect(homeUrl);
   }
 
-  return response;
+  return responseHolder.current;
 }
