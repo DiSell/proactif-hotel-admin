@@ -15,7 +15,10 @@ const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement"];
 // widget request would be redirected to /login below, same as any other
 // unauthenticated page in this app. See features/widget/publicHotel.ts for
 // how tenant isolation is enforced instead (never through auth here).
-const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/"];
+// /api/webhooks/whatsapp: called directly by Meta, with no Supabase session
+// at all — authorization is the webhook's own signature/verify-token check
+// (see lib/notifications/whatsapp/webhook.ts), never this middleware.
+const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/", "/api/webhooks/"];
 const PUBLIC_EXACT_PATHS = ["/widget.js"];
 
 export function isPublicPath(pathname: string) {

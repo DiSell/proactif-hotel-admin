@@ -1,10 +1,13 @@
 /**
  * Mirrors supabase/migrations/0020_partner_requests.sql field-for-field —
  * the partner_requests/partner_request_events tables, the closed
- * event_type/actor_type vocabularies, and the 14-command vocabulary
- * accepted by the apply_partner_request_command() RPC all match this
- * migration exactly (already applied and validated against a real
- * Supabase project — see PartnerRequestCommand below).
+ * event_type/actor_type vocabularies, and the command vocabulary accepted
+ * by the apply_partner_request_command() RPC all match this migration
+ * exactly (already applied and validated against a real Supabase project
+ * — see PartnerRequestCommand below). partner_delivery_ambiguous was added
+ * later, via 0023_partner_request_deliveries.sql's own `create or replace`
+ * of that same function — 0020 itself was never edited (see that
+ * migration's own header comment on why/how).
  */
 
 export type PartnerRequestStatus =
@@ -29,6 +32,8 @@ export type PartnerRequestEventType =
   | "sent_to_partner"
   /** Transmission attempt failed — status stays unchanged (pending_confirmation or alternative_proposed); never a path to sent_to_partner. Only partner_delivery_succeeded ever produces the "sent_to_partner" event/status. */
   | "partner_delivery_failed"
+  /** A transmission attempt was MADE but its outcome could not be determined (network exception/timeout after the request left this server — Meta's acceptance cannot be excluded). Added by 0023_partner_request_deliveries.sql. Status stays unchanged — never sent_to_partner (no confirmed success), never treated as a certain failure either. */
+  | "partner_delivery_ambiguous"
   | "partner_accepted"
   | "partner_rejected"
   | "partner_alternative_proposed"
@@ -53,6 +58,8 @@ export type PartnerRequestCommand =
   | "guest_confirm"
   | "partner_delivery_succeeded"
   | "partner_delivery_failed"
+  /** Added by 0023_partner_request_deliveries.sql — see PartnerRequestEventType's own doc comment on the matching event. */
+  | "partner_delivery_ambiguous"
   | "partner_accept"
   | "partner_reject"
   | "partner_propose_alternative"
@@ -106,4 +113,40 @@ export interface PartnerRequestEvent {
   message: string | null;
   metadata: Record<string, unknown> | null;
   created_at: string;
+}
+
+/**
+ * The three commands a partner's own WhatsApp button tap can ever produce
+ * — a TYPE ERROR, not just a convention, to ever resolve any other command
+ * (e.g. partner_delivery_succeeded, cancel_by_hotel) from an inbound reply.
+ * Moved here (out of the WhatsApp transport layer) once reply tokens
+ * became opaque (0023_partner_request_deliveries.sql) — they no longer
+ * encode a command themselves, so this is purely a domain-level type now.
+ */
+export type PartnerReplyCommand = Extract<PartnerRequestCommand, "partner_accept" | "partner_reject" | "partner_propose_alternative">;
+
+/** Row shape of public.partner_request_deliveries (0023_partner_request_deliveries.sql) — one row per WhatsApp transmission ATTEMPT, never the source of truth for the business status (PartnerRequest.status is). */
+export type PartnerRequestDeliveryStatus = "queued" | "sending" | "sent" | "failed" | "unknown";
+
+/** initial_request: the first time this request is sent to the partner. alternative_acceptance: retransmitting the guest's acceptance of a partner-proposed alternative — see 0020's own comment on guest_accept_alternative never moving status directly to sent_to_partner. */
+export type PartnerRequestDeliveryPurpose = "initial_request" | "alternative_acceptance";
+
+/**
+ * Deliberately EXCLUDES accept_reply_token_hash/reject_reply_token_hash/
+ * propose_alternative_token_hash — same "never even in the TS type"
+ * discipline as consent_token_hash/whatsapp_consent_token_hash
+ * (src/types/database.ts) — these must never reach a Client Component even
+ * as a hash.
+ */
+export interface PartnerRequestDelivery {
+  id: string;
+  hotel_id: string;
+  partner_request_id: string;
+  provider: string;
+  purpose: PartnerRequestDeliveryPurpose;
+  status: PartnerRequestDeliveryStatus;
+  provider_message_id: string | null;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
 }

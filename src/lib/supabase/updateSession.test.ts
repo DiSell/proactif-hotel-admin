@@ -33,6 +33,14 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/api/widget/ps_live_abc123/chat")).toBe(true);
   });
 
+  it("[WhatsApp webhook] /api/webhooks/whatsapp is public — Meta calls it with no Supabase session at all", () => {
+    expect(isPublicPath("/api/webhooks/whatsapp")).toBe(true);
+  });
+
+  it("[not a real prefix match] /api/webhookssomething is NOT public", () => {
+    expect(isPublicPath("/api/webhookssomething")).toBe(false);
+  });
+
   it("[embed script] /widget.js is public", () => {
     expect(isPublicPath("/widget.js")).toBe(true);
   });

@@ -24,6 +24,7 @@ export const PARTNER_REQUEST_EVENT_LABELS: Record<PartnerRequestEventType, strin
   guest_confirmed: "Confirmée par le client",
   sent_to_partner: "Envoyée au partenaire",
   partner_delivery_failed: "Échec de transmission au partenaire",
+  partner_delivery_ambiguous: "Transmission au partenaire incertaine",
   partner_accepted: "Acceptée par le partenaire",
   partner_rejected: "Refusée par le partenaire",
   partner_alternative_proposed: "Alternative proposée par le partenaire",
