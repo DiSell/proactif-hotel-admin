@@ -162,8 +162,9 @@ describe("applyPartnerRequestFlow — best-effort, never fails the whole turn, n
     }
   });
 
-  it("[appends, never replaces] the model's reply is prefixed before any recap suffix", () => {
+  it("[DB status wins] post-confirmation outcomes replace model prose; ordinary recaps are still appended", () => {
     const fn = sliceFn("applyPartnerRequestFlow", "function buildPartnerRecommendations");
+    expect(fn).toMatch(/outcome\.replaceReply \? outcome\.replySuffix/);
     expect(fn).toMatch(/`\$\{reply\}\\n\\n\$\{outcome\.replySuffix\}`/);
   });
 });

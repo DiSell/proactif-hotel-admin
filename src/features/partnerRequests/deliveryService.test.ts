@@ -251,6 +251,71 @@ describe("deliverPartnerRequest — full lifecycle (task section 11)", () => {
   });
 });
 
+describe("reconcileStaleSendingDelivery", () => {
+  const NOW = Date.parse("2026-08-29T12:00:00.000Z");
+
+  function reconciliationSupabase(initialStatus: "sending" | "unknown" = "sending") {
+    let status = initialStatus;
+    let ambiguousEvents = 0;
+    const rpc = vi.fn(async (fn: string) => {
+      if (fn === "complete_partner_request_delivery") {
+        if (status !== "sending") return { data: null, error: { message: `delivery not in sending status (found ${status})` } };
+        status = "unknown";
+        return { data: null, error: null };
+      }
+      if (fn === "apply_partner_request_command") {
+        ambiguousEvents += 1;
+        return { data: null, error: null };
+      }
+      return { data: null, error: null };
+    });
+    const from = vi.fn(() => ({
+      select: () => ({
+        eq: () => ({ eq: () => ({ eq: () => ({ order: () => ({ limit: () => ({
+          maybeSingle: async () => ({ data: { id: "delivery-1", status, updated_at: "2026-08-29T11:50:00.000Z" }, error: null }),
+        }) }) }) }) }),
+      }),
+    }));
+    return { client: { rpc, from }, rpc, getStatus: () => status, getAmbiguousEvents: () => ambiguousEvents };
+  }
+
+  it("[fresh sending] remains sending and performs no DB transition or event", async () => {
+    const db = reconciliationSupabase();
+    const { reconcileStaleSendingDelivery, WHATSAPP_SENDING_STALE_AFTER_MS } = await import("./deliveryService");
+    const result = await reconcileStaleSendingDelivery(
+      { id: "delivery-1", status: "sending", updatedAt: new Date(NOW - WHATSAPP_SENDING_STALE_AFTER_MS + 1).toISOString() },
+      "req-1", "hotel-1", { supabase: db.client as never, nowMs: NOW }
+    );
+    expect(result).toBe("sending");
+    expect(db.rpc).not.toHaveBeenCalled();
+  });
+
+  it("[threshold exactly reached] persists unknown then emits exactly one ambiguous event", async () => {
+    const db = reconciliationSupabase();
+    const { reconcileStaleSendingDelivery, WHATSAPP_SENDING_STALE_AFTER_MS } = await import("./deliveryService");
+    const result = await reconcileStaleSendingDelivery(
+      { id: "delivery-1", status: "sending", updatedAt: new Date(NOW - WHATSAPP_SENDING_STALE_AFTER_MS).toISOString() },
+      "req-1", "hotel-1", { supabase: db.client as never, nowMs: NOW }
+    );
+    expect(result).toBe("unknown");
+    expect(db.getStatus()).toBe("unknown");
+    expect(db.getAmbiguousEvents()).toBe(1);
+    expect(db.rpc.mock.calls.map((call) => call[0])).toEqual(["complete_partner_request_delivery", "apply_partner_request_command"]);
+  });
+
+  it("[two stale observers] only the transition winner emits partner_delivery_ambiguous", async () => {
+    const db = reconciliationSupabase();
+    const { reconcileStaleSendingDelivery } = await import("./deliveryService");
+    const stale = { id: "delivery-1", status: "sending" as const, updatedAt: "2026-08-29T11:50:00.000Z" };
+    const [first, second] = await Promise.all([
+      reconcileStaleSendingDelivery(stale, "req-1", "hotel-1", { supabase: db.client as never, nowMs: NOW }),
+      reconcileStaleSendingDelivery(stale, "req-1", "hotel-1", { supabase: db.client as never, nowMs: NOW }),
+    ]);
+    expect([first, second]).toEqual(["unknown", "unknown"]);
+    expect(db.getAmbiguousEvents()).toBe(1);
+  });
+});
+
 describe("resolvePartnerReplyToken — hash lookup, never decoding", () => {
   function fakeSupabaseForLookup(rows: Record<string, { id: string; hotel_id: string; partner_request_id: string } | null>) {
     const from = vi.fn(() => ({
@@ -376,8 +441,8 @@ describe("applyPartnerReplyCommand", () => {
   });
 });
 
-describe("deliverPartnerRequest / applyPartnerReplyCommand — never wired to production yet", () => {
-  it("[chatbot never imports this file] features/rag/partnerRequestFlow.ts and chatbotService.ts have no reference to deliveryService", async () => {
+describe("deliverPartnerRequest — production wiring boundary", () => {
+  it("[server flow only] partnerRequestFlow wires delivery, chatbotService still does not", async () => {
     const { readFileSync } = await import("node:fs");
     const { fileURLToPath } = await import("node:url");
     const { dirname, join } = await import("node:path");
@@ -385,7 +450,8 @@ describe("deliverPartnerRequest / applyPartnerReplyCommand — never wired to pr
     const chatbotServiceSource = readFileSync(join(here, "chatbotService.ts"), "utf8");
     const flowSource = readFileSync(join(here, "..", "rag", "partnerRequestFlow.ts"), "utf8");
     expect(chatbotServiceSource).not.toMatch(/deliveryService|sendPartnerRequest|deliverPartnerRequest/);
-    expect(flowSource).not.toMatch(/deliveryService|sendPartnerRequest|deliverPartnerRequest/);
+    expect(flowSource).toMatch(/deliveryService/);
+    expect(flowSource).toMatch(/deliverPartnerRequest/);
   });
 
   it("[no Server Action calls it] no exported action in features/partnerRequests/actions.ts references deliverPartnerRequest", async () => {

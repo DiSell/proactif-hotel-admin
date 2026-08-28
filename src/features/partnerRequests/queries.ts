@@ -135,3 +135,17 @@ export async function listPartnerRequestEvents(
   if (error) throw new Error(error.message);
   return data ?? [];
 }
+
+/** Narrow server-side retry check; selects no event metadata or message. */
+export async function hasGuestConfirmedEvent(partnerRequestId: string, hotelId: string, supabase: SupabaseClient): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("partner_request_events")
+    .select("id")
+    .eq("partner_request_id", partnerRequestId)
+    .eq("hotel_id", hotelId)
+    .eq("event_type", "guest_confirmed")
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+  if (error) throw new Error(error.message);
+  return data !== null;
+}

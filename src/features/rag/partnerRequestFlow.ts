@@ -2,7 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createPartnerRequestForChatbot, applyPartnerRequestCommandForChatbot } from "@/features/partnerRequests/chatbotService";
-import { getActivePartnerRequestForConversation, getGuestPhoneForPartnerRequest } from "@/features/partnerRequests/queries";
+import { getActivePartnerRequestForConversation, getGuestPhoneForPartnerRequest, getPartnerRequestById, hasGuestConfirmedEvent } from "@/features/partnerRequests/queries";
+import { deliverPartnerRequest, getLatestPartnerRequestDelivery, reconcileStaleSendingDelivery } from "@/features/partnerRequests/deliveryService";
 import { maskPhoneForDisplay } from "@/features/partnerRequests/phoneRedaction";
 import { formatPartnerRequestDate, formatPartnerRequestTime } from "@/features/partnerRequests/presentation";
 import { loadActiveHotelPartners } from "./partners";
@@ -87,6 +88,8 @@ export interface PartnerRequestTurnOutcome {
   replySuffix: string | null;
   /** Non-null exactly when the widget must show the structured phone form — see features/rag/types.ts's own doc comment. */
   phonePrompt: PartnerRequestPhonePrompt | null;
+  /** True only for post-confirmation delivery outcomes: the DB-derived status message replaces, rather than supplements, model prose. */
+  replaceReply?: boolean;
 }
 
 const NO_OUTCOME: PartnerRequestTurnOutcome = { replySuffix: null, phonePrompt: null };
@@ -119,11 +122,39 @@ function buildRecapText(
   return lines.join("\n");
 }
 
-function buildConfirmedText(partnerName: string): string {
-  return [
-    `Merci, votre confirmation a bien été enregistrée pour votre demande auprès de ${partnerName}.`,
-    "Cette demande est confirmée par vous, mais n'a pas encore été transmise au partenaire.",
-  ].join("\n");
+export type PartnerDeliveryUserState = "sent" | "failed" | "unknown" | "in_progress" | "unavailable" | "ineligible";
+
+export function buildPartnerDeliveryUserMessage(state: PartnerDeliveryUserState): string {
+  switch (state) {
+    case "sent":
+      return "Votre demande a bien été transmise au partenaire. Nous attendons maintenant sa réponse.";
+    case "failed":
+      return "Votre demande est bien enregistrée, mais nous n’avons pas pu la transmettre au partenaire pour le moment.";
+    case "unknown":
+      return "Votre demande est enregistrée. La transmission est en cours de vérification.";
+    case "in_progress":
+      return "Votre demande est enregistrée. Sa transmission au partenaire est en cours.";
+    case "unavailable":
+      return "Votre demande est enregistrée, mais le service de transmission au partenaire n’est pas encore disponible.";
+    case "ineligible":
+      return "Ce partenaire ne peut pas recevoir de demande directement pour le moment.";
+  }
+}
+
+function messageForSendResult(result: Awaited<ReturnType<typeof deliverPartnerRequest>>): PartnerDeliveryUserState {
+  if (result.ok) return "sent";
+  if (result.error === "provider_unknown") return "unknown";
+  if (result.error === "provider_error") return "failed";
+  if (result.error === "delivery_already_in_progress") return "in_progress";
+  if (result.error === "provider_not_configured" || result.error === "template_not_configured") return "unavailable";
+  return "ineligible";
+}
+
+function messageForPersistedDelivery(status: "queued" | "sending" | "sent" | "failed" | "unknown"): PartnerDeliveryUserState {
+  if (status === "sent") return "sent";
+  if (status === "failed") return "failed";
+  if (status === "unknown") return "unknown";
+  return "in_progress";
 }
 
 interface FinalizePartnerRequestCreationParams {
@@ -242,6 +273,10 @@ export async function processPartnerRequestTurn(params: ProcessPartnerRequestTur
       };
     }
 
+    if (activePartnerRequest.status === "sent_to_partner" && modelOutput.confirmPartnerRequest && isExplicitConfirmation(message)) {
+      return { replySuffix: buildPartnerDeliveryUserMessage("sent"), phonePrompt: null, replaceReply: true };
+    }
+
     if (activePartnerRequest.status !== "pending_confirmation") {
       // sent_to_partner/alternative_proposed: out of scope for this phase
       // (nothing transmits yet, so these can only exist via a manual
@@ -258,9 +293,34 @@ export async function processPartnerRequestTurn(params: ProcessPartnerRequestTur
     // time for the same row.
     if (!modelOutput.confirmPartnerRequest || !isExplicitConfirmation(message)) return NO_OUTCOME;
 
-    await applyPartnerRequestCommandForChatbot(activePartnerRequest.id, hotelId, "guest_confirm", supabase);
-    const partner = allActivePartners.find((p) => p.id === activePartnerRequest.partner_id);
-    return { replySuffix: buildConfirmedText(partner?.name ?? "ce partenaire"), phonePrompt: null };
+    const serverSupabase = supabase ?? createAdminClient();
+    const existingDelivery = await getLatestPartnerRequestDelivery(activePartnerRequest.id, hotelId, "initial_request", serverSupabase);
+    const alreadyConfirmed = await hasGuestConfirmedEvent(activePartnerRequest.id, hotelId, serverSupabase);
+
+    if (!alreadyConfirmed) {
+      await applyPartnerRequestCommandForChatbot(activePartnerRequest.id, hotelId, "guest_confirm", serverSupabase);
+    }
+
+    const confirmedRequest = await getPartnerRequestById(hotelId, activePartnerRequest.id, serverSupabase);
+    if (!confirmedRequest) return NO_OUTCOME;
+    if (confirmedRequest.status === "sent_to_partner") {
+      return { replySuffix: buildPartnerDeliveryUserMessage("sent"), phonePrompt: null, replaceReply: true };
+    }
+    if (confirmedRequest.status !== "pending_confirmation") return NO_OUTCOME;
+
+    if (existingDelivery) {
+      const status = await reconcileStaleSendingDelivery(existingDelivery, activePartnerRequest.id, hotelId, { supabase: serverSupabase });
+      return { replySuffix: buildPartnerDeliveryUserMessage(messageForPersistedDelivery(status)), phonePrompt: null, replaceReply: true };
+    }
+
+    const deliveryResult = await deliverPartnerRequest(activePartnerRequest.id, hotelId, { supabase: serverSupabase });
+    const finalRequest = await getPartnerRequestById(hotelId, activePartnerRequest.id, serverSupabase);
+    let finalState = finalRequest?.status === "sent_to_partner" ? "sent" : messageForSendResult(deliveryResult);
+    if (!deliveryResult.ok && deliveryResult.error === "delivery_already_in_progress") {
+      const racedDelivery = await getLatestPartnerRequestDelivery(activePartnerRequest.id, hotelId, "initial_request", serverSupabase);
+      if (racedDelivery) finalState = messageForPersistedDelivery(racedDelivery.status);
+    }
+    return { replySuffix: buildPartnerDeliveryUserMessage(finalState), phonePrompt: null, replaceReply: true };
   }
 
   if (!modelOutput.partnerRequestIntent || !modelOutput.partnerId) return NO_OUTCOME;

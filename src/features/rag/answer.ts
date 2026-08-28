@@ -431,7 +431,7 @@ async function applyPartnerRequestFlow(
       modelOutput: params.modelOutput,
     });
     return {
-      reply: outcome.replySuffix ? `${reply}\n\n${outcome.replySuffix}` : reply,
+      reply: outcome.replySuffix ? (outcome.replaceReply ? outcome.replySuffix : `${reply}\n\n${outcome.replySuffix}`) : reply,
       partnerRequestPhonePrompt: outcome.phonePrompt,
     };
   } catch (err) {

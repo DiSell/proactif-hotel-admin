@@ -9,7 +9,7 @@ import {
 import { generatePartnerReplyTokenSet, hashPartnerReplyToken } from "@/lib/notifications/whatsapp/replyToken";
 import type { WhatsAppSendResult } from "@/lib/notifications/whatsapp/types";
 import { getConfiguredWhatsAppProvider } from "@/lib/notifications/whatsapp/provider";
-import type { PartnerReplyCommand } from "./types";
+import type { PartnerReplyCommand, PartnerRequestDeliveryPurpose, PartnerRequestDeliveryStatus } from "./types";
 
 /**
  * Adapted to use partner_request_deliveries (0023_partner_request_deliveries.sql)
@@ -18,13 +18,10 @@ import type { PartnerReplyCommand } from "./types";
  * self-encoded (HMAC-signed but NOT encrypted, therefore not confidential)
  * partnerRequestId/hotelId/command directly.
  *
- * ISOLATED orchestrator — NOT called from any production path in this
- * task. Neither the chatbot (features/rag/partnerRequestFlow.ts) nor any
- * Server Action calls deliverPartnerRequest() or applyPartnerReplyCommand()
- * as of this change — see the final report's own confirmation. This file
- * exists so the succeeded/failed/ambiguous sequencing can be built and
- * tested NOW, ready to be wired to a real trigger once product decides
- * WHEN a confirmed request should actually be dispatched.
+ * Server-side orchestrator. processPartnerRequestTurn invokes
+ * deliverPartnerRequest only after an explicit guest confirmation has been
+ * persisted and re-read. It is never called by a Client Component or a
+ * browser-selected status.
  *
  * Deliberately separate from features/partnerRequests/chatbotService.ts:
  * that file is structurally incapable of calling
@@ -115,6 +112,68 @@ async function applyDeliveryCommand(
 
 export interface DeliverPartnerRequestDeps extends PrepareWhatsAppPartnerRequestDeps, SendPreparedPartnerRequestDeps {
   supabase?: SupabaseClient;
+}
+
+export const WHATSAPP_SENDING_STALE_AFTER_MS = 5 * 60 * 1000;
+
+export interface PartnerRequestDeliverySnapshot {
+  id: string;
+  status: PartnerRequestDeliveryStatus;
+  updatedAt: string;
+}
+
+export async function getLatestPartnerRequestDelivery(
+  requestId: string,
+  hotelId: string,
+  purpose: PartnerRequestDeliveryPurpose,
+  supabase: SupabaseClient = createAdminClient()
+): Promise<PartnerRequestDeliverySnapshot | null> {
+  const { data, error } = await supabase
+    .from("partner_request_deliveries")
+    .select("id, status, updated_at")
+    .eq("partner_request_id", requestId)
+    .eq("hotel_id", hotelId)
+    .eq("purpose", purpose)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle<{ id: string; status: PartnerRequestDeliveryStatus; updated_at: string }>();
+  if (error) throw new Error(error.message);
+  return data ? { id: data.id, status: data.status, updatedAt: data.updated_at } : null;
+}
+
+export interface ReconcileStaleSendingDeps {
+  supabase?: SupabaseClient;
+  nowMs?: number;
+  staleAfterMs?: number;
+}
+
+/** Persist a stale `sending` as ambiguous. Never calls the provider. */
+export async function reconcileStaleSendingDelivery(
+  delivery: PartnerRequestDeliverySnapshot,
+  requestId: string,
+  hotelId: string,
+  deps: ReconcileStaleSendingDeps = {}
+): Promise<PartnerRequestDeliveryStatus> {
+  if (delivery.status !== "sending") return delivery.status;
+  const nowMs = deps.nowMs ?? Date.now();
+  const staleAfterMs = deps.staleAfterMs ?? WHATSAPP_SENDING_STALE_AFTER_MS;
+  if (nowMs - Date.parse(delivery.updatedAt) < staleAfterMs) return "sending";
+
+  const supabase = resolveSupabase(deps.supabase);
+  try {
+    await completeDelivery(delivery.id, hotelId, "unknown", null, "provider_unknown", supabase);
+  } catch (error) {
+    // A concurrent reconciler may have won the row lock and completed the
+    // exact same transition. Re-read before deciding whether this is a real
+    // failure; only the winner is allowed to emit the domain event below.
+    const current = await getLatestPartnerRequestDelivery(requestId, hotelId, "initial_request", supabase);
+    if (current?.id === delivery.id && current.status === "unknown") return "unknown";
+    throw error;
+  }
+
+  await applyDeliveryCommand(requestId, hotelId, "partner_delivery_ambiguous", supabase);
+  const persisted = await getLatestPartnerRequestDelivery(requestId, hotelId, "initial_request", supabase);
+  return persisted?.id === delivery.id ? persisted.status : "unknown";
 }
 
 /**
