@@ -225,6 +225,10 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         roomRecommendation: result.roomRecommendation,
         action: result.action,
         partnerRecommendations: result.partnerRecommendations,
+        // Deterministic signal for the widget to show the structured phone
+        // form — never something PublicWidgetChat.tsx infers by parsing
+        // `reply`. See features/rag/types.ts:PartnerRequestPhonePrompt.
+        partnerRequestPhonePrompt: result.partnerRequestPhonePrompt,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

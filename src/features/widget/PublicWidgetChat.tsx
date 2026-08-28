@@ -41,6 +41,21 @@ interface ChatMessage {
   partnerRecommendations?: PartnerRecommendation[];
 }
 
+/** Mirrors features/rag/types.ts's PendingPartnerRequestFields/PartnerRequestPhonePrompt — see those types' own doc comments. */
+interface PendingPartnerRequestFields {
+  partnerId: string;
+  requestedDate: string | null;
+  requestedTime: string | null;
+  partySize: number | null;
+  details: string | null;
+  guestName: string | null;
+}
+
+interface PartnerRequestPhonePrompt {
+  partnerName: string;
+  pendingRequest: PendingPartnerRequestFields;
+}
+
 interface ChatApiResponse {
   conversationId: string;
   reply: string;
@@ -48,6 +63,7 @@ interface ChatApiResponse {
   roomRecommendation: RoomRecommendation | null;
   action: ChatAction | null;
   partnerRecommendations: PartnerRecommendation[];
+  partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
 }
 
 interface PublicWidgetChatProps {
@@ -198,6 +214,15 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+  // The structured phone-collection form — a deterministic backend signal
+  // (chat response's own partnerRequestPhonePrompt field), never something
+  // inferred by parsing `reply`. Cleared explicitly on successful submit;
+  // a later chat turn without the prompt also clears it (see handleSend),
+  // so a stale form never lingers past the point it's no longer relevant.
+  const [activePhonePrompt, setActivePhonePrompt] = useState<PartnerRequestPhonePrompt | null>(null);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [phoneSubmitting, setPhoneSubmitting] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
   // Tracks the one host-booking request in flight, if any, and which
   // message's button triggered it — never a booking, never a reservation,
   // just "did widget.js manage to open the site's existing module".
@@ -264,6 +289,14 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     if (!trimmed || loading || !sessionToken) return;
     setInput("");
     setError(null);
+    // A new chat message means the visitor is continuing the conversation
+    // (possibly by typing their phone number in free text — the safety net
+    // in phoneRedaction.ts still applies server-side either way) — any
+    // previously-shown phone form is no longer the current turn's own, so
+    // it's cleared here and re-shown fresh only if this turn's own response
+    // asks for it again.
+    setActivePhonePrompt(null);
+    setPhoneError(null);
     setMessages((current) => [...current, { role: "user", content: trimmed }]);
     setLoading(true);
 
@@ -299,10 +332,56 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           partnerRecommendations: data.partnerRecommendations,
         },
       ]);
+      setActivePhonePrompt(data.partnerRequestPhonePrompt);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Une erreur est survenue.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  /**
+   * The structured phone form's own submit — deliberately NOT handleSend:
+   * the phone is never sent as a normal chat message (never persisted to
+   * messages.content, never seen by the model) — see
+   * src/app/api/widget/[widgetKey]/partner-request/phone/route.ts. Guarded
+   * against double-submit the same way handleSend guards against it
+   * (an in-flight-request boolean checked at the top).
+   */
+  async function handleSubmitPhone() {
+    const trimmed = phoneInput.trim();
+    if (!trimmed || phoneSubmitting || !activePhonePrompt || !conversationId || !sessionToken) return;
+    setPhoneSubmitting(true);
+    setPhoneError(null);
+
+    try {
+      const response = await fetch(`/api/widget/${encodeURIComponent(widgetKey)}/partner-request/phone`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId,
+          sessionToken,
+          phone: trimmed,
+          pendingRequest: activePhonePrompt.pendingRequest,
+        }),
+      });
+
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(body?.error || "Une erreur est survenue.");
+      }
+
+      // Success: the form disappears, and the deterministic recap/resume
+      // text the server just produced is appended as a new assistant-style
+      // message — never the raw phone number, only ever the server's own
+      // masked-phone recap (see partnerRequestFlow.ts's buildRecapText).
+      setMessages((current) => [...current, { role: "assistant", content: body.message }]);
+      setActivePhonePrompt(null);
+      setPhoneInput("");
+    } catch (err) {
+      setPhoneError(err instanceof Error ? err.message : "Une erreur est survenue.");
+    } finally {
+      setPhoneSubmitting(false);
     }
   }
 
@@ -465,6 +544,73 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
             )}
           </div>
         ))}
+
+        {activePhonePrompt && (
+          <div
+            style={{
+              display: "flex",
+              maxWidth: "82%",
+              flexDirection: "column",
+              gap: 8,
+              alignSelf: "flex-start",
+              borderRadius: 12,
+              border: "1px solid #E5E1D8",
+              background: "#fff",
+              padding: "12px 14px",
+            }}
+          >
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#1A1D1A" }}>
+              À quel numéro souhaitez-vous recevoir la réponse de {activePhonePrompt.partnerName} ?
+            </p>
+            <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={phoneInput}
+              onChange={(event) => {
+                setPhoneInput(event.target.value);
+                setPhoneError(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") handleSubmitPhone();
+              }}
+              placeholder="06 12 34 56 78"
+              disabled={phoneSubmitting}
+              style={{
+                height: 40,
+                borderRadius: 8,
+                border: "1px solid #E5E1D8",
+                padding: "0 12px",
+                fontSize: 13,
+                outline: "none",
+                width: "100%",
+                boxSizing: "border-box",
+              }}
+            />
+            <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#6b6b6b" }}>
+              Votre numéro sera utilisé uniquement pour transmettre cette demande et vous communiquer la réponse du partenaire.
+            </p>
+            {phoneError && <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#B23B3B" }}>{phoneError}</p>}
+            <button
+              type="button"
+              onClick={handleSubmitPhone}
+              disabled={phoneSubmitting || phoneInput.trim().length === 0}
+              style={{
+                height: 36,
+                borderRadius: 9999,
+                border: "none",
+                background: config.primaryColor,
+                color: config.secondaryColor,
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: phoneSubmitting ? "default" : "pointer",
+                opacity: phoneSubmitting || phoneInput.trim().length === 0 ? 0.6 : 1,
+              }}
+            >
+              {phoneSubmitting ? "Envoi…" : "Continuer"}
+            </button>
+          </div>
+        )}
 
         {loading && (
           <div style={{ maxWidth: "82%", alignSelf: "flex-start", borderRadius: 12, border: "1px solid #E5E1D8", background: "#fff", padding: "10px 14px", fontSize: 13, color: "#6b6b6b" }}>

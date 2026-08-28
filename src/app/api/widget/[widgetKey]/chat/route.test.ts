@@ -63,6 +63,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
     roomRecommendation: null,
     action: null,
     partnerRecommendations: [],
+    partnerRequestPhonePrompt: null,
     ...overrides,
   };
 }
@@ -348,7 +349,7 @@ describe("POST /api/widget/[widgetKey]/chat — conversation possession (session
 });
 
 describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
-  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations — never sources", async () => {
+  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations/partnerRequestPhonePrompt — never sources", async () => {
     const deps = makeDeps({
       answerQuestion: vi.fn(async () =>
         makeAnswerResult({ action: { type: "booking", label: "Réserver", url: "https://booking.example.com" } })
@@ -359,9 +360,29 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(Object.keys(body).sort()).toEqual(
-      ["action", "answerStatus", "conversationId", "partnerRecommendations", "reply", "roomRecommendation"].sort()
+      ["action", "answerStatus", "conversationId", "partnerRecommendations", "partnerRequestPhonePrompt", "reply", "roomRecommendation"].sort()
     );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });
+  });
+
+  it("[partnerRequestPhonePrompt passthrough] present when answerQuestion signals it, never inferred from reply text", async () => {
+    const deps = makeDeps({
+      answerQuestion: vi.fn(async () =>
+        makeAnswerResult({
+          partnerRequestPhonePrompt: {
+            partnerName: "Le Bistrot",
+            pendingRequest: { partnerId: "partner-1", requestedDate: null, requestedTime: null, partySize: null, details: null, guestName: null },
+          },
+        })
+      ),
+    });
+    const handler = createChatHandler(deps);
+    const response = await handler(makeRequest({ conversationId: null, message: "hello", sessionToken: VALID_TOKEN }), context);
+    const body = await response.json();
+    expect(body.partnerRequestPhonePrompt).toEqual({
+      partnerName: "Le Bistrot",
+      pendingRequest: { partnerId: "partner-1", requestedDate: null, requestedTime: null, partySize: null, details: null, guestName: null },
+    });
   });
 
   it("[answerQuestion throws] returns 500 with a generic message, no internal detail leaked", async () => {

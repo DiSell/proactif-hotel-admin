@@ -6,6 +6,7 @@ import type { RankedCandidate } from "./accommodationRanking";
 import type { AvailabilityCheckState } from "../availability/types";
 import { HOTEL_PARTNER_CATEGORY_LABEL } from "../partners/schema";
 import { VOLATILE_STALENESS_DAYS } from "./staleness";
+import type { PartnerRequest } from "@/features/partnerRequests/types";
 
 const TONE_LABEL: Record<string, string> = {
   professional: "professionnel",
@@ -77,6 +78,29 @@ export interface BuildHotelInstructionsParams {
    * judgment.
    */
   partnerCandidates?: HotelPartner[];
+  /**
+   * Orthogonal to partnerIntentDetected — true whenever a partner-REQUEST
+   * flow should be considered this turn: either partnerIntentDetected fired
+   * on the current message, OR an active partner_request already exists for
+   * this conversation (see answer.ts) — the latter is what lets a bare "oui"
+   * follow-up still be understood as confirming an in-progress request, even
+   * though that one-word reply would never match isPartnerIntent's own
+   * keyword patterns on its own.
+   */
+  partnerRequestFlowActive?: boolean;
+  /** The conversation's own active partner_request (draft/pending_confirmation/sent_to_partner/alternative_proposed), if any — see features/partnerRequests/queries.ts:getActivePartnerRequestForConversation. Never carries guest_phone_e164 (excluded at the query level). */
+  activePartnerRequest?: Pick<PartnerRequest, "id" | "status" | "partner_id"> | null;
+  /**
+   * hotel_id-, is_active-, consent_status=accepted-scoped (same
+   * loadActiveHotelPartners() read as partnerCandidates above, but NEVER
+   * capped to DEFAULT_PARTNER_LIMIT/ALL_PARTNERS_LIMIT) — the authoritative
+   * list a partnerId the model returns for a REQUEST is validated against
+   * (see answer.ts/partnerRequestFlow.ts). Deliberately separate from
+   * partnerCandidates: a partner recommended several turns ago (and no
+   * longer in this turn's capped display list) must still be a valid target
+   * once the visitor asks to book with it.
+   */
+  allActivePartnersForRequest?: Pick<HotelPartner, "id" | "name">[];
 }
 
 /**
@@ -152,6 +176,9 @@ export function buildHotelInstructions({
   bookingIntentDetected,
   partnerIntentDetected,
   partnerCandidates,
+  partnerRequestFlowActive,
+  activePartnerRequest,
+  allActivePartnersForRequest,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -210,6 +237,11 @@ export function buildHotelInstructions({
   // fires whenever a local-partner intent was detected, with or without any
   // matching candidate (see buildPartnerGuidance's own doc comment).
   const partnerGuidance = partnerIntentDetected ? buildPartnerGuidance(partnerCandidates ?? []) : "";
+  // Independent gate from partnerGuidance above — see
+  // BuildHotelInstructionsParams's own doc comment on partnerRequestFlowActive.
+  const partnerRequestGuidance = partnerRequestFlowActive
+    ? buildPartnerRequestGuidance(activePartnerRequest ?? null, allActivePartnersForRequest ?? [])
+    : "";
 
   return [
     identity,
@@ -224,6 +256,7 @@ export function buildHotelInstructions({
     availabilityGuidance,
     bookingIntentGuidance,
     partnerGuidance,
+    partnerRequestGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -299,6 +332,63 @@ function buildPartnerGuidance(candidates: Pick<HotelPartner, "id" | "name" | "ca
     "N'invente JAMAIS d'horaire, de prix, de disponibilité, d'avis, d'adresse ou de coordonnée pour un partenaire — utilise uniquement la description et les horaires fournis ci-dessus, verbatim, jamais une estimation ou un calcul de ta part (par exemple ne dis jamais toi-même si un partenaire est ouvert ou fermé en ce moment). Si les horaires ne sont pas fournis ci-dessus, dis honnêtement que tu ne les connais pas. N'écris toi-même aucune URL, adresse ou numéro de téléphone : un lien ou bouton sera affiché séparément par l'interface pour chaque partenaire recommandé, à partir de ses coordonnées réellement enregistrées.",
     "Présente ces partenaires comme des recommandations de l'établissement (par exemple « l'hôtel recommande » ou « nous vous conseillons »), jamais comme une affirmation absolue non nuancée du type « le meilleur restaurant de la région », sauf si cette affirmation figure explicitement dans la description fournie ci-dessus.",
     "Tu peux reformuler la description dans la langue du visiteur, mais sans jamais en modifier les faits.",
+  ].join("\n");
+}
+
+/**
+ * Fires whenever partnerRequestFlowActive is true (see
+ * BuildHotelInstructionsParams's own doc comment) — either the current
+ * message expresses a partner intent, or a request is already in progress
+ * for this conversation. Two entirely different shapes on purpose:
+ *
+ * - A request already awaits the guest's explicit confirmation
+ *   (activeRequest.status === "pending_confirmation"): the model's ONLY job
+ *   this turn is to detect an unambiguous "yes" — never to re-collect
+ *   information or write its own recap/confirmation question (the server
+ *   already presented one, see answer.ts/partnerRequestFlow.ts, and will
+ *   append a fixed acknowledgement text of its own once confirmed).
+ * - No request in progress yet: the model collects information
+ *   conversationally, but NEVER decides on its own to present a final recap
+ *   or ask to send the request — see partnerRequestFlow.ts, which builds
+ *   that deterministically, server-side, the moment the server itself
+ *   judges enough information is available. This mirrors every other
+ *   "model proposes, server decides" boundary in this codebase
+ *   (recommendedAccommodationTypeId, recommendedPartnerIds, ChatAction).
+ *
+ * In both cases: the model is repeatedly told a real transmission to the
+ * partner has NOT happened yet, in this phase, under any circumstance —
+ * see AGENTS instructions point 8 (language guardrails) this guidance
+ * exists specifically to satisfy.
+ */
+function buildPartnerRequestGuidance(
+  activeRequest: Pick<PartnerRequest, "status" | "partner_id"> | null,
+  availablePartners: Pick<HotelPartner, "id" | "name">[]
+): string {
+  if (activeRequest && activeRequest.status === "pending_confirmation") {
+    return [
+      "DEMANDE PARTENAIRE EN ATTENTE DE CONFIRMATION :",
+      "Une demande a déjà été préparée pour ce visiteur et un récapitulatif lui a déjà été présenté — ne recrée jamais une nouvelle demande, et ne rédige pas toi-même un nouveau récapitulatif.",
+      "Renseigne confirmPartnerRequest à true UNIQUEMENT si ce message exprime un accord explicite et non ambigu (par exemple « oui », « je confirme », « allez-y », « d'accord, envoyez »). Sur une réponse vague, une question, ou un simple accusé de réception, laisse confirmPartnerRequest à false — pas de confirmation implicite.",
+      "Ne dis JAMAIS que cette demande a été envoyée, transmise, ou acceptée par le partenaire, ni qu'il s'agit d'une réservation confirmée — même après un accord du visiteur, elle n'est PAS ENCORE transmise au partenaire à ce stade.",
+    ].join("\n");
+  }
+
+  const availableList = availablePartners.map((p) => `- id="${p.id}" — ${p.name}`).join("\n");
+
+  return [
+    "DEMANDE PARTENAIRE :",
+    "Le visiteur exprime peut-être le souhait qu'une demande soit faite en son nom auprès d'un partenaire précis (réserver une table, un taxi, une activité…) — distinct d'une simple question d'information sur ce partenaire.",
+    availableList
+      ? `Partenaires pouvant faire l'objet d'une demande (id — nom) :\n${availableList}`
+      : "Aucun partenaire ne peut actuellement faire l'objet d'une demande — dis-le honnêtement, n'invente jamais de partenaire ni d'identifiant.",
+    "Renseigne partnerRequestIntent à true dès que le visiteur exprime clairement ce souhait pour un partenaire précis, jamais pour une simple question générale.",
+    "Renseigne partnerId UNIQUEMENT avec un id EXACT de la liste ci-dessus ; laisse-le à null tant que le partenaire visé n'est pas clairement identifié — n'invente jamais un id absent de cette liste.",
+    "Collecte progressivement et sans répétition inutile : la date souhaitée, l'heure, le nombre de personnes, et tout détail utile déjà mentionné dans la conversation.",
+    "Renseigne needsGuestName à true tant que le nom du visiteur n'est pas connu ; renseigne guestName dès qu'il est donné.",
+    "Renseigne needsGuestPhone à true tant qu'aucun numéro de téléphone n'a été donné pour cette demande. IMPORTANT : demande le numéro de téléphone EN DERNIER, une fois seulement que toutes les autres informations nécessaires sont déjà réunies — jamais en premier.",
+    "Tu ne reçois et ne dois jamais écrire de numéro de téléphone réel dans ta réponse : tu sais seulement si un numéro a été fourni ou non.",
+    "Ne rédige JAMAIS toi-même le récapitulatif final ni une question du type « souhaitez-vous envoyer cette demande » — le système les ajoutera automatiquement à ta réponse une fois toutes les informations réunies. Contente-toi d'accompagner la collecte des informations manquantes.",
+    "Ne dis JAMAIS que la demande a été envoyée, transmise, ou acceptée par un partenaire, ni qu'il s'agit d'une réservation confirmée — à ce stade, aucune demande n'est encore transmise, quoi qu'il arrive.",
   ].join("\n");
 }
 

@@ -176,7 +176,16 @@ async function deleteHotelPartnerInternal(hotelId: string, partnerId: string, sc
 
   const { error } = await supabase.from("hotel_partners").delete().eq("id", partnerId).eq("hotel_id", hotelId);
   if (error) {
-    console.error("deleteHotelPartner: delete failed", { message: error.message });
+    // 23503 = foreign key violation: partner_requests_partner_fk
+    // (0020_partner_requests.sql) has no ON DELETE clause on purpose — a
+    // partner with existing requests must never be physically deletable,
+    // preserving partner_requests' history/name resolution. No pre-check
+    // SELECT COUNT here: the FK is already the single source of truth, and
+    // a pre-check would only add a race condition, never remove one.
+    console.error("deleteHotelPartner: delete failed", { code: error.code, message: error.message });
+    if (error.code === "23503") {
+      return { ok: false, error: "Ce partenaire possède des demandes enregistrées et ne peut pas être supprimé. Désactivez-le à la place." };
+    }
     return { ok: false, error: "Impossible de supprimer ce partenaire." };
   }
 

@@ -65,6 +65,17 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: "/client/requests",
+    label: "Demandes partenaires",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 3H6a2 2 0 00-2 2v14a2 2 0 002 2h12a2 2 0 002-2V9z" />
+        <path d="M14 3v6h6" />
+        <path d="M9 13l2 2 4-4" />
+      </svg>
+    ),
+  },
+  {
     href: "/client/widget",
     label: "Installation",
     icon: (

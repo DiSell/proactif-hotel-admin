@@ -593,3 +593,92 @@ describe("buildHotelInstructions — partner guidance", () => {
     expect(instructions).toMatch(/PARTENAIRES LOCAUX/);
   });
 });
+
+describe("buildHotelInstructions — partner REQUEST guidance (distinct from partner recommendation guidance)", () => {
+  it("[flow inactive] never mentions a partner request when partnerRequestFlowActive is false/absent", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: false,
+    });
+    expect(instructions).not.toMatch(/DEMANDE PARTENAIRE/);
+  });
+
+  it("[no active request, collecting info] lists id/name only for validation, tells the model to ask for the phone LAST, never to write its own recap/confirmation question", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      allActivePartnersForRequest: [{ id: "p1", name: "Le Bistrot" }],
+    });
+    expect(instructions).toMatch(/DEMANDE PARTENAIRE :/);
+    expect(instructions).toMatch(/id="p1" — Le Bistrot/);
+    expect(instructions).toMatch(/demande le numéro de téléphone EN DERNIER/i);
+    expect(instructions).toMatch(/Ne rédige JAMAIS toi-même le récapitulatif final/);
+    expect(instructions).not.toMatch(/DEMANDE PARTENAIRE EN ATTENTE DE CONFIRMATION/);
+  });
+
+  it("[no matching partner available] told honestly, never invents a partner/id", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      allActivePartnersForRequest: [],
+    });
+    expect(instructions).toMatch(/Aucun partenaire ne peut actuellement faire l'objet d'une demande/);
+  });
+
+  it("[active request pending_confirmation] switches to the confirmation-only variant: never re-collects info, requires an explicit unambiguous yes, forbids claiming transmission/acceptance", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: { status: "pending_confirmation", partner_id: "p1" } as never,
+      allActivePartnersForRequest: [{ id: "p1", name: "Le Bistrot" }],
+    });
+    expect(instructions).toMatch(/DEMANDE PARTENAIRE EN ATTENTE DE CONFIRMATION/);
+    expect(instructions).toMatch(/pas de confirmation implicite/i);
+    expect(instructions).toMatch(/PAS ENCORE transmise au partenaire/);
+    expect(instructions).not.toMatch(/id="p1" — Le Bistrot/); // the collection-phase candidate list is not repeated here
+  });
+
+  it("[language guardrails] never suggests wording implying a real reservation/acceptance, in either variant", () => {
+    const collecting = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      allActivePartnersForRequest: [{ id: "p1", name: "Le Bistrot" }],
+    });
+    const confirming = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: { status: "pending_confirmation", partner_id: "p1" } as never,
+      allActivePartnersForRequest: [{ id: "p1", name: "Le Bistrot" }],
+    });
+    for (const instructions of [collecting, confirming]) {
+      expect(instructions).toMatch(/Ne dis JAMAIS que (cette |la )?demande a été envoyée, transmise, ou acceptée/);
+    }
+  });
+
+  it("[orthogonal to groundingMode] fires in no_context mode too", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "no_context",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      allActivePartnersForRequest: [{ id: "p1", name: "Le Bistrot" }],
+    });
+    expect(instructions).toMatch(/DEMANDE PARTENAIRE :/);
+  });
+});

@@ -127,6 +127,45 @@ export interface PartnerRecommendation {
   action: PartnerAction | null;
 }
 
+/**
+ * Everything the structured widget phone form (PublicWidgetChat.tsx) needs
+ * to render itself AND to echo back, unmodified, to
+ * POST /api/widget/[widgetKey]/partner-request/phone once the visitor
+ * submits a number — see features/rag/partnerRequestFlow.ts's own doc
+ * comment on why this is carried through the client rather than persisted
+ * server-side: no partner_requests row exists yet at this point (creation
+ * is deliberately deferred until the phone itself is known — see
+ * processPartnerRequestTurn), so there is nothing to attach it to.
+ *
+ * Not sensitive data: partnerId is independently REVALIDATED server-side
+ * before ever being used (never trusted as-is, same discipline as every
+ * other model-sourced id in this codebase — see
+ * submitStructuredGuestPhone); the remaining fields are free-text content
+ * the visitor already typed into the chat themselves, echoed back to
+ * finish the same request, not a new trust boundary.
+ */
+export interface PendingPartnerRequestFields {
+  partnerId: string;
+  requestedDate: string | null;
+  requestedTime: string | null;
+  partySize: number | null;
+  details: string | null;
+  guestName: string | null;
+}
+
+/**
+ * Present exactly when the widget must show the dedicated, structured
+ * phone-collection form instead of (or in addition to) the model's own
+ * conversational reply text — a deterministic backend signal, never
+ * something the widget infers by parsing `reply`. See
+ * features/widget/PublicWidgetChat.tsx and
+ * features/rag/partnerRequestFlow.ts:processPartnerRequestTurn.
+ */
+export interface PartnerRequestPhonePrompt {
+  partnerName: string;
+  pendingRequest: PendingPartnerRequestFields;
+}
+
 export interface AnswerQuestionResult {
   reply: string;
   sources: RetrievedChunk[];
@@ -148,4 +187,11 @@ export interface AnswerQuestionResult {
    * conflict, each carrying its own PartnerAction.
    */
   partnerRecommendations: PartnerRecommendation[];
+  /**
+   * Additive field, always present (never omitted), null on every turn
+   * that doesn't need it — see PartnerRequestPhonePrompt's own doc comment.
+   * Never derived from `reply`'s text by the widget; always this explicit
+   * field.
+   */
+  partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
 }

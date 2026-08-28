@@ -26,8 +26,12 @@ import { checkAvailability } from "../availability/checkAvailability";
 import { applyAvailabilityToCandidates } from "../availability/applyAvailabilityToCandidates";
 import { NoopAvailabilityProviderResolver } from "../availability/resolver";
 import type { AvailabilityCheckState, StayRequestState } from "../availability/types";
-import type { AnswerQuestionResult, ChatAction, GroundingMode, PartnerRecommendation, RetrievedChunk, RoomRecommendation } from "./types";
+import type { AnswerQuestionResult, ChatAction, GroundingMode, PartnerRecommendation, PartnerRequestPhonePrompt, RetrievedChunk, RoomRecommendation } from "./types";
 import type { AccommodationType, ChatbotSettings, Hotel, HotelPartner } from "@/types/database";
+import { redactPhoneNumbers } from "@/features/partnerRequests/phoneRedaction";
+import { getActivePartnerRequestForConversation } from "@/features/partnerRequests/queries";
+import type { PartnerRequest } from "@/features/partnerRequests/types";
+import { processPartnerRequestTurn, type PartnerRequestModelOutput } from "./partnerRequestFlow";
 
 /**
  * Phase A: no hotel-configured timezone field exists yet (see
@@ -121,6 +125,34 @@ export interface AnswerQuestionParams {
 }
 
 /**
+ * Minimal extension for the partner-REQUEST flow (distinct from
+ * recommendedPartnerIds above, which only ever recommends — never books —
+ * a partner) — shared by both branches, same "server decides, model only
+ * proposes" discipline as every other field here: partnerId is revalidated
+ * against loadActiveHotelPartners() before ever being trusted (see
+ * partnerRequestFlow.ts), and none of these fields ever create/advance a
+ * partner_request on their own — answerGrounded/answerNoContext do that
+ * explicitly, after this parse, via processPartnerRequestTurn.
+ *
+ * Deliberately NEVER includes a phone number field: the model receives and
+ * returns no phone-shaped data whatsoever (needsGuestPhone is a boolean
+ * only) — see phoneRedaction.ts and partnerRequestFlow.ts, which resolve
+ * the actual E.164 value entirely server-side, outside the model's view.
+ */
+const partnerRequestOutputFields = {
+  partnerRequestIntent: z.boolean(),
+  partnerId: z.string().nullable(),
+  requestedDate: z.string().nullable(),
+  requestedTime: z.string().nullable(),
+  partySize: z.number().int().nullable(),
+  details: z.string().nullable(),
+  guestName: z.string().nullable(),
+  needsGuestName: z.boolean(),
+  needsGuestPhone: z.boolean(),
+  confirmPartnerRequest: z.boolean(),
+};
+
+/**
  * Structured output schema for the "no_context" branch only. Without a
  * chunk count to infer answerStatus from, the model itself has to say
  * whether this turn was a valid behavioral answer, an unsourced factual
@@ -133,6 +165,7 @@ const noContextReplySchema = z.object({
   answerStatus: z.enum(["answered", "fallback", "handoff"]),
   /** Partner intent is orthogonal to groundingMode (see isPartnerIntent) — a no-context turn can still recommend a partner. Same "unverified until matched" discipline as the grounded schema's field. */
   recommendedPartnerIds: z.array(z.string()).nullable(),
+  ...partnerRequestOutputFields,
 });
 
 /**
@@ -147,6 +180,7 @@ const groundedReplySchema = z.object({
   recommendedAccommodationTypeId: z.string().nullable(),
   /** Same "unverified until matched" discipline as recommendedAccommodationTypeId — see buildPartnerRecommendations below. */
   recommendedPartnerIds: z.array(z.string()).nullable(),
+  ...partnerRequestOutputFields,
 });
 
 /**
@@ -163,10 +197,19 @@ const groundedReplySchema = z.object({
 export async function answerQuestion({
   hotelId,
   conversationId,
-  message,
+  message: rawMessage,
   supabase: injectedSupabase,
 }: AnswerQuestionParams): Promise<AnswerQuestionResult> {
   const supabase = injectedSupabase ?? (await createClient());
+
+  // MUST run before anything else touches the visitor's raw text: a
+  // spontaneously-typed phone number must never reach messages.content or
+  // the model. Every use of `message` below (persistence, retrieval query,
+  // regex intent checks, model input) is the SANITIZED text — the raw
+  // digits live only in `normalizedPhoneE164`, used later exclusively to
+  // populate partner_requests.guest_phone_e164, never logged, never sent to
+  // OpenAI. See features/partnerRequests/phoneRedaction.ts.
+  const { sanitizedText: message, normalizedPhoneE164 } = redactPhoneNumbers(rawMessage);
 
   const { data: hotel, error: hotelError } = await supabase
     .from("hotels")
@@ -283,12 +326,23 @@ export async function answerQuestion({
   // sees a candidate — see partners.ts's own doc comment on why that's
   // where "max 3 by default" is actually enforced, not left to the model.
   const partnerIntentDetected = isPartnerIntent(message);
+  // The conversation's own in-progress request, if any — checked on EVERY
+  // turn (not just when partnerIntentDetected fires) because a bare "oui"
+  // confirming an already-prepared request would never match
+  // isPartnerIntent's own keyword patterns on its own. See
+  // features/partnerRequests/queries.ts's own doc comment.
+  const activePartnerRequest = await getActivePartnerRequestForConversation(hotelId, conversationId, supabase);
+  const partnerRequestFlowActive = partnerIntentDetected || activePartnerRequest !== null;
+
   let partnerCandidates: HotelPartner[] = [];
-  if (partnerIntentDetected) {
-    const allPartners = await loadActiveHotelPartners(supabase, hotelId);
-    const category = detectRelevantPartnerCategory(message);
-    const limit = wantsAllPartners(message) ? ALL_PARTNERS_LIMIT : DEFAULT_PARTNER_LIMIT;
-    partnerCandidates = rankPartnerCandidates(allPartners, { category, limit });
+  let allPartners: HotelPartner[] = [];
+  if (partnerRequestFlowActive) {
+    allPartners = await loadActiveHotelPartners(supabase, hotelId);
+    if (partnerIntentDetected) {
+      const category = detectRelevantPartnerCategory(message);
+      const limit = wantsAllPartners(message) ? ALL_PARTNERS_LIMIT : DEFAULT_PARTNER_LIMIT;
+      partnerCandidates = rankPartnerCandidates(allPartners, { category, limit });
+    }
   }
 
   if (groundingMode === "grounded") {
@@ -309,6 +363,10 @@ export async function answerQuestion({
       bookingIntentDetected,
       partnerIntentDetected,
       partnerCandidates,
+      normalizedPhoneE164,
+      activePartnerRequest,
+      partnerRequestFlowActive,
+      allPartners,
     });
   }
 
@@ -325,7 +383,52 @@ export async function answerQuestion({
     bookingIntentDetected,
     partnerIntentDetected,
     partnerCandidates,
+    normalizedPhoneE164,
+    activePartnerRequest,
+    partnerRequestFlowActive,
+    allPartners,
   });
+}
+
+/**
+ * Best-effort, never fails the whole turn — same discipline as the
+ * stay-request resolution block in answerQuestion above (its own try/catch,
+ * swallowed and logged, safe fallback value). Appends
+ * processPartnerRequestTurn's deterministic recap/confirmation text (see
+ * partnerRequestFlow.ts) to the model's own conversational reply — never
+ * replaces it, never lets a partner_request RPC failure surface as a
+ * generic "OpenAI call failed" error to the caller.
+ */
+async function applyPartnerRequestFlow(
+  reply: string,
+  params: {
+    hotelId: string;
+    conversationId: string;
+    message: string;
+    normalizedPhoneE164: string | null;
+    activePartnerRequest: PartnerRequest | null;
+    allPartners: HotelPartner[];
+    modelOutput: PartnerRequestModelOutput;
+  }
+): Promise<{ reply: string; partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null }> {
+  try {
+    const outcome = await processPartnerRequestTurn({
+      hotelId: params.hotelId,
+      conversationId: params.conversationId,
+      message: params.message,
+      normalizedPhoneE164: params.normalizedPhoneE164,
+      activePartnerRequest: params.activePartnerRequest,
+      allActivePartners: params.allPartners,
+      modelOutput: params.modelOutput,
+    });
+    return {
+      reply: outcome.replySuffix ? `${reply}\n\n${outcome.replySuffix}` : reply,
+      partnerRequestPhonePrompt: outcome.phonePrompt,
+    };
+  } catch (err) {
+    console.error("answerQuestion: partner request flow failed", { hotelId: params.hotelId, conversationId: params.conversationId, message: (err as Error).message });
+    return { reply, partnerRequestPhonePrompt: null };
+  }
 }
 
 /**
@@ -435,6 +538,10 @@ async function answerGrounded(
     bookingIntentDetected: boolean;
     partnerIntentDetected: boolean;
     partnerCandidates: HotelPartner[];
+    normalizedPhoneE164: string | null;
+    activePartnerRequest: PartnerRequest | null;
+    partnerRequestFlowActive: boolean;
+    allPartners: HotelPartner[];
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -454,6 +561,10 @@ async function answerGrounded(
     bookingIntentDetected,
     partnerIntentDetected,
     partnerCandidates,
+    normalizedPhoneE164,
+    activePartnerRequest,
+    partnerRequestFlowActive,
+    allPartners,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -466,6 +577,9 @@ async function answerGrounded(
     bookingIntentDetected,
     partnerIntentDetected,
     partnerCandidates,
+    partnerRequestFlowActive,
+    activePartnerRequest,
+    allActivePartnersForRequest: allPartners,
   });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
@@ -479,6 +593,7 @@ async function answerGrounded(
   let recommendedPartnerIds: string[] | null;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
+  let partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null = null;
 
   try {
     const client = getOpenAIClient();
@@ -496,6 +611,20 @@ async function answerGrounded(
     recommendedPartnerIds = response.output_parsed.recommendedPartnerIds;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
+
+    if (partnerRequestFlowActive) {
+      const flowResult = await applyPartnerRequestFlow(reply, {
+        hotelId,
+        conversationId,
+        message,
+        normalizedPhoneE164,
+        activePartnerRequest,
+        allPartners,
+        modelOutput: response.output_parsed,
+      });
+      reply = flowResult.reply;
+      partnerRequestPhonePrompt = flowResult.partnerRequestPhonePrompt;
+    }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -549,7 +678,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt };
 }
 
 /**
@@ -576,6 +705,10 @@ async function answerNoContext(
     bookingIntentDetected: boolean;
     partnerIntentDetected: boolean;
     partnerCandidates: HotelPartner[];
+    normalizedPhoneE164: string | null;
+    activePartnerRequest: PartnerRequest | null;
+    partnerRequestFlowActive: boolean;
+    allPartners: HotelPartner[];
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -591,6 +724,10 @@ async function answerNoContext(
     bookingIntentDetected,
     partnerIntentDetected,
     partnerCandidates,
+    normalizedPhoneE164,
+    activePartnerRequest,
+    partnerRequestFlowActive,
+    allPartners,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -601,6 +738,9 @@ async function answerNoContext(
     bookingIntentDetected,
     partnerIntentDetected,
     partnerCandidates,
+    partnerRequestFlowActive,
+    activePartnerRequest,
+    allActivePartnersForRequest: allPartners,
   });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
@@ -609,6 +749,7 @@ async function answerNoContext(
   let recommendedPartnerIds: string[] | null;
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
+  let partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null = null;
 
   try {
     const client = getOpenAIClient();
@@ -626,6 +767,20 @@ async function answerNoContext(
     recommendedPartnerIds = response.output_parsed.recommendedPartnerIds;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
+
+    if (partnerRequestFlowActive) {
+      const flowResult = await applyPartnerRequestFlow(reply, {
+        hotelId,
+        conversationId,
+        message,
+        normalizedPhoneE164,
+        activePartnerRequest,
+        allPartners,
+        modelOutput: response.output_parsed,
+      });
+      reply = flowResult.reply;
+      partnerRequestPhonePrompt = flowResult.partnerRequestPhonePrompt;
+    }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -649,7 +804,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -710,5 +865,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [] };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null };
 }

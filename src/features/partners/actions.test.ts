@@ -31,6 +31,20 @@ function fakeChainableSupabase() {
   return { from: () => chain };
 }
 
+/** Same shape as fakeChainableSupabase(), but .delete().eq().eq() resolves with a PostgrestError-shaped { code, message } — used to simulate the 23503 FK violation from partner_requests_partner_fk (0020_partner_requests.sql) and other delete failures. */
+function fakeChainableSupabaseWithDeleteError(code: string, message = "constraint violation detail") {
+  const chain: Record<string, unknown> = {
+    insert: () => chain,
+    update: () => chain,
+    delete: () => chain,
+    select: () => chain,
+    eq: () => chain,
+    single: async () => ({ data: null, error: null }),
+  };
+  Object.assign(chain, { data: null, error: { code, message } });
+  return { from: () => chain };
+}
+
 const mockRequireHotelAccess = vi.fn<
   (hotelId: string, scope: string) => Promise<{ userId: string; profile: { id: string; role: string }; supabase: unknown }>
 >(async () => ({
@@ -194,8 +208,26 @@ describe("setHotelPartnerActiveBackoffice / setHotelPartnerActiveClient", () => 
   it("[tenant isolation]", () => {
     expect(source).toMatch(/\.eq\("id", partnerId\)\.eq\("hotel_id", hotelId\)/);
   });
+
+  it("[unchanged by the delete/23503 correction] setHotelPartnerActiveInternal itself was not touched — it remains the functional alternative deleteHotelPartner's 23503 message now points hotel_admins to", () => {
+    const fn = source.slice(source.indexOf("async function setHotelPartnerActiveInternal"), source.indexOf("export async function setHotelPartnerActiveBackoffice"));
+    expect(fn).not.toMatch(/23503/);
+    expect(fn).toMatch(/\.update\(\{ is_active: isActive \}\)/);
+  });
 });
 
+/**
+ * partner_requests_conversation_fk (0020_partner_requests.sql) protects
+ * conversations the exact same way partner_requests_partner_fk protects
+ * hotel_partners: no ON DELETE clause -> Postgres default NO ACTION -> a
+ * conversation referenced by a partner_request could never be physically
+ * deleted either. No conversation-delete action exists anywhere in this
+ * codebase today (confirmed: no `.from("conversations").delete(` call), so
+ * there is no code path to correct here — this note exists purely so a
+ * future conversation-delete feature doesn't rediscover the same 23503 from
+ * scratch; apply the identical error.code === "23503" handling there if one
+ * is ever added.
+ */
 describe("deleteHotelPartnerBackoffice / deleteHotelPartnerClient", () => {
   it("[hardcoded scope, no fallback]", () => {
     expect(source).toMatch(/deleteHotelPartnerInternal\(hotelId, partnerId, "backoffice"\)/);
@@ -204,6 +236,83 @@ describe("deleteHotelPartnerBackoffice / deleteHotelPartnerClient", () => {
 
   it("[tenant isolation] delete is scoped by BOTH partnerId and hotel_id", () => {
     expect(source).toMatch(/\.delete\(\)\.eq\("id", partnerId\)\.eq\("hotel_id", hotelId\)/);
+  });
+
+  it("[no pre-check] never queries partner_requests before deleting — the FK is the only source of truth", () => {
+    const fn = source.slice(source.indexOf("async function deleteHotelPartnerInternal"), source.indexOf("export async function deleteHotelPartnerBackoffice"));
+    expect(fn).not.toMatch(/\.from\("partner_requests"\)/);
+    expect(fn).not.toMatch(/\.select\(/);
+  });
+
+  it("[23503 — FK violation] a partner with existing partner_requests gets a specific, actionable message pointing to deactivation", async () => {
+    const { deleteHotelPartnerBackoffice } = await import("./actions");
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("23503"),
+    });
+
+    const result = await deleteHotelPartnerBackoffice("hotel-a", "partner-1");
+
+    expect(result).toEqual({
+      ok: false,
+      error: "Ce partenaire possède des demandes enregistrées et ne peut pas être supprimé. Désactivez-le à la place.",
+    });
+  });
+
+  it("[other error codes] keep the existing generic message, unchanged", async () => {
+    const { deleteHotelPartnerBackoffice } = await import("./actions");
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("42501"),
+    });
+
+    const result = await deleteHotelPartnerBackoffice("hotel-a", "partner-1");
+
+    expect(result).toEqual({ ok: false, error: "Impossible de supprimer ce partenaire." });
+  });
+
+  it("[no raw SQL/detail exposed] the ActionResult never carries error.message or error.code, on either error path", async () => {
+    const { deleteHotelPartnerBackoffice } = await import("./actions");
+
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("23503", "update or delete on table \"hotel_partners\" violates foreign key constraint"),
+    });
+    const fkResult = await deleteHotelPartnerBackoffice("hotel-a", "partner-1");
+    expect(JSON.stringify(fkResult)).not.toMatch(/23503/);
+    expect(JSON.stringify(fkResult)).not.toMatch(/violates foreign key/);
+
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("42501", "permission denied for table hotel_partners"),
+    });
+    const otherResult = await deleteHotelPartnerBackoffice("hotel-a", "partner-1");
+    expect(JSON.stringify(otherResult)).not.toMatch(/42501/);
+    expect(JSON.stringify(otherResult)).not.toMatch(/permission denied/);
+  });
+
+  it("[Backoffice/Client scope preserved on the error path too]", async () => {
+    const { deleteHotelPartnerBackoffice, deleteHotelPartnerClient } = await import("./actions");
+
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("23503"),
+    });
+    await deleteHotelPartnerBackoffice("hotel-a", "partner-1");
+    expect(mockRequireHotelAccess).toHaveBeenLastCalledWith("hotel-a", "backoffice");
+
+    mockRequireHotelAccess.mockResolvedValueOnce({
+      userId: "user-1",
+      profile: { id: "user-1", role: "superadmin" },
+      supabase: fakeChainableSupabaseWithDeleteError("23503"),
+    });
+    await deleteHotelPartnerClient("hotel-a", "partner-1");
+    expect(mockRequireHotelAccess).toHaveBeenLastCalledWith("hotel-a", "client");
   });
 });
 

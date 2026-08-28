@@ -35,12 +35,22 @@ describe("answerQuestion — partner intent orthogonal to groundingMode", () => 
     expect(fn).toMatch(/rankPartnerCandidates\(allPartners, \{ category, limit \}\)/);
   });
 
-  it("[loaded only when intent detected] loadActiveHotelPartners is never called unconditionally — most turns have nothing to do with a partner", () => {
+  it("[loaded only when relevant] loadActiveHotelPartners is never called unconditionally — most turns have nothing to do with a partner. Gated by partnerRequestFlowActive (partnerIntentDetected OR an active partner_request already exists for this conversation — see partnerRequestFlow.ts), a superset of partnerIntentDetected alone: a bare 'oui' confirming an in-progress request must still load the authoritative partner list even though it never matches isPartnerIntent's own keywords.", () => {
     const fn = sliceFn("answerQuestion", "type HistoryInputItem");
-    const guardIndex = fn.indexOf("if (partnerIntentDetected) {");
+    const guardIndex = fn.indexOf("if (partnerRequestFlowActive) {");
     const loadIndex = fn.indexOf("loadActiveHotelPartners(");
     expect(guardIndex).toBeGreaterThan(-1);
     expect(loadIndex).toBeGreaterThan(guardIndex);
+  });
+
+  it("[recommendation cap still gated by partnerIntentDetected specifically] partnerCandidates (the capped, display-only list) is only ever populated inside the narrower partnerIntentDetected check, even though allPartners (the uncapped, request-validation list) loads under the broader gate", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    const broadGuardIndex = fn.indexOf("if (partnerRequestFlowActive) {");
+    const narrowGuardIndex = fn.indexOf("if (partnerIntentDetected) {");
+    const rankIndex = fn.indexOf("rankPartnerCandidates(allPartners, { category, limit })");
+    expect(broadGuardIndex).toBeGreaterThan(-1);
+    expect(narrowGuardIndex).toBeGreaterThan(broadGuardIndex);
+    expect(rankIndex).toBeGreaterThan(narrowGuardIndex);
   });
 
   it("[threaded to both branches] both answerGrounded and answerNoContext receive partnerIntentDetected and partnerCandidates", () => {
