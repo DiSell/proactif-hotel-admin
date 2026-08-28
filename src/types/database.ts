@@ -458,9 +458,32 @@ export interface HotelPartner {
   website_url: string | null;
   booking_url: string | null;
   email: string | null;
+  /**
+   * PII (operational contact number) — 0020_partner_requests.sql. Distinct
+   * from `phone` above (public-facing, may be shown to visitors):
+   * server-resolved only, for the future WhatsApp-request routing layer.
+   * Never expose via a public/chatbot-facing projection — see
+   * features/partners/queries.ts's own PARTNER_COLUMNS doc comment and
+   * features/rag/partners.ts, which must never read this field.
+   */
+  request_phone_e164: string | null;
   consent_status: HotelPartnerConsentStatus;
   consent_requested_at: string | null;
   consent_responded_at: string | null;
+  /**
+   * Independent from consent_status above — 0022_partner_transactional_consent.sql.
+   * consent_status governs ONLY chatbot-recommendation eligibility;
+   * whatsapp_consent_status governs whether this partner may LATER receive
+   * a transactional WhatsApp request (features/partners/canReceivePartnerRequests.ts).
+   * Accepting one is never interpreted as accepting the other — no
+   * migration ever backfills this to "accepted" for an existing row.
+   * whatsapp_consent_token_hash is deliberately NOT declared here, same
+   * discipline as consent_token_hash: it must never reach a Client
+   * Component even as a hash.
+   */
+  whatsapp_consent_status: HotelPartnerConsentStatus;
+  whatsapp_consent_requested_at: string | null;
+  whatsapp_consent_responded_at: string | null;
   is_active: boolean;
   priority: number;
   created_at: string;

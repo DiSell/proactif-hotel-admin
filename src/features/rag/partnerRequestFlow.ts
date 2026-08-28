@@ -1,5 +1,4 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { HotelPartner } from "@/types/database";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createPartnerRequestForChatbot, applyPartnerRequestCommandForChatbot } from "@/features/partnerRequests/chatbotService";
@@ -7,7 +6,7 @@ import { getActivePartnerRequestForConversation, getGuestPhoneForPartnerRequest 
 import { maskPhoneForDisplay } from "@/features/partnerRequests/phoneRedaction";
 import { formatPartnerRequestDate, formatPartnerRequestTime } from "@/features/partnerRequests/presentation";
 import { loadActiveHotelPartners } from "./partners";
-import type { PendingPartnerRequestFields, PartnerRequestPhonePrompt } from "./types";
+import type { PendingPartnerRequestFields, PartnerRequestPhonePrompt, RagPartner } from "./types";
 
 /**
  * KNOWN LIMITATION (free-text path only — see submitStructuredGuestPhone
@@ -76,7 +75,7 @@ export interface ProcessPartnerRequestTurnParams {
   normalizedPhoneE164: string | null;
   activePartnerRequest: PartnerRequest | null;
   /** hotel_id-, is_active-, consent_status=accepted-scoped (features/rag/partners.ts:loadActiveHotelPartners) — the ONLY list a partnerId is ever validated against here. */
-  allActivePartners: HotelPartner[];
+  allActivePartners: RagPartner[];
   modelOutput: PartnerRequestModelOutput;
   /** Forwarded to chatbotService — omit to use its own createAdminClient() default; tests inject a fake. */
   supabase?: SupabaseClient;
@@ -93,7 +92,7 @@ export interface PartnerRequestTurnOutcome {
 const NO_OUTCOME: PartnerRequestTurnOutcome = { replySuffix: null, phonePrompt: null };
 
 function buildRecapText(
-  partner: HotelPartner,
+  partner: RagPartner,
   fields: {
     requestedDate: string | null;
     requestedTime: string | null;
@@ -130,7 +129,7 @@ function buildConfirmedText(partnerName: string): string {
 interface FinalizePartnerRequestCreationParams {
   hotelId: string;
   conversationId: string;
-  partner: HotelPartner;
+  partner: RagPartner;
   guestPhoneE164: string;
   requestedDate: string | null;
   requestedTime: string | null;

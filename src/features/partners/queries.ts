@@ -30,9 +30,23 @@ import type { HotelPartner } from "@/types/database";
  * (0017_hotel_partner_consent.sql) must never reach the browser even as a
  * hash — it has no reason to be there, and HotelPartner's own TypeScript
  * type deliberately doesn't declare it either.
+ *
+ * request_phone_e164 (0020_partner_requests.sql) IS included here on
+ * purpose: this projection feeds ONLY the authorized hotel_admin/superadmin
+ * management UI (PartnerFormModal.tsx), never the chatbot — the chatbot's
+ * own, entirely separate read (features/rag/partners.ts:loadActiveHotelPartners)
+ * never selects or forwards this column to the model/widget. Never confuse
+ * the two: this constant must never be reused as, or merged into, a
+ * chatbot-facing projection.
+ *
+ * whatsapp_consent_status/whatsapp_consent_requested_at/whatsapp_consent_responded_at
+ * (0022_partner_transactional_consent.sql) follow the exact same rule as
+ * their recommendation-consent counterparts: included for display in the
+ * management UI, `whatsapp_consent_token_hash` deliberately excluded, same
+ * discipline as `consent_token_hash`.
  */
 const PARTNER_COLUMNS =
-  "id, hotel_id, name, category, description, address, phone, opening_hours, website_url, booking_url, email, consent_status, consent_requested_at, consent_responded_at, is_active, priority, created_at, updated_at";
+  "id, hotel_id, name, category, description, address, phone, request_phone_e164, opening_hours, website_url, booking_url, email, consent_status, consent_requested_at, consent_responded_at, whatsapp_consent_status, whatsapp_consent_requested_at, whatsapp_consent_responded_at, is_active, priority, created_at, updated_at";
 
 export async function listHotelPartners(hotelId: string, supabase: SupabaseClient): Promise<HotelPartner[]> {
   const { data, error } = await supabase

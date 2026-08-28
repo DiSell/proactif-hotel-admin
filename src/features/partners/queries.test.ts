@@ -45,4 +45,28 @@ describe("listHotelPartners — required supabase client, no default", () => {
     expect(columns).toMatch(/\bconsent_status\b/);
     expect(columns).toMatch(/\bopening_hours\b/);
   });
+
+  it("[request_phone_e164 included] this projection feeds ONLY the authorized management UI (never the chatbot, which reads hotel_partners through its own, separate query) — see this file's own PARTNER_COLUMNS doc comment", async () => {
+    const { listHotelPartners } = await import("./queries");
+    const supabase = fakeSupabase([]);
+
+    await listHotelPartners("hotel-a", supabase as never);
+
+    const [columns] = supabase.select.mock.calls[0];
+    expect(columns).toMatch(/\brequest_phone_e164\b/);
+    expect(columns).toMatch(/\bphone\b/); // the public field remains present too, independently
+  });
+
+  it("[whatsapp_consent_status/requested_at/responded_at included, whatsapp_consent_token_hash excluded] same discipline as the recommendation-consent columns above", async () => {
+    const { listHotelPartners } = await import("./queries");
+    const supabase = fakeSupabase([]);
+
+    await listHotelPartners("hotel-a", supabase as never);
+
+    const [columns] = supabase.select.mock.calls[0];
+    expect(columns).toMatch(/\bwhatsapp_consent_status\b/);
+    expect(columns).toMatch(/\bwhatsapp_consent_requested_at\b/);
+    expect(columns).toMatch(/\bwhatsapp_consent_responded_at\b/);
+    expect(columns).not.toMatch(/whatsapp_consent_token_hash/);
+  });
 });

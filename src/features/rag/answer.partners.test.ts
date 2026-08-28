@@ -25,7 +25,7 @@ describe("answerQuestion — partner intent orthogonal to groundingMode", () => 
   it("[computed once, before branching] partnerIntentDetected/partnerCandidates are computed in answerQuestion itself, not duplicated per branch", () => {
     const fn = sliceFn("answerQuestion", "type HistoryInputItem");
     expect(fn).toMatch(/const partnerIntentDetected = isPartnerIntent\(message\);/);
-    expect(fn).toMatch(/let partnerCandidates: HotelPartner\[\] = \[\];/);
+    expect(fn).toMatch(/let partnerCandidates: RagPartner\[\] = \[\];/);
     expect(fn).toMatch(/if \(partnerIntentDetected\) \{/);
   });
 
@@ -122,5 +122,85 @@ describe("hotel_partners never pollutes accommodation/RAG logic", () => {
     const partnersImportLine = source.split("\n").find((line) => line.includes('from "./partners"'));
     expect(partnersImportLine).toBeTruthy();
     expect(source).not.toMatch(/\.from\("hotel_partners"\)/);
+  });
+});
+
+/**
+ * request_phone_e164 (0020_partner_requests.sql / features/partners) is an
+ * operational, private WhatsApp-routing number — it must never reach the
+ * chatbot's own read path, the model, or the widget. This is a permanent
+ * regression guard, not a one-off check: loadActiveHotelPartners
+ * (features/rag/partners.ts) uses an explicit, minimal column list
+ * (RAG_PARTNER_COLUMNS) that structurally EXCLUDES this column — it is no
+ * longer even physically present on the JS objects the chatbot code holds
+ * (previously true when that query used `select("*")`). This test still
+ * checks for actual property access (`.request_phone_e164`), not a bare
+ * word match, since the surrounding files' own doc comments legitimately
+ * name the column in prose to explain the exclusion.
+ */
+describe("request_phone_e164 never reaches the chatbot/LLM/widget", () => {
+  const promptSource = readFileSync(join(here, "prompt.ts"), "utf8");
+  const partnersSource = readFileSync(join(here, "partners.ts"), "utf8");
+
+  it("[answer.ts never references it]", () => {
+    expect(source).not.toMatch(/request_phone_e164/);
+  });
+
+  it("[prompt.ts never references it] — the model-facing PARTENAIRES LOCAUX guidance only ever lists id/name/category/description/opening_hours", () => {
+    expect(promptSource).not.toMatch(/request_phone_e164/);
+  });
+
+  it("[partners.ts never reads/selects it] — neither loadActiveHotelPartners, toPartnerRecommendation, nor buildPartnerAction access this field, and the explicit column list never names it", () => {
+    expect(partnersSource).not.toMatch(/\.request_phone_e164/);
+    expect(partnersSource).not.toMatch(/RAG_PARTNER_COLUMNS\s*=\s*"[^"]*request_phone_e164/);
+  });
+
+  it("[RagPartner type itself never declares it] the pipeline's own minimal type structurally cannot carry this field", () => {
+    const typesSource = readFileSync(join(here, "types.ts"), "utf8");
+    const ragPartnerBlock = typesSource.slice(typesSource.indexOf("export interface RagPartner"), typesSource.indexOf("export interface Chunk"));
+    expect(ragPartnerBlock).not.toMatch(/request_phone_e164/);
+  });
+
+  it("[toPartnerRecommendation never forwards it] the widget-facing PartnerRecommendation shape is built from an explicit field list, never a spread of the raw HotelPartner row", () => {
+    const fn = partnersSource.slice(partnersSource.indexOf("export function toPartnerRecommendation"));
+    expect(fn).not.toMatch(/\.\.\.partner/);
+  });
+});
+
+/**
+ * whatsapp_consent_status/whatsapp_consent_requested_at/whatsapp_consent_responded_at/
+ * whatsapp_consent_token_hash (0022_partner_transactional_consent.sql) govern
+ * a SEPARATE, transactional WhatsApp consent — fully independent from the
+ * chatbot-recommendation consent_status this pipeline already gates on (see
+ * "hotel_partners never pollutes accommodation/RAG logic" above). None of
+ * these four columns has any reason to exist inside the chatbot/RAG
+ * pipeline at all — this is a permanent regression guard, mirroring the
+ * request_phone_e164 guard above exactly.
+ */
+describe("whatsapp_consent_* (transactional WhatsApp consent) never reaches the chatbot/LLM/widget", () => {
+  const promptSource = readFileSync(join(here, "prompt.ts"), "utf8");
+  const partnersSource = readFileSync(join(here, "partners.ts"), "utf8");
+
+  it("[answer.ts never references it]", () => {
+    expect(source).not.toMatch(/whatsapp_consent/);
+  });
+
+  it("[prompt.ts never references it]", () => {
+    expect(promptSource).not.toMatch(/whatsapp_consent/);
+  });
+
+  it("[partners.ts never reads/selects it] — neither loadActiveHotelPartners, toPartnerRecommendation, nor buildPartnerAction access these fields, and the explicit column list never names any of them", () => {
+    expect(partnersSource).not.toMatch(/whatsapp_consent/);
+  });
+
+  it("[RagPartner type itself never declares any of the four columns] the pipeline's own minimal type structurally cannot carry this data", () => {
+    const typesSource = readFileSync(join(here, "types.ts"), "utf8");
+    const ragPartnerBlock = typesSource.slice(typesSource.indexOf("export interface RagPartner"), typesSource.indexOf("export interface Chunk"));
+    expect(ragPartnerBlock).not.toMatch(/whatsapp_consent/);
+  });
+
+  it("[toPartnerRecommendation never forwards it] the widget-facing PartnerRecommendation shape never carries any whatsapp_consent_* field", () => {
+    const fn = partnersSource.slice(partnersSource.indexOf("export function toPartnerRecommendation"));
+    expect(fn).not.toMatch(/whatsapp_consent/);
   });
 });

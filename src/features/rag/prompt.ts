@@ -1,6 +1,6 @@
-import type { ChatbotSettings, Hotel, HotelPartner } from "@/types/database";
+import type { ChatbotSettings, Hotel } from "@/types/database";
 import { bookingCtaKind, type BookingCtaKind } from "./bookingCta";
-import type { GroundingMode, RetrievedChunk } from "./types";
+import type { GroundingMode, RagPartner, RetrievedChunk } from "./types";
 import type { PartySize } from "./partySize";
 import type { RankedCandidate } from "./accommodationRanking";
 import type { AvailabilityCheckState } from "../availability/types";
@@ -77,7 +77,7 @@ export interface BuildHotelInstructionsParams {
    * partners" rule is enforced structurally, not left to the model's
    * judgment.
    */
-  partnerCandidates?: HotelPartner[];
+  partnerCandidates?: RagPartner[];
   /**
    * Orthogonal to partnerIntentDetected — true whenever a partner-REQUEST
    * flow should be considered this turn: either partnerIntentDetected fired
@@ -100,7 +100,7 @@ export interface BuildHotelInstructionsParams {
    * longer in this turn's capped display list) must still be a valid target
    * once the visitor asks to book with it.
    */
-  allActivePartnersForRequest?: Pick<HotelPartner, "id" | "name">[];
+  allActivePartnersForRequest?: Pick<RagPartner, "id" | "name">[];
 }
 
 /**
@@ -308,7 +308,7 @@ function buildBookingIntentGuidance(ctaKind: BookingCtaKind): string {
  * recommandation fabriquée" (product spec point 6) actually hold even when
  * intent detection fires on a hotel with no partners configured yet.
  */
-function buildPartnerGuidance(candidates: Pick<HotelPartner, "id" | "name" | "category" | "description" | "opening_hours">[]): string {
+function buildPartnerGuidance(candidates: Pick<RagPartner, "id" | "name" | "category" | "description" | "opening_hours">[]): string {
   if (candidates.length === 0) {
     return [
       "PARTENAIRES LOCAUX :",
@@ -362,7 +362,7 @@ function buildPartnerGuidance(candidates: Pick<HotelPartner, "id" | "name" | "ca
  */
 function buildPartnerRequestGuidance(
   activeRequest: Pick<PartnerRequest, "status" | "partner_id"> | null,
-  availablePartners: Pick<HotelPartner, "id" | "name">[]
+  availablePartners: Pick<RagPartner, "id" | "name">[]
 ): string {
   if (activeRequest && activeRequest.status === "pending_confirmation") {
     return [

@@ -81,3 +81,48 @@ export async function acceptPartnerConsent(token: string, openingHours?: string,
 export async function declinePartnerConsent(token: string): Promise<ActionResult<null>> {
   return respondToConsent(token, "declined", { openingHours: null, address: null });
 }
+
+/**
+ * DISTINCT from respondToConsent/acceptPartnerConsent/declinePartnerConsent
+ * above — this responds to the SEPARATE transactional WhatsApp consent
+ * (0022_partner_transactional_consent.sql), scoped by
+ * whatsapp_consent_token_hash/whatsapp_consent_status, never
+ * consent_token_hash/consent_status. No opening_hours/address fields here —
+ * this consent has nothing to do with the partner's public listing details.
+ */
+async function respondToTransactionalConsent(token: string, status: "accepted" | "declined"): Promise<ActionResult<null>> {
+  const tokenHash = hashConsentToken(token);
+  const supabase = createAdminClient();
+
+  // Scoped by BOTH the token hash AND whatsapp_consent_status = 'pending' —
+  // same "answer once, never overwritten by a replay" discipline as
+  // respondToConsent above.
+  const { data, error } = await supabase
+    .from("hotel_partners")
+    .update({
+      whatsapp_consent_status: status,
+      whatsapp_consent_responded_at: new Date().toISOString(),
+    })
+    .eq("whatsapp_consent_token_hash", tokenHash)
+    .eq("whatsapp_consent_status", "pending")
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    console.error("respondToTransactionalConsent: update failed", { message: error.message });
+    return { ok: false, error: "Impossible d'enregistrer votre réponse pour le moment." };
+  }
+  if (!data) {
+    return { ok: false, error: "Ce lien est invalide ou vous avez déjà répondu à cette demande." };
+  }
+
+  return { ok: true, data: null };
+}
+
+export async function acceptPartnerTransactionalConsent(token: string): Promise<ActionResult<null>> {
+  return respondToTransactionalConsent(token, "accepted");
+}
+
+export async function declinePartnerTransactionalConsent(token: string): Promise<ActionResult<null>> {
+  return respondToTransactionalConsent(token, "declined");
+}

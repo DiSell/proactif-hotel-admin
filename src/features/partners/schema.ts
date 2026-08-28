@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { HotelPartnerCategory } from "@/types/database";
+import { normalizeStructuredPhoneInput } from "@/features/partnerRequests/phoneRedaction";
 
 /** Single source of truth for the closed category list — mirrors the CHECK constraint in supabase/migrations/0015_hotel_partners.sql exactly; keep both in sync if a category is ever added/removed. */
 export const HOTEL_PARTNER_CATEGORIES = [
@@ -58,6 +59,32 @@ export const hotelPartnerSchema = z.object({
   description: z.string().trim().max(2000, "Description trop longue (2000 caractères maximum).").optional().or(z.literal("")),
   address: z.string().trim().max(300, "Adresse trop longue.").optional().or(z.literal("")),
   phone: z.string().trim().max(50, "Numéro trop long.").optional().or(z.literal("")),
+  /**
+   * Operational number (0020_partner_requests.sql) — deliberately SEPARATE
+   * from `phone` above, never a replacement for it. Unlike
+   * features/partnerRequests/schema.ts's own e164Schema (which requires
+   * already-normalized input, since a redaction step runs earlier in that
+   * flow), the hotel admin types this directly into a form field here, so
+   * normalizing a plausible FR national number to +33 at this layer is the
+   * right place for it — reuses the same pure, deterministic function the
+   * chatbot's structured phone form already uses, never a second
+   * implementation of the same rule.
+   */
+  request_phone_e164: z
+    .string()
+    .trim()
+    .max(40, "Numéro trop long.")
+    .optional()
+    .or(z.literal(""))
+    .transform((value, ctx) => {
+      if (!value) return null;
+      const normalized = normalizeStructuredPhoneInput(value);
+      if (!normalized) {
+        ctx.addIssue({ code: "custom", message: "Numéro invalide (format E.164 attendu, ex. +33612345678)." });
+        return z.NEVER;
+      }
+      return normalized;
+    }),
   // Free text, never parsed/computed — see 0018_hotel_partner_opening_hours.sql's own comment.
   opening_hours: z.string().trim().max(300, "Horaires trop longs.").optional().or(z.literal("")),
   // Used only to send the consent request (features/partners/actions.ts::

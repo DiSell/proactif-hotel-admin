@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ALL_PARTNERS_LIMIT,
   DEFAULT_PARTNER_LIMIT,
   buildPartnerAction,
   detectRelevantPartnerCategory,
   isPartnerIntent,
+  loadActiveHotelPartners,
   rankPartnerCandidates,
   toPartnerRecommendation,
   wantsAllPartners,
@@ -17,6 +18,7 @@ function partner(overrides: Partial<HotelPartner> & { id: string; name: string; 
     description: null,
     address: null,
     phone: null,
+    request_phone_e164: null,
     opening_hours: null,
     email: null,
     website_url: null,
@@ -24,6 +26,9 @@ function partner(overrides: Partial<HotelPartner> & { id: string; name: string; 
     consent_status: "accepted",
     consent_requested_at: null,
     consent_responded_at: null,
+    whatsapp_consent_status: "not_requested",
+    whatsapp_consent_requested_at: null,
+    whatsapp_consent_responded_at: null,
     is_active: true,
     priority: 0,
     created_at: "2026-01-01T00:00:00Z",
@@ -194,5 +199,82 @@ describe("toPartnerRecommendation", () => {
     const p = partner({ id: "1", name: "X", category: "other", booking_url: "https://x.example.com" });
     const rec = toPartnerRecommendation(p);
     expect(rec.action).toEqual({ type: "partner_booking", label: "Réserver", url: "https://x.example.com" });
+  });
+});
+
+/**
+ * Real-invocation tests (unlike answer.partners.test.ts's source-level
+ * audit for the rest of answer.ts) — loadActiveHotelPartners takes an
+ * injected Supabase client, so its actual query shape can be asserted on
+ * directly, not just inferred from source text.
+ */
+describe("loadActiveHotelPartners — explicit, minimal, PII-free projection", () => {
+  function fakeSupabase(rows: unknown[]) {
+    const eqThird = vi.fn(() => ({ returns: async () => ({ data: rows, error: null }) }));
+    const eqSecond = vi.fn(() => ({ eq: eqThird }));
+    const eqFirst = vi.fn(() => ({ eq: eqSecond }));
+    const select = vi.fn<(columns: string) => { eq: typeof eqFirst }>(() => ({ eq: eqFirst }));
+    const from = vi.fn<(table: string) => { select: typeof select }>(() => ({ select }));
+    return { from, select, eqFirst, eqSecond, eqThird };
+  }
+
+  it("[never select(\"*\")] uses an explicit column list", async () => {
+    const supabase = fakeSupabase([]);
+    await loadActiveHotelPartners(supabase as never, "hotel-a");
+    const [columns] = supabase.select.mock.calls[0];
+    expect(columns).not.toBe("*");
+  });
+
+  it("[exact column list locked] — changing this list is a deliberate, reviewed decision, not an accident", async () => {
+    const supabase = fakeSupabase([]);
+    await loadActiveHotelPartners(supabase as never, "hotel-a");
+    const [columns] = supabase.select.mock.calls[0];
+    expect(columns).toBe("id, hotel_id, name, category, description, address, phone, opening_hours, website_url, booking_url, is_active, priority");
+  });
+
+  it("[private/operational columns excluded] request_phone_e164, consent_token_hash, email, and consent timestamps are never requested", async () => {
+    const supabase = fakeSupabase([]);
+    await loadActiveHotelPartners(supabase as never, "hotel-a");
+    const [columns] = supabase.select.mock.calls[0];
+    for (const excluded of ["request_phone_e164", "consent_token_hash", "email", "consent_status", "consent_requested_at", "consent_responded_at", "created_at", "updated_at"]) {
+      expect(columns).not.toMatch(new RegExp(`\\b${excluded}\\b`));
+    }
+  });
+
+  it("[fields the pipeline actually reads are all present]", async () => {
+    const supabase = fakeSupabase([]);
+    await loadActiveHotelPartners(supabase as never, "hotel-a");
+    const [columns] = supabase.select.mock.calls[0];
+    for (const required of ["id", "hotel_id", "name", "category", "description", "address", "phone", "opening_hours", "website_url", "booking_url", "is_active", "priority"]) {
+      expect(columns).toMatch(new RegExp(`\\b${required}\\b`));
+    }
+  });
+
+  it("[same filters as before: hotel_id, is_active, consent_status] behavior unchanged — only the column list changed", async () => {
+    const supabase = fakeSupabase([]);
+    await loadActiveHotelPartners(supabase as never, "hotel-a");
+    expect(supabase.from).toHaveBeenCalledWith("hotel_partners");
+    expect(supabase.eqFirst).toHaveBeenCalledWith("hotel_id", "hotel-a");
+    expect(supabase.eqSecond).toHaveBeenCalledWith("is_active", true);
+    expect(supabase.eqThird).toHaveBeenCalledWith("consent_status", "accepted");
+  });
+
+  it("[rows returned as-is] the function itself does no extra filtering/shaping beyond the query", async () => {
+    const rows = [{ id: "1", name: "Le Bistrot" }];
+    const supabase = fakeSupabase(rows);
+    const result = await loadActiveHotelPartners(supabase as never, "hotel-a");
+    expect(result).toEqual(rows);
+  });
+
+  it("[query error] resolves to an empty array, never throws", async () => {
+    const supabase = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({ eq: () => ({ eq: () => ({ returns: async () => ({ data: null, error: { message: "db down" } }) }) }) }),
+        }),
+      }),
+    };
+    const result = await loadActiveHotelPartners(supabase as never, "hotel-a");
+    expect(result).toEqual([]);
   });
 });

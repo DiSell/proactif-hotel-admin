@@ -69,6 +69,10 @@ function toRow(input: HotelPartnerInput) {
     description: input.description || null,
     address: input.address || null,
     phone: input.phone || null,
+    // Already normalized/validated E.164 or null by hotelPartnerSchema's own
+    // transform — never re-normalized or trusted-as-is beyond what the
+    // schema already guaranteed.
+    request_phone_e164: input.request_phone_e164,
     opening_hours: input.opening_hours || null,
     email: input.email || null,
     website_url: input.website_url || null,
@@ -334,45 +338,84 @@ export async function fetchPartnerWebsiteSummaryClient(
 }
 
 /**
- * Sends (or re-sends) the partner consent request — the ONLY way
- * hotel_partners.consent_status ever moves from "not_requested" to
- * "pending". Blocking-by-design: features/rag/partners.ts::loadActiveHotelPartners()
- * requires consent_status = "accepted" (in addition to is_active) before
- * the chatbot may ever recommend this partner — see
- * 0017_hotel_partner_consent.sql's own comment. Manually triggered only
- * (a button in PartnersManager/PartnerFormModal) — never automatic on
- * create/update, per explicit product decision.
+ * Sends (or re-sends) the SINGLE partner consent email, covering BOTH
+ * independent authorizations at once:
+ *   - hotel_partners.consent_status (chatbot recommendation, 0017)
+ *   - hotel_partners.whatsapp_consent_status (transactional WhatsApp, 0022)
  *
- * Re-sending (calling this again for a partner already "pending") simply
- * generates a NEW token and overwrites the old hash — the previous
- * confirmation link stops working the moment a new one is requested. No
- * separate "resend" action.
+ * ONE token, ONE email, ONE link — never two separate emails from two
+ * separate send actions. This is achieved WITHOUT merging the two statuses
+ * and WITHOUT any new column/migration: a single cryptographically random
+ * token is generated, and its hash is written into WHICHEVER of the two
+ * existing, independent hash columns (consent_token_hash /
+ * whatsapp_consent_token_hash) belongs to a consent that is actually
+ * ELIGIBLE for a (re)request right now (see isRecommendationEligible/
+ * isWhatsappEligible below). The public page
+ * (src/app/partenaires/consentement/page.tsx) then resolves either column
+ * against the SAME token — see consentLookup.ts::getPartnerConsentRequests
+ * — and renders two fully independent Accept/Decline blocks, each scoped
+ * server-side by its OWN column, so accepting/declining one can never
+ * touch the other's status even though they share the same emailed link.
  *
- * The token itself (plaintext) exists ONLY inside the built consentUrl,
- * for the duration of this one function call — never logged, never
- * returned to the caller, never stored (only its SHA-256 hash is written,
- * via generateConsentToken() — see consentToken.ts).
+ * ELIGIBILITY RULE (documented here since this task defines it explicitly):
+ *   - a consent already "accepted" is NEVER re-requested/overwritten by
+ *     this action — accepting is a one-way door from the partner's own
+ *     click, never silently reset by the hotel asking again.
+ *   - "not_requested", "pending", and "declined" are ALL eligible for a
+ *     (re)request — in particular a "declined" partner CAN be asked again
+ *     later (e.g. after a phone conversation), but this action itself
+ *     never flips a status to "accepted" — only the partner's own click on
+ *     the public page ever does that (see consentActions.ts).
+ *   - the WhatsApp consent additionally requires request_phone_e164 to be
+ *     set (nothing to route a future request to otherwise) — a missing
+ *     number simply makes that ONE consent ineligible, it never blocks the
+ *     recommendation consent from being (re)requested in the same email.
+ *   - if NEITHER consent is eligible, nothing is sent at all (no email, no
+ *     token, no DB write) and a clear error is returned.
+ *
+ * Manually triggered only (a single button in PartnerFormModal) — never
+ * automatic on create/update, per explicit product decision, unchanged
+ * from the previous two-button design.
+ *
+ * The token itself (plaintext) exists ONLY inside the built consentUrl, for
+ * the duration of this one function call — never logged, never returned to
+ * the caller, never stored (only its SHA-256 hash is written, via
+ * generateConsentToken() — see consentToken.ts). The DB write only happens
+ * AFTER the email send succeeds, same ordering as before the merge — a
+ * failed send never leaves a dangling pending status/token hash behind.
  */
-async function requestPartnerConsentInternal(hotelId: string, partnerId: string, scope: AuthScope): Promise<ActionResult<null>> {
+async function requestPartnerConsentsInternal(hotelId: string, partnerId: string, scope: AuthScope): Promise<ActionResult<null>> {
   const { supabase } = await requireHotelAccess(hotelId, scope);
 
   const { data: partner, error: partnerError } = await supabase
     .from("hotel_partners")
-    .select("name, email")
+    .select("name, email, request_phone_e164, consent_status, whatsapp_consent_status")
     .eq("id", partnerId)
     .eq("hotel_id", hotelId)
-    .maybeSingle<{ name: string; email: string | null }>();
+    .maybeSingle<{
+      name: string;
+      email: string | null;
+      request_phone_e164: string | null;
+      consent_status: string;
+      whatsapp_consent_status: string;
+    }>();
   if (partnerError || !partner) {
-    console.error("requestPartnerConsent: partner lookup failed", { message: partnerError?.message });
+    console.error("requestPartnerConsents: partner lookup failed", { message: partnerError?.message });
     return { ok: false, error: "Partenaire introuvable." };
   }
   if (!partner.email) {
     return { ok: false, error: "Renseignez d'abord l'email du partenaire avant d'envoyer une demande de consentement." };
   }
 
+  const isRecommendationEligible = partner.consent_status !== "accepted";
+  const isWhatsappEligible = Boolean(partner.request_phone_e164) && partner.whatsapp_consent_status !== "accepted";
+  if (!isRecommendationEligible && !isWhatsappEligible) {
+    return { ok: false, error: "Les deux autorisations de ce partenaire sont déjà accordées." };
+  }
+
   const { data: hotel, error: hotelError } = await supabase.from("hotels").select("name").eq("id", hotelId).maybeSingle<{ name: string }>();
   if (hotelError || !hotel) {
-    console.error("requestPartnerConsent: hotel lookup failed", { message: hotelError?.message });
+    console.error("requestPartnerConsents: hotel lookup failed", { message: hotelError?.message });
     return { ok: false, error: "Impossible de récupérer les informations de l'établissement." };
   }
 
@@ -383,17 +426,23 @@ async function requestPartnerConsentInternal(hotelId: string, partnerId: string,
 
   const emailResult = await sendEmail({ to: partner.email, subject: template.subject, html: template.html, text: template.text });
   if (!emailResult.ok) {
-    console.error("requestPartnerConsent: sendEmail failed", { message: emailResult.error });
+    console.error("requestPartnerConsents: sendEmail failed", { message: emailResult.error });
     return { ok: false, error: "Impossible d'envoyer l'email pour le moment." };
   }
 
+  const now = new Date().toISOString();
   const { error: updateError } = await supabase
     .from("hotel_partners")
-    .update({ consent_status: "pending", consent_token_hash: tokenHash, consent_requested_at: new Date().toISOString() })
+    .update({
+      ...(isRecommendationEligible ? { consent_status: "pending", consent_token_hash: tokenHash, consent_requested_at: now } : null),
+      ...(isWhatsappEligible
+        ? { whatsapp_consent_status: "pending", whatsapp_consent_token_hash: tokenHash, whatsapp_consent_requested_at: now }
+        : null),
+    })
     .eq("id", partnerId)
     .eq("hotel_id", hotelId);
   if (updateError) {
-    console.error("requestPartnerConsent: update failed", { message: updateError.message });
+    console.error("requestPartnerConsents: update failed", { message: updateError.message });
     return { ok: false, error: "L'email a été envoyé mais le statut n'a pas pu être mis à jour. Réessayez." };
   }
 
@@ -401,10 +450,10 @@ async function requestPartnerConsentInternal(hotelId: string, partnerId: string,
   return { ok: true, data: null };
 }
 
-export async function requestPartnerConsentBackoffice(hotelId: string, partnerId: string): Promise<ActionResult<null>> {
-  return requestPartnerConsentInternal(hotelId, partnerId, "backoffice");
+export async function requestPartnerConsentsBackoffice(hotelId: string, partnerId: string): Promise<ActionResult<null>> {
+  return requestPartnerConsentsInternal(hotelId, partnerId, "backoffice");
 }
 
-export async function requestPartnerConsentClient(hotelId: string, partnerId: string): Promise<ActionResult<null>> {
-  return requestPartnerConsentInternal(hotelId, partnerId, "client");
+export async function requestPartnerConsentsClient(hotelId: string, partnerId: string): Promise<ActionResult<null>> {
+  return requestPartnerConsentsInternal(hotelId, partnerId, "client");
 }

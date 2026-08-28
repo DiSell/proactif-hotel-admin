@@ -13,8 +13,8 @@ import {
   deleteHotelPartnerClient,
   fetchPartnerWebsiteSummaryBackoffice,
   fetchPartnerWebsiteSummaryClient,
-  requestPartnerConsentBackoffice,
-  requestPartnerConsentClient,
+  requestPartnerConsentsBackoffice,
+  requestPartnerConsentsClient,
   setHotelPartnerActiveBackoffice,
   setHotelPartnerActiveClient,
   updateHotelPartnerBackoffice,
@@ -32,7 +32,14 @@ export interface PartnerActions {
     hotelId: string,
     url: string
   ) => Promise<ActionResult<{ description: string; address: string | null; openingHours: string | null }>>;
-  requestPartnerConsent: (hotelId: string, partnerId: string) => Promise<ActionResult<null>>;
+  /**
+   * Sends the SINGLE partner consent email covering both independent
+   * authorizations (chatbot recommendation + transactional WhatsApp) — see
+   * actions.ts's own doc comment on requestPartnerConsentsInternal. There
+   * is deliberately no separate "requestPartnerTransactionalConsent" entry
+   * any more: one user action, one email, one link.
+   */
+  requestPartnerConsents: (hotelId: string, partnerId: string) => Promise<ActionResult<null>>;
 }
 
 export const PARTNER_ACTIONS_BACKOFFICE: PartnerActions = {
@@ -41,7 +48,7 @@ export const PARTNER_ACTIONS_BACKOFFICE: PartnerActions = {
   setHotelPartnerActive: setHotelPartnerActiveBackoffice,
   deleteHotelPartner: deleteHotelPartnerBackoffice,
   fetchPartnerWebsiteSummary: fetchPartnerWebsiteSummaryBackoffice,
-  requestPartnerConsent: requestPartnerConsentBackoffice,
+  requestPartnerConsents: requestPartnerConsentsBackoffice,
 };
 
 export const PARTNER_ACTIONS_CLIENT: PartnerActions = {
@@ -50,5 +57,5 @@ export const PARTNER_ACTIONS_CLIENT: PartnerActions = {
   setHotelPartnerActive: setHotelPartnerActiveClient,
   deleteHotelPartner: deleteHotelPartnerClient,
   fetchPartnerWebsiteSummary: fetchPartnerWebsiteSummaryClient,
-  requestPartnerConsent: requestPartnerConsentClient,
+  requestPartnerConsents: requestPartnerConsentsClient,
 };

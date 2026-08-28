@@ -4,11 +4,26 @@ import { useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { FormField, inputClassName, textareaClassName } from "@/components/ui/FormField";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Toggle } from "@/components/ui/Toggle";
 import { useToast } from "@/components/ui/Toast";
 import { HOTEL_PARTNER_CATEGORIES, HOTEL_PARTNER_CATEGORY_LABEL } from "./schema";
-import type { HotelPartner, HotelPartnerCategory } from "@/types/database";
+import type { HotelPartner, HotelPartnerCategory, HotelPartnerConsentStatus } from "@/types/database";
 import type { PartnerActions } from "./actionBundles";
+
+/**
+ * Two INDEPENDENT consent statuses — never conflated. consent_status governs
+ * chatbot recommendation only; whatsapp_consent_status
+ * (0022_partner_transactional_consent.sql) governs whether this partner may
+ * later receive a transactional WhatsApp request. Accepting one never
+ * implies the other — see canReceivePartnerRequests.ts.
+ */
+const CONSENT_STATUS_LABEL: Record<HotelPartnerConsentStatus, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+  not_requested: { label: "Non demandé", tone: "neutral" },
+  pending: { label: "En attente", tone: "warning" },
+  accepted: { label: "Accepté", tone: "success" },
+  declined: { label: "Refusé", tone: "danger" },
+};
 
 interface PartnerFormModalProps {
   hotelId: string;
@@ -28,6 +43,7 @@ export function PartnerFormModal({ hotelId, partner, actions, onClose, onSaved }
   const [description, setDescription] = useState(partner?.description ?? "");
   const [address, setAddress] = useState(partner?.address ?? "");
   const [phone, setPhone] = useState(partner?.phone ?? "");
+  const [requestPhoneE164, setRequestPhoneE164] = useState(partner?.request_phone_e164 ?? "");
   const [openingHours, setOpeningHours] = useState(partner?.opening_hours ?? "");
   const [email, setEmail] = useState(partner?.email ?? "");
   const [websiteUrl, setWebsiteUrl] = useState(partner?.website_url ?? "");
@@ -64,23 +80,36 @@ export function PartnerFormModal({ hotelId, partner, actions, onClose, onSaved }
     });
   }
 
-  // Sends the confirmation link to the partner's OWN inbox — see
-  // requestPartnerConsentBackoffice/Client's own doc comment. Only
-  // meaningful once the partner already has an id (existing row), since the
-  // request is stored against it; a not-yet-saved "new partner" form has
-  // nothing to send a request against yet.
-  function handleSendConsent() {
+  // Sends the SINGLE consent email covering both independent authorizations
+  // (recommendation + WhatsApp) — see actions.ts's own doc comment on
+  // requestPartnerConsentsInternal. One button, one email, one link; the
+  // server independently decides which of the two consents are actually
+  // eligible for a (re)request (never re-requesting an already-"accepted"
+  // one). Only meaningful once the partner already has an id (existing
+  // row), since the request is stored against it; a not-yet-saved "new
+  // partner" form has nothing to send a request against yet.
+  function handleSendConsents() {
     if (!partner || !email.trim()) return;
     startSendingConsent(async () => {
-      const result = await actions.requestPartnerConsent(hotelId, partner.id);
+      const result = await actions.requestPartnerConsents(hotelId, partner.id);
       if (!result.ok) {
         toast.show(result.error ?? "Erreur", "danger");
         return;
       }
-      toast.show("Demande de consentement envoyée.");
+      toast.show("Demande d'autorisations envoyée.");
       onSaved();
     });
   }
+
+  // Client-side affordance only — the server (requestPartnerConsentsInternal)
+  // independently re-checks eligibility and is the real gate. Mirrors that
+  // same rule: a consent already "accepted" is never re-requested, so the
+  // button has nothing left to do once BOTH are accepted (or the one
+  // available consent, when request_phone_e164 is still empty, is already
+  // accepted).
+  const canRequestRecommendation = partner ? partner.consent_status !== "accepted" : false;
+  const canRequestWhatsapp = partner ? Boolean(requestPhoneE164.trim()) && partner.whatsapp_consent_status !== "accepted" : false;
+  const hasSomethingToRequest = canRequestRecommendation || canRequestWhatsapp;
 
   function handleSubmit() {
     const input = {
@@ -89,6 +118,7 @@ export function PartnerFormModal({ hotelId, partner, actions, onClose, onSaved }
       description,
       address,
       phone,
+      request_phone_e164: requestPhoneE164,
       opening_hours: openingHours,
       email,
       website_url: websiteUrl,
@@ -161,6 +191,48 @@ export function PartnerFormModal({ hotelId, partner, actions, onClose, onSaved }
           </FormField>
         </div>
 
+        <FormField
+          label="Numéro WhatsApp pour recevoir les demandes"
+          htmlFor="partner_request_phone_e164"
+          hint="Ce numéro sera utilisé uniquement pour transmettre les demandes envoyées par vos clients."
+          error={errors.request_phone_e164}
+        >
+          <input
+            id="partner_request_phone_e164"
+            value={requestPhoneE164 ?? ""}
+            onChange={(event) => setRequestPhoneE164(event.target.value)}
+            placeholder="+33612345678"
+            className={inputClassName(Boolean(errors.request_phone_e164))}
+          />
+        </FormField>
+
+        {partner && (
+          <div className="rounded-lg border border-border p-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="mb-1.5 text-2xs font-medium text-ink">Recommandation dans le chatbot</p>
+                <StatusBadge label={CONSENT_STATUS_LABEL[partner.consent_status].label} tone={CONSENT_STATUS_LABEL[partner.consent_status].tone} />
+              </div>
+              <div>
+                <p className="mb-1.5 text-2xs font-medium text-ink">Réception des demandes clients</p>
+                <StatusBadge
+                  label={CONSENT_STATUS_LABEL[partner.whatsapp_consent_status].label}
+                  tone={CONSENT_STATUS_LABEL[partner.whatsapp_consent_status].tone}
+                />
+              </div>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mt-3 h-7 w-full px-2 text-2xs"
+              onClick={handleSendConsents}
+              disabled={isSendingConsent || !email.trim() || !hasSomethingToRequest}
+            >
+              {isSendingConsent ? "Envoi…" : "Demander les autorisations au partenaire"}
+            </Button>
+          </div>
+        )}
+
         <FormField label="Horaires" htmlFor="partner_opening_hours" hint="ex : Lun-Sam 12h-14h, 19h-22h" error={errors.opening_hours}>
           <input
             id="partner_opening_hours"
@@ -207,29 +279,16 @@ export function PartnerFormModal({ hotelId, partner, actions, onClose, onSaved }
         <FormField
           label="Email du partenaire"
           htmlFor="partner_email"
-          hint="Requis pour lui envoyer une demande de consentement."
+          hint="Requis pour lui envoyer une demande d'autorisations."
           error={errors.email}
         >
-          <div className="flex items-center gap-2">
-            <input
-              id="partner_email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              className={inputClassName(Boolean(errors.email))}
-            />
-            {partner && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9 shrink-0 px-2 text-2xs"
-                onClick={handleSendConsent}
-                disabled={isSendingConsent || !email.trim()}
-              >
-                {isSendingConsent ? "Envoi…" : "Envoyer la demande de consentement"}
-              </Button>
-            )}
-          </div>
+          <input
+            id="partner_email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            className={inputClassName(Boolean(errors.email))}
+          />
         </FormField>
 
         <div className="flex items-center justify-between gap-4">

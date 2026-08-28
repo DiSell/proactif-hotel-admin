@@ -71,7 +71,7 @@ describe("partnerConsentTemplate", () => {
 
   it("[subject] names the hotel", () => {
     const { subject } = partnerConsentTemplate(params);
-    expect(subject).toBe("Hôtel du Parc souhaite vous recommander à ses visiteurs");
+    expect(subject).toBe("Hôtel du Parc souhaite vous référencer comme partenaire");
   });
 
   it("[url embedded, never fabricated] the exact consentUrl passed in appears in both html and text, untouched", () => {

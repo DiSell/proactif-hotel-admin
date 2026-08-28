@@ -1,5 +1,34 @@
 import type { HotelPartnerCategory } from "@/types/database";
 
+/**
+ * Minimal, RAG-pipeline-specific projection of hotel_partners — deliberately
+ * NOT HotelPartner (types/database.ts), which carries every column
+ * including operational/internal ones (request_phone_e164, email,
+ * consent_status, consent_requested_at/consent_responded_at) this pipeline
+ * has no business touching. Every field here was traced field-by-field as
+ * genuinely read somewhere in the RAG pipeline (partners.ts/prompt.ts/
+ * answer.ts/partnerRequestFlow.ts) — never copied from HotelPartner's full
+ * shape "just in case". See features/rag/partners.ts:loadActiveHotelPartners,
+ * the only place this type's instances are ever created from a real DB row.
+ * consent_status is deliberately excluded even though it gates the SQL
+ * query itself (`.eq("consent_status", "accepted")`) — filtering happens at
+ * the database level, so the value is never read again on the returned rows.
+ */
+export interface RagPartner {
+  id: string;
+  hotel_id: string;
+  name: string;
+  category: HotelPartnerCategory;
+  description: string | null;
+  address: string | null;
+  phone: string | null;
+  opening_hours: string | null;
+  website_url: string | null;
+  booking_url: string | null;
+  is_active: boolean;
+  priority: number;
+}
+
 export interface Chunk {
   content: string;
   chunkIndex: number;

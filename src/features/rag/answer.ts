@@ -26,8 +26,17 @@ import { checkAvailability } from "../availability/checkAvailability";
 import { applyAvailabilityToCandidates } from "../availability/applyAvailabilityToCandidates";
 import { NoopAvailabilityProviderResolver } from "../availability/resolver";
 import type { AvailabilityCheckState, StayRequestState } from "../availability/types";
-import type { AnswerQuestionResult, ChatAction, GroundingMode, PartnerRecommendation, PartnerRequestPhonePrompt, RetrievedChunk, RoomRecommendation } from "./types";
-import type { AccommodationType, ChatbotSettings, Hotel, HotelPartner } from "@/types/database";
+import type {
+  AnswerQuestionResult,
+  ChatAction,
+  GroundingMode,
+  PartnerRecommendation,
+  PartnerRequestPhonePrompt,
+  RagPartner,
+  RetrievedChunk,
+  RoomRecommendation,
+} from "./types";
+import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
 import { redactPhoneNumbers } from "@/features/partnerRequests/phoneRedaction";
 import { getActivePartnerRequestForConversation } from "@/features/partnerRequests/queries";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
@@ -334,8 +343,8 @@ export async function answerQuestion({
   const activePartnerRequest = await getActivePartnerRequestForConversation(hotelId, conversationId, supabase);
   const partnerRequestFlowActive = partnerIntentDetected || activePartnerRequest !== null;
 
-  let partnerCandidates: HotelPartner[] = [];
-  let allPartners: HotelPartner[] = [];
+  let partnerCandidates: RagPartner[] = [];
+  let allPartners: RagPartner[] = [];
   if (partnerRequestFlowActive) {
     allPartners = await loadActiveHotelPartners(supabase, hotelId);
     if (partnerIntentDetected) {
@@ -407,7 +416,7 @@ async function applyPartnerRequestFlow(
     message: string;
     normalizedPhoneE164: string | null;
     activePartnerRequest: PartnerRequest | null;
-    allPartners: HotelPartner[];
+    allPartners: RagPartner[];
     modelOutput: PartnerRequestModelOutput;
   }
 ): Promise<{ reply: string; partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null }> {
@@ -441,7 +450,7 @@ async function applyPartnerRequestFlow(
  * the result can never exceed that cap either: the "max 3" rule is
  * structural, not just a prompt instruction the model might ignore.
  */
-function buildPartnerRecommendations(recommendedPartnerIds: string[] | null, partnerCandidates: HotelPartner[]): PartnerRecommendation[] {
+function buildPartnerRecommendations(recommendedPartnerIds: string[] | null, partnerCandidates: RagPartner[]): PartnerRecommendation[] {
   if (!recommendedPartnerIds || recommendedPartnerIds.length === 0) return [];
   const byId = new Map(partnerCandidates.map((partner) => [partner.id, partner]));
   const seen = new Set<string>();
@@ -537,11 +546,11 @@ async function answerGrounded(
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
     partnerIntentDetected: boolean;
-    partnerCandidates: HotelPartner[];
+    partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
-    allPartners: HotelPartner[];
+    allPartners: RagPartner[];
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -704,11 +713,11 @@ async function answerNoContext(
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
     partnerIntentDetected: boolean;
-    partnerCandidates: HotelPartner[];
+    partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
-    allPartners: HotelPartner[];
+    allPartners: RagPartner[];
   }
 ): Promise<AnswerQuestionResult> {
   const {

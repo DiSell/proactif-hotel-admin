@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { HotelPartner, HotelPartnerCategory } from "@/types/database";
-import type { PartnerAction, PartnerRecommendation } from "./types";
+import type { HotelPartnerCategory } from "@/types/database";
+import type { PartnerAction, PartnerRecommendation, RagPartner } from "./types";
 
 /**
  * Never noyer le visiteur (product spec point 8): at most 3 partners in a
@@ -102,7 +102,7 @@ export interface RankPartnerCandidatesOptions {
  * present an inactive partner even if handed one directly (e.g. a test
  * fixture, or a future caller that forgets the DB-level filter).
  */
-export function rankPartnerCandidates(partners: HotelPartner[], options: RankPartnerCandidatesOptions): HotelPartner[] {
+export function rankPartnerCandidates(partners: RagPartner[], options: RankPartnerCandidatesOptions): RagPartner[] {
   const active = partners.filter((partner) => partner.is_active);
   const byCategory = options.category ? active.filter((partner) => partner.category === options.category) : active;
   const pool = byCategory.length > 0 ? byCategory : active;
@@ -117,13 +117,13 @@ export function rankPartnerCandidates(partners: HotelPartner[], options: RankPar
  * website_url (product spec point 10); neither present -> null, never a
  * fabricated link.
  */
-export function buildPartnerAction(partner: Pick<HotelPartner, "booking_url" | "website_url">): PartnerAction | null {
+export function buildPartnerAction(partner: Pick<RagPartner, "booking_url" | "website_url">): PartnerAction | null {
   if (partner.booking_url) return { type: "partner_booking", label: "Réserver", url: partner.booking_url };
   if (partner.website_url) return { type: "partner_website", label: "Voir le site", url: partner.website_url };
   return null;
 }
 
-export function toPartnerRecommendation(partner: HotelPartner): PartnerRecommendation {
+export function toPartnerRecommendation(partner: RagPartner): PartnerRecommendation {
   return {
     id: partner.id,
     name: partner.name,
@@ -139,6 +139,20 @@ export function toPartnerRecommendation(partner: HotelPartner): PartnerRecommend
 }
 
 /**
+ * Explicit, minimal column list — never `select("*")`. Every column here was
+ * traced as genuinely read somewhere in the RAG pipeline (rankPartnerCandidates/
+ * buildPartnerAction/toPartnerRecommendation above, buildPartnerGuidance/
+ * buildPartnerRequestGuidance in prompt.ts, partnerRequestFlow.ts) — see
+ * RagPartner's own doc comment (features/rag/types.ts). Deliberately EXCLUDES
+ * every operational/internal column this pipeline never needs, in
+ * particular: request_phone_e164 (private WhatsApp-routing number,
+ * 0020_partner_requests.sql — must never reach the model/widget), email,
+ * consent_token_hash, consent_status/consent_requested_at/consent_responded_at
+ * (the consent gate itself is enforced by the WHERE clause below, not by
+ * reading the column back), created_at/updated_at. A `select("*")` here
+ * would silently start loading any future sensitive column a later
+ * migration adds to hotel_partners — this explicit list can't.
+ *
  * hotel_id-, is_active-, and consent_status-scoped read — the ONLY place
  * answer.ts reads hotel_partners from. Never touched by accommodation_types/
  * room_photos/knowledge_sources logic, and never feeds the RAG knowledge
@@ -148,16 +162,21 @@ export function toPartnerRecommendation(partner: HotelPartner): PartnerRecommend
  * independent gate on top of is_active — the hotel's own on/off toggle
  * never bypasses the partner's own confirmation. A partner is_active but
  * still "not_requested"/"pending"/"declined" must never be recommended by
- * the chatbot, no matter how it's ranked or filtered downstream.
+ * the chatbot, no matter how it's ranked or filtered downstream. Filtered
+ * entirely at the SQL level (WHERE clause) — never selected as a returned
+ * column, since nothing downstream ever reads it back.
  */
-export async function loadActiveHotelPartners(supabase: SupabaseClient, hotelId: string): Promise<HotelPartner[]> {
+const RAG_PARTNER_COLUMNS =
+  "id, hotel_id, name, category, description, address, phone, opening_hours, website_url, booking_url, is_active, priority";
+
+export async function loadActiveHotelPartners(supabase: SupabaseClient, hotelId: string): Promise<RagPartner[]> {
   const { data, error } = await supabase
     .from("hotel_partners")
-    .select("*")
+    .select(RAG_PARTNER_COLUMNS)
     .eq("hotel_id", hotelId)
     .eq("is_active", true)
     .eq("consent_status", "accepted")
-    .returns<HotelPartner[]>();
+    .returns<RagPartner[]>();
   if (error) {
     console.error("loadActiveHotelPartners: query failed", { hotelId, message: error.message });
     return [];

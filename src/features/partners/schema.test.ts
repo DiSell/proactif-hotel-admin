@@ -122,6 +122,50 @@ describe("hotelPartnerSchema — email", () => {
   });
 });
 
+describe("hotelPartnerSchema — request_phone_e164 (operational WhatsApp-routing number, distinct from `phone`)", () => {
+  it("[omitted] resolves to null, no error", () => {
+    const result = hotelPartnerSchema.safeParse(validInput());
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.request_phone_e164).toBeNull();
+  });
+
+  it("[empty string] resolves to null", () => {
+    const result = hotelPartnerSchema.safeParse(validInput({ request_phone_e164: "" }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.request_phone_e164).toBeNull();
+  });
+
+  it("[already E.164] accepted as-is", () => {
+    const result = hotelPartnerSchema.safeParse(validInput({ request_phone_e164: "+33612345678" }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.request_phone_e164).toBe("+33612345678");
+  });
+
+  it("[plausible FR national] normalized deterministically to +33, reusing phoneRedaction.ts's own function", () => {
+    const result = hotelPartnerSchema.safeParse(validInput({ request_phone_e164: "06 12 34 56 78" }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.request_phone_e164).toBe("+33612345678");
+  });
+
+  it("[invalid/ambiguous format] rejected with a readable message, never guessed", () => {
+    const result = hotelPartnerSchema.safeParse(validInput({ request_phone_e164: "12345" }));
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(["request_phone_e164"]);
+      expect(result.error.issues[0]?.message).toMatch(/invalide/i);
+    }
+  });
+
+  it("[independent from the public `phone` field] setting one never affects the other", () => {
+    const result = hotelPartnerSchema.safeParse(validInput({ phone: "01 23 45 67 89", request_phone_e164: "+33698765432" }));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.phone).toBe("01 23 45 67 89");
+      expect(result.data.request_phone_e164).toBe("+33698765432");
+    }
+  });
+});
+
 describe("hotelPartnerSchema — length limits", () => {
   it("[name too long rejected]", () => {
     expect(hotelPartnerSchema.safeParse(validInput({ name: "x".repeat(201) })).success).toBe(false);

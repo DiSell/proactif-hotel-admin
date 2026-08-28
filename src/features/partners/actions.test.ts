@@ -129,8 +129,8 @@ const EXPORTED_FUNCTION_NAMES = [
   "deleteHotelPartnerClient",
   "fetchPartnerWebsiteSummaryBackoffice",
   "fetchPartnerWebsiteSummaryClient",
-  "requestPartnerConsentBackoffice",
-  "requestPartnerConsentClient",
+  "requestPartnerConsentsBackoffice",
+  "requestPartnerConsentsClient",
 ];
 
 describe("no exported action ever accepts a scope parameter", () => {
@@ -147,6 +147,19 @@ describe("no exported action ever accepts a scope parameter", () => {
     for (const name of EXPORTED_FUNCTION_NAMES) {
       expect(sliceFunction(name)).not.toMatch(/AuthScope/);
     }
+  });
+});
+
+describe("toRow — request_phone_e164 mapped, never re-normalized here", () => {
+  it("[mapped as-is] toRow passes through the schema's own already-validated/normalized value, no second transformation at the write layer", () => {
+    const fn = source.slice(source.indexOf("function toRow"), source.indexOf("async function createHotelPartnerInternal"));
+    expect(fn).toMatch(/request_phone_e164: input\.request_phone_e164,/);
+  });
+
+  it("[distinct from the public `phone` column] both fields are written independently, one is never derived from the other", () => {
+    const fn = source.slice(source.indexOf("function toRow"), source.indexOf("async function createHotelPartnerInternal"));
+    expect(fn).toMatch(/phone: input\.phone \|\| null,/);
+    expect(fn).toMatch(/request_phone_e164: input\.request_phone_e164,/);
   });
 });
 
@@ -519,22 +532,23 @@ describe("fetchPartnerWebsiteSummaryBackoffice / fetchPartnerWebsiteSummaryClien
 });
 
 /**
- * requestPartnerConsentBackoffice/Client — like every other write in this
- * file, checked at the source level only: requestPartnerConsentInternal
- * calls revalidatePath() (via revalidatePartnerPaths), which throws
- * "Invariant: static generation store missing" outside a real Next.js
- * request context.
+ * requestPartnerConsentsBackoffice/Client — the SINGLE unified send action
+ * covering BOTH independent consents (recommendation + WhatsApp) in one
+ * email/one token. Like every other write in this file, checked at the
+ * source level only: requestPartnerConsentsInternal calls revalidatePath()
+ * (via revalidatePartnerPaths), which throws "Invariant: static generation
+ * store missing" outside a real Next.js request context.
  */
-describe("requestPartnerConsentBackoffice / requestPartnerConsentClient", () => {
+describe("requestPartnerConsentsBackoffice / requestPartnerConsentsClient", () => {
   function internalSource() {
-    const start = source.indexOf("async function requestPartnerConsentInternal");
+    const start = source.indexOf("async function requestPartnerConsentsInternal");
     expect(start).toBeGreaterThan(-1);
-    return source.slice(start, source.indexOf("export async function requestPartnerConsentBackoffice"));
+    return source.slice(start, source.indexOf("export async function requestPartnerConsentsBackoffice"));
   }
 
   it("[hardcoded scope, no fallback] Backoffice always passes \"backoffice\", Client always passes \"client\" — never received from a caller", () => {
-    expect(source).toMatch(/requestPartnerConsentInternal\(hotelId, partnerId, "backoffice"\)/);
-    expect(source).toMatch(/requestPartnerConsentInternal\(hotelId, partnerId, "client"\)/);
+    expect(source).toMatch(/requestPartnerConsentsInternal\(hotelId, partnerId, "backoffice"\)/);
+    expect(source).toMatch(/requestPartnerConsentsInternal\(hotelId, partnerId, "client"\)/);
   });
 
   it("[session-bound client, not service_role] writes through the RLS-gated client requireHotelAccess resolves", () => {
@@ -543,14 +557,52 @@ describe("requestPartnerConsentBackoffice / requestPartnerConsentClient", () => 
     expect(fn).not.toMatch(/createAdminClient/);
   });
 
-  it("[no email set] rejected BEFORE any token is generated or any email sent", () => {
+  it("[no email set] rejected BEFORE any eligibility check, any token is generated, or any email sent", () => {
     const fn = internalSource();
     const emailCheckIndex = fn.indexOf("if (!partner.email)");
+    const eligibilityIndex = fn.indexOf("isRecommendationEligible");
     const tokenIndex = fn.indexOf("generateConsentToken()");
     const sendIndex = fn.indexOf("sendEmail(");
     expect(emailCheckIndex).toBeGreaterThan(-1);
+    expect(emailCheckIndex).toBeLessThan(eligibilityIndex);
     expect(emailCheckIndex).toBeLessThan(tokenIndex);
     expect(emailCheckIndex).toBeLessThan(sendIndex);
+  });
+
+  it("[single email, single template] exactly one sendEmail call, using the SAME partnerConsentTemplate for both consents — no second template/channel", () => {
+    const fn = internalSource();
+    expect(fn.match(/sendEmail\(/g)?.length).toBe(1);
+    expect(fn.match(/partnerConsentTemplate\(/g)?.length).toBe(1);
+    expect(fn).not.toMatch(/partnerTransactionalConsentTemplate/);
+    expect(fn).not.toMatch(/twilio|meta\.com|webhook/i);
+  });
+
+  it("[single token, single link] exactly one generateConsentToken() call, one consentUrl, never a &type= parameter", () => {
+    const fn = internalSource();
+    expect(fn.match(/generateConsentToken\(\)/g)?.length).toBe(1);
+    expect(fn.match(/const consentUrl/g)?.length).toBe(1);
+    expect(fn).not.toMatch(/&type=/);
+  });
+
+  it("[eligibility] recommendation eligible unless already \"accepted\"; WhatsApp eligible only with request_phone_e164 set AND not already \"accepted\"", () => {
+    const fn = internalSource();
+    expect(fn).toMatch(/isRecommendationEligible = partner\.consent_status !== "accepted"/);
+    expect(fn).toMatch(/isWhatsappEligible = Boolean\(partner\.request_phone_e164\) && partner\.whatsapp_consent_status !== "accepted"/);
+  });
+
+  it("[nothing eligible] neither consent eligible -> a clean error, no token generated, no email sent", () => {
+    const fn = internalSource();
+    const guardIndex = fn.indexOf("if (!isRecommendationEligible && !isWhatsappEligible)");
+    const tokenIndex = fn.indexOf("generateConsentToken()");
+    const sendIndex = fn.indexOf("sendEmail(");
+    expect(guardIndex).toBeGreaterThan(-1);
+    expect(guardIndex).toBeLessThan(tokenIndex);
+    expect(guardIndex).toBeLessThan(sendIndex);
+  });
+
+  it("[never re-requests an already-accepted consent] an \"accepted\" status is never included in the eligibility check as still-eligible", () => {
+    const fn = internalSource();
+    expect(fn).not.toMatch(/consent_status\s*===\s*"accepted"/); // only the negated form (!==) drives eligibility, never a positive re-request-if-accepted branch
   });
 
   it("[tenant isolation] both the partner lookup and the status update are scoped by BOTH id and hotel_id", () => {
@@ -559,9 +611,10 @@ describe("requestPartnerConsentBackoffice / requestPartnerConsentClient", () => 
     expect(fn.match(/\.eq\("hotel_id", hotelId\)/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("[token never persisted in plaintext] only tokenHash is written to the row, the raw token exists solely inside the built URL", () => {
+  it("[token never persisted in plaintext] only tokenHash is written to either row, the raw token exists solely inside the built URL", () => {
     const fn = internalSource();
     expect(fn).toMatch(/consent_token_hash: tokenHash/);
+    expect(fn).toMatch(/whatsapp_consent_token_hash: tokenHash/);
     expect(fn).not.toMatch(/consent_token_hash:\s*token[^H]/);
   });
 
@@ -574,8 +627,9 @@ describe("requestPartnerConsentBackoffice / requestPartnerConsentClient", () => 
     }
   });
 
-  it("[blocking gate] sets consent_status to \"pending\" — this is the ONLY place it ever moves away from \"not_requested\"", () => {
+  it("[blocking gate, independent columns] sets consent_status/whatsapp_consent_status to \"pending\" ONLY for the eligible one(s) — the two update fragments are conditionally spread, never unconditional", () => {
     const fn = internalSource();
-    expect(fn).toMatch(/consent_status:\s*"pending"/);
+    expect(fn).toMatch(/isRecommendationEligible \? \{ consent_status: "pending"/);
+    expect(fn).toMatch(/isWhatsappEligible\s*\n?\s*\? \{ whatsapp_consent_status: "pending"/);
   });
 });
