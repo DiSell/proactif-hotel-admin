@@ -46,9 +46,15 @@ describe("WhatsApp transport layer — never reachable from RAG/widget/LLM", () 
     }
   });
 
-  it("[.env.example documents WhatsApp vars without NEXT_PUBLIC_ prefix or a real value]", () => {
+  it("[.env.example documents transport-layer WhatsApp vars without NEXT_PUBLIC_ prefix or a real value]", () => {
     const envExample = readFileSync(join(repoSrc, "..", ".env.example"), "utf8");
-    const whatsappLines = envExample.split("\n").filter((line) => line.includes("WHATSAPP"));
+    // Scoped to this transport layer's own send/webhook vars specifically
+    // (the literal `WHATSAPP_` prefix) — deliberately does NOT match
+    // NEXT_PUBLIC_META_WHATSAPP_CONFIG_ID, a SEPARATE, intentionally
+    // public Meta Embedded Signup identifier
+    // (features/whatsappIntegration/, own test coverage there) that also
+    // happens to contain the word "WHATSAPP".
+    const whatsappLines = envExample.split("\n").filter((line) => /^#?\s*WHATSAPP_/.test(line.trim()));
     expect(whatsappLines.length).toBeGreaterThan(0);
     for (const line of whatsappLines) {
       expect(line).not.toMatch(/NEXT_PUBLIC_/);
