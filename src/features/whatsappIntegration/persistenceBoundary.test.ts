@@ -29,7 +29,7 @@ describe("HotelWhatsAppConnection type — no secret field, ever", () => {
     expect(typeBlock).not.toMatch(/access_token|refresh_token|authorization_code|app_secret|verify_token|system_user_token|credential|secret/i);
   });
 
-  it("[status active is never, by itself, a send guarantee — documented, not just assumed]", () => {
+  it("[status active is documented as meaningful only because the RPC + Meta re-verification chain enforces it — never a bare, unvalidated flag]", () => {
     const source = readSource("features", "whatsappIntegration", "types.ts");
     const typeStart = source.indexOf("export interface HotelWhatsAppConnection");
     const docCommentStart = source.lastIndexOf("/**", typeStart);
@@ -37,7 +37,8 @@ describe("HotelWhatsAppConnection type — no secret field, ever", () => {
       .slice(docCommentStart, typeStart)
       .replace(/^\s*\*\s?/gm, " ")
       .replace(/\s+/g, " ");
-    expect(docComment).toMatch(/NEVER, by itself, proof that messages can actually be sent/);
+    expect(docComment).toMatch(/independently re-verified the WABA\/phone_number_id\/app subscription against Meta/);
+    expect(docComment).toMatch(/never from the browser's own postMessage\/FB\.login response alone/);
   });
 });
 
@@ -113,6 +114,19 @@ describe("finalize_hotel_whatsapp_connection_with_secret (0026) is the ONLY reac
     const source = readSource("lib", "notifications", "whatsapp", "connectionPersistence.ts");
     expect(source).toMatch(/finalize_hotel_whatsapp_connection_with_secret/);
     expect(source).not.toMatch(/"finalize_hotel_whatsapp_connection"/);
+  });
+});
+
+describe("hotel_whatsapp_activation_tokens (0029) never introduces a new RPC", () => {
+  it("[activationTokenPersistence.ts uses only plain conditional .update()/.insert()/.select() — never .rpc()] same 'plain conditional UPDATE is atomic enough' precedent as features/partners/consentActions.ts, not a SECURITY DEFINER function", () => {
+    const source = readSource("features", "whatsappIntegration", "activationTokenPersistence.ts");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\.rpc\(/);
+  });
+
+  it("[never references the 0025/0026 finalization RPCs] this table is entirely separate from hotel_whatsapp_connections/_secrets", () => {
+    const source = readSource("features", "whatsappIntegration", "activationTokenPersistence.ts");
+    expect(source).not.toMatch(/finalize_hotel_whatsapp_connection/);
   });
 });
 

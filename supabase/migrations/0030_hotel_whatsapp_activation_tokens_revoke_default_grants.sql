@@ -1,0 +1,43 @@
+-- =========================================================================
+-- Proactif System — corrective migration: strips privileges Supabase's own
+-- project-level DEFAULT PRIVILEGES silently granted to `authenticated`/
+-- `anon` on public.hotel_whatsapp_activation_tokens (0029), surfaced by a
+-- real check against the applied database:
+--
+--   authenticated still holds REFERENCES on this table's columns.
+--
+-- ROOT CAUSE: 0029 only ever explicitly GRANTs anything to service_role,
+-- and explicitly REVOKEs insert/update/delete from `authenticated` and
+-- ALL from `anon` — but never explicitly addressed REFERENCES (or any
+-- other table-level privilege PostgreSQL supports: SELECT, TRIGGER,
+-- TRUNCATE). Most Supabase projects configure `ALTER DEFAULT PRIVILEGES
+-- IN SCHEMA public ... TO authenticated, anon` at the project level so
+-- that ordinary application tables "just work" for RLS-scoped clients
+-- without a per-migration grant — but hotel_whatsapp_connection_secrets
+-- (0026) and this table are deliberately the OPPOSITE of "an ordinary
+-- application table": every operation happens exclusively through
+-- createAdminClient() (service_role), never a session-scoped client, so
+-- ANY default-granted privilege here is unwanted, not merely unused.
+-- 0029's own narrower REVOKE list didn't anticipate this specific
+-- default-privilege leak; this migration corrects it with a blanket
+-- REVOKE ALL instead of naming individual privileges one at a time.
+--
+-- SCOPE: touches ONLY the GRANT/REVOKE state of
+-- public.hotel_whatsapp_activation_tokens for `authenticated`/`anon`.
+-- Does NOT touch service_role's own grants (still exactly the
+-- `select, insert` plus column-scoped `update (processing_started_at,
+-- used_at, revoked_at)` that 0029 established), does NOT touch the
+-- table's columns/constraints/indexes/RLS status, and does NOT modify
+-- 0001 through 0029 in any way — 0029 is already applied and is left
+-- completely untouched by this file.
+--
+-- Idempotent: REVOKE ALL on a role that already holds no privileges is a
+-- harmless no-op, safe to re-run.
+--
+-- STATUS: 0001 through 0029 are already applied to this project's
+-- Supabase database. This file (0030) is the only migration not yet
+-- applied as of this comment.
+-- =========================================================================
+
+revoke all on table public.hotel_whatsapp_activation_tokens from authenticated;
+revoke all on table public.hotel_whatsapp_activation_tokens from anon;

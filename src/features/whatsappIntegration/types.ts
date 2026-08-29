@@ -57,8 +57,8 @@ export type EmbeddedSignupMessage = EmbeddedSignupFinishData | EmbeddedSignupCan
 
 /**
  * The button's own UI state machine. `"connected"` is reachable ONLY after
- * receiveWhatsAppEmbeddedSignupCode() (actions.ts) returns a genuine
- * success — meaning the server independently re-verified the WABA/
+ * receiveWhatsAppEmbeddedSignupCodeFromActivation() (actions.ts) returns a
+ * genuine success — meaning the server independently re-verified the WABA/
  * phone_number_id/app subscription against Meta, encrypted the business
  * token, AND finalize_hotel_whatsapp_connection_with_secret() (0026)
  * committed both the connection and its secret atomically. Never set from
@@ -82,15 +82,19 @@ export type EmbeddedSignupStatus =
  * unlike Hotel/HotelPartner which are shared much more broadly.
  *
  * Deliberately declares NO token/credential field, ever — the table itself
- * has none (0024's own "no secret columns" guarantee); the system-user
- * token that eventually sends messages stays the existing SERVER-GLOBAL
- * WHATSAPP_META_ACCESS_TOKEN (src/lib/notifications/whatsapp/), never a
- * per-connection value.
+ * has none (0024's own "no secret columns" guarantee). The per-connection
+ * business token now lives, AES-256-GCM encrypted, in the separate
+ * hotel_whatsapp_connection_secrets table (0026) — never read back into
+ * this shape, and never exposed to the browser.
  *
- * `status: "active"` on a row read here is NEVER, by itself, proof that
- * messages can actually be sent through it — see the migration's own
- * header comment on why only an independent server-side validation
- * (not yet implemented) may ever set this value.
+ * `status: "active"` on a row read here IS meaningful: 0025's
+ * finalize_hotel_whatsapp_connection(_with_secret) RPC only ever sets it
+ * to 'active' when called, and its sole caller
+ * (connectionPersistence.ts::persistWhatsAppConnection) is only ever
+ * reached after actions.ts has already independently re-verified the
+ * WABA/phone_number_id/app subscription against Meta
+ * (metaEmbeddedSignup.ts::finalizeEmbeddedSignup) — never from the
+ * browser's own postMessage/FB.login response alone.
  */
 export type HotelWhatsAppConnectionType = "coexistence" | "cloud_api_only";
 export type HotelWhatsAppConnectionStatus = "pending" | "active" | "revoked" | "error";

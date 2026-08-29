@@ -85,16 +85,6 @@ const NAV_ITEMS = [
     ),
   },
   {
-    href: "/client/whatsapp",
-    label: "WhatsApp",
-    icon: (
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 12c0 4.4-4 8-9 8a10 10 0 01-4-.8L3 20l1-3.8A7.6 7.6 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z" />
-        <path d="M9.5 9.5c0 3 2.5 5.5 5.5 5.5" />
-      </svg>
-    ),
-  },
-  {
     href: "/client/account",
     label: "Mon compte",
     icon: (

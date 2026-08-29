@@ -7,7 +7,12 @@ import { CLIENT_PORTAL_COOKIE_NAME, isClientScopedPath } from "./cookieScope";
 // all (see features/partners/consentLookup.ts's own doc comment) — the
 // one-time token in its own ?token= query param is the sole
 // authorization, same principle as a Supabase Auth magic link.
-const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement"];
+// /whatsapp/connect: same posture — the hotel's own WhatsApp Business
+// owner has no account either, and the [token] route param (not a query
+// param here) is the sole authorization (see
+// features/whatsappIntegration/activationTokenPersistence.ts's own doc
+// comments).
+const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement", "/whatsapp/connect"];
 // The public widget — embed script, its config/chat API, and the standalone
 // chat page rendered inside the embed iframe — must be reachable by an
 // anonymous visitor on a hotel's own site. Nobody browsing a hotel's

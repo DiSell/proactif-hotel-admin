@@ -1,0 +1,38 @@
+-- =========================================================================
+-- Proactif System — corrective migration: strips the REFERENCES privilege
+-- service_role holds on public.hotel_whatsapp_activation_tokens (0029),
+-- surfaced by a real check against the applied database after 0030.
+--
+-- ROOT CAUSE: same class of issue as 0030's — 0029 only ever explicitly
+-- GRANTs `select, insert` plus a column-scoped `update
+-- (processing_started_at, used_at, revoked_at)` to service_role, but
+-- REFERENCES (the privilege to create a foreign key referencing this
+-- table) was never explicitly addressed and remained implicitly held —
+-- service_role is a superuser-like role in Supabase (BYPASSRLS, and
+-- typically inherits broad default privileges at the project level), so
+-- an un-revoked privilege here is a default-inherited grant, not something
+-- 0029 ever intended to give it. This table has no legitimate reason for
+-- ANYTHING to declare a foreign key against it, so REFERENCES is pure
+-- least-privilege excess — least-privilege discipline (task's own
+-- requirement) means removing it even though nothing in this codebase
+-- currently exploits it.
+--
+-- SCOPE: touches ONLY service_role's REFERENCES privilege on
+-- public.hotel_whatsapp_activation_tokens. REVOKE in PostgreSQL is
+-- privilege-specific — revoking REFERENCES cannot affect SELECT, INSERT,
+-- or the column-scoped UPDATE (processing_started_at, used_at,
+-- revoked_at) 0029 already granted; those three remain fully intact and
+-- are not restated here. Does not touch `authenticated`/`anon` (0030
+-- already stripped everything from both), does not touch the table's
+-- columns/constraints/indexes/RLS status, and does not modify 0001
+-- through 0030 in any way.
+--
+-- Idempotent: REVOKE on a privilege already absent is a harmless no-op,
+-- safe to re-run.
+--
+-- STATUS: 0001 through 0030 are already applied to this project's
+-- Supabase database. This file (0031) is the only migration not yet
+-- applied as of this comment.
+-- =========================================================================
+
+revoke references on table public.hotel_whatsapp_activation_tokens from service_role;

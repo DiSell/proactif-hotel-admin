@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { loadMetaSdk, type MetaSdkWindow } from "./metaSdk";
 import { META_EMBEDDED_SIGNUP_ORIGIN, classifyEmbeddedSignupOutcome, parseEmbeddedSignupMessage } from "./embeddedSignupMessage";
-import { receiveWhatsAppEmbeddedSignupCode } from "./actions";
+import { receiveWhatsAppEmbeddedSignupCodeFromActivation } from "./actions";
 import type { EmbeddedSignupMessage, EmbeddedSignupStatus } from "./types";
 
 // Confirmed against Meta's own current Embedded Signup implementation docs
@@ -35,12 +35,27 @@ interface FacebookLoginResponse {
 }
 
 /**
- * "Connecter WhatsApp Business" — reaches the real "connected" state ONLY
- * after receiveWhatsAppEmbeddedSignupCode() (actions.ts) returns a genuine
- * server-side success (Meta re-verification + encryption + atomic DB
- * persistence via 0026's own RPC) — never from the browser's own
+ * "Connecter mon WhatsApp Business" — rendered EXCLUSIVELY on the public
+ * activation page (/whatsapp/connect/[token]), reached by a hotel's own
+ * WhatsApp Business owner who has NO Proactif account — never from the
+ * admin dashboard (which only generates/copies the activation link, and
+ * never imports this component at all) and never from the client portal
+ * (that screen and its ClientSidebarNav entry have been removed entirely).
+ *
+ * `activationToken` is the page's own [token] route param, forwarded
+ * as-is to the server action — this component never decides or enforces
+ * authorization itself. The token IS the authorization:
+ * receiveWhatsAppEmbeddedSignupCodeFromActivation() (actions.ts) derives
+ * hotelId EXCLUSIVELY from an atomic, server-side claim of this token,
+ * never from any value this component could supply.
+ *
+ * Reaches the real "connected" state ONLY after that action returns a
+ * genuine server-side success (Meta re-verification + encryption + atomic
+ * DB persistence via 0026's own RPC) — never from the browser's own
  * postMessage/FB.login response alone, and never displayed optimistically
- * before that server round-trip resolves.
+ * before that server round-trip resolves. A failure at any step (Meta
+ * cancellation/error, crypto, RPC) never consumes the activation token —
+ * the same link can be retried until it is used, expires, or is revoked.
  *
  * Wires together TWO independent Meta channels (confirmed by
  * documentation, see embeddedSignupMessage.ts's own doc comment):
@@ -51,7 +66,7 @@ interface FacebookLoginResponse {
  * classifyEmbeddedSignupOutcome() (a pure, DOM-free function) is the ONLY
  * place these two channels are reconciled — see its own doc comment.
  */
-export function EmbeddedSignupButton() {
+export function EmbeddedSignupButton({ activationToken }: { activationToken: string }) {
   const toast = useToast();
   const [status, setStatus] = useState<EmbeddedSignupStatus>("not_connected");
   const lastMessageRef = useRef<EmbeddedSignupMessage | null>(null);
@@ -126,7 +141,7 @@ export function EmbeddedSignupButton() {
       // continue silently.
       setStatus("unsupported_flow");
       toast.show(
-        "Ce parcours Meta nécessite une migration qui ne peut pas être confirmée comme sûre pour votre numéro existant. Contactez le support avant de continuer.",
+        "Ce parcours Meta nécessite une migration qui ne peut pas être confirmée comme sûre pour ce numéro existant. Contactez le support avant de continuer.",
         "danger"
       );
       return;
@@ -141,9 +156,15 @@ export function EmbeddedSignupButton() {
     // event both present. The hint ids travel alongside the code as
     // `signupResult` (task section 5) — the server treats them as
     // untrusted until it independently re-verifies each one against Meta.
-    const result = await receiveWhatsAppEmbeddedSignupCode({
-      code: code as string,
-      signupResult: { event: outcome.event, wabaId: outcome.wabaId, phoneNumberId: outcome.phoneNumberId, businessId: outcome.businessId },
+    // `activationToken` is this component's own prop, resolved by the
+    // public page from its own [token] route param — never chosen by this
+    // component, and hotelId is never sent at all (the server derives it
+    // from the token itself).
+    const result = await receiveWhatsAppEmbeddedSignupCodeFromActivation(activationToken, code as string, {
+      event: outcome.event,
+      wabaId: outcome.wabaId,
+      phoneNumberId: outcome.phoneNumberId,
+      businessId: outcome.businessId,
     });
     if (!result.ok) {
       setStatus("error");
@@ -153,17 +174,15 @@ export function EmbeddedSignupButton() {
     setStatus("connected");
   }
 
+  if (status === "connected") {
+    return <p className="text-xs font-medium text-ink">WhatsApp Business est maintenant connecté à votre établissement.</p>;
+  }
+
   return (
     <div>
-      <p className="text-xs font-medium text-ink">
-        {status === "connected" ? "WhatsApp Business connecté" : "WhatsApp Business non connecté"}
-      </p>
-      <p className="mt-1 mb-3 text-2xs text-body">
-        Connectez votre compte WhatsApp Business pour permettre à Proactif System d&rsquo;utiliser l&rsquo;API officielle Meta.
-      </p>
-      {status === "cancelled" && <p className="mb-2 text-2xs text-body">Connexion annulée.</p>}
+      {status === "cancelled" && <p className="mb-2 text-2xs text-body">Connexion annulée. Vous pouvez réessayer.</p>}
       <Button variant="secondary" size="sm" onClick={handleClick} disabled={status === "loading_sdk" || status === "opening"}>
-        {status === "loading_sdk" ? "Chargement…" : status === "opening" ? "Connexion en cours…" : "Connecter WhatsApp Business"}
+        {status === "loading_sdk" ? "Chargement…" : status === "opening" ? "Connexion en cours…" : "Connecter mon WhatsApp Business"}
       </Button>
     </div>
   );

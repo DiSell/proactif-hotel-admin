@@ -56,4 +56,17 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/widgetsomething")).toBe(false);
     expect(isPublicPath("/api/widgetsomething/chat")).toBe(false);
   });
+
+  it("[WhatsApp activation link] /whatsapp/connect/[token] is public — the hotel's own WhatsApp Business owner has no Proactif account, the token in the URL is the sole authorization", () => {
+    expect(isPublicPath("/whatsapp/connect/abc123")).toBe(true);
+    expect(isPublicPath("/whatsapp/connect")).toBe(true);
+  });
+
+  it("[admin WhatsApp tab stays gated] /etablissements/[id]/whatsapp (the admin dashboard's link-generation screen) is NOT public — only the /whatsapp/connect/[token] visitor page is", () => {
+    expect(isPublicPath("/etablissements/abc/whatsapp")).toBe(false);
+  });
+
+  it("[no accidental prefix collision on /whatsapp/connect] a path that merely starts with 'whatsapp' but isn't under /whatsapp/connect is NOT public", () => {
+    expect(isPublicPath("/whatsappsomething")).toBe(false);
+  });
 });
