@@ -96,6 +96,26 @@ describe("metaEmbeddedSignup.ts never persists — the finalization CHAIN and th
   });
 });
 
+describe("finalize_hotel_whatsapp_connection_with_secret (0026) is the ONLY reachable RPC call site", () => {
+  it("[only connectionPersistence.ts calls it] metaEmbeddedSignup.ts, actions.ts, and EmbeddedSignupButton.tsx never call any Supabase RPC directly — persistence is delegated entirely (comments MAY name the RPC in prose to document that delegation; only the executable code is checked here)", () => {
+    for (const [dir, file] of [
+      ["lib", "notifications", "whatsapp", "metaEmbeddedSignup.ts"],
+      ["features", "whatsappIntegration", "actions.ts"],
+      ["features", "whatsappIntegration", "EmbeddedSignupButton.tsx"],
+    ].map((segments) => [segments.slice(0, -1), segments[segments.length - 1]] as const)) {
+      const source = readSource(...dir, file);
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      expect(code).not.toMatch(/finalize_hotel_whatsapp_connection|createAdminClient|\.rpc\(/);
+    }
+  });
+
+  it("[connectionPersistence.ts never calls the historical finalize_hotel_whatsapp_connection (0025) directly] only the composite 0026 RPC name appears", () => {
+    const source = readSource("lib", "notifications", "whatsapp", "connectionPersistence.ts");
+    expect(source).toMatch(/finalize_hotel_whatsapp_connection_with_secret/);
+    expect(source).not.toMatch(/"finalize_hotel_whatsapp_connection"/);
+  });
+});
+
 describe("No new migration file other than 0024 was added in this task", () => {
   it("[0020/0021/0022/0023 migrations are untouched — only inspected via their own doc comments elsewhere]", () => {
     // A lightweight content-drift guard: each historical migration's own

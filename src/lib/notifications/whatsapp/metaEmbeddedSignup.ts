@@ -261,6 +261,20 @@ export type FinalizeEmbeddedSignupResult =
       phoneNumberId: string;
       businessId: string | null;
       connectionType: "coexistence";
+      /**
+       * The Meta Business Integration System User access token — returned
+       * to this function's own caller ONLY so it can be encrypted and
+       * persisted immediately (connectionSecretCrypto.ts +
+       * connectionPersistence.ts, both called from
+       * features/whatsappIntegration/actions.ts, never from this file).
+       * This module itself still never touches hotel_id, never imports
+       * Supabase, and never persists anything — see this file's own
+       * "this module never touches hotel_id or persists anything" test.
+       * The caller must never log it, never put it in an Error, never
+       * return it from a Server Action, and must let it fall out of scope
+       * immediately after encryption.
+       */
+      accessToken: string;
     }
   | { ok: false; errorCode: EmbeddedSignupErrorCode };
 
@@ -314,5 +328,6 @@ export async function finalizeEmbeddedSignup(params: FinalizeEmbeddedSignupParam
     phoneNumberId: phoneNumber.phoneNumberId,
     businessId: params.claimedBusinessId,
     connectionType: "coexistence",
+    accessToken: exchange.accessToken,
   };
 }

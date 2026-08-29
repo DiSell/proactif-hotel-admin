@@ -213,7 +213,34 @@ describe("finalizeEmbeddedSignup", () => {
       claimedBusinessId: "biz-1",
     });
 
-    expect(result).toEqual({ ok: true, wabaId: "waba-1", phoneNumberId: "phone-1", businessId: "biz-1", connectionType: "coexistence" });
+    expect(result).toEqual({
+      ok: true,
+      wabaId: "waba-1",
+      phoneNumberId: "phone-1",
+      businessId: "biz-1",
+      connectionType: "coexistence",
+      accessToken: "eph-token",
+    });
+  });
+
+  it("[happy path] returns the access token to the CALLER only — this function's own contract, not a persistence action; the caller (actions.ts) is responsible for encrypting it immediately and never logging/returning/storing it in plaintext", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(jsonResponse(200, { access_token: "eph-token" }))
+      .mockResolvedValueOnce(jsonResponse(200, { id: "waba-1" }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: [{ id: "phone-1" }] }))
+      .mockResolvedValueOnce(jsonResponse(200, { id: "phone-1", is_on_biz_app: true }))
+      .mockResolvedValueOnce(jsonResponse(200, { success: true }));
+
+    const result = await finalizeEmbeddedSignup({
+      code: "auth-code",
+      finishEvent: "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING",
+      claimedWabaId: "waba-1",
+      claimedPhoneNumberId: "phone-1",
+      claimedBusinessId: "biz-1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.accessToken).toBe("eph-token");
   });
 
   it("[code exchange fails] stops immediately, never calls the waba/phone/subscribe endpoints", async () => {
@@ -279,8 +306,9 @@ describe("finalizeEmbeddedSignup", () => {
 });
 
 describe("this module never touches hotel_id or persists anything", () => {
-  it("[no hotel_id/Supabase reference anywhere in this file] tenant resolution and persistence are the CALLER's responsibility (features/whatsappIntegration/actions.ts), never this Meta-facing layer's", () => {
-    expect(source).not.toMatch(/hotelId|hotel_id|createAdminClient|createClient\(|\.from\(|\.rpc\(/);
+  it("[no hotel_id/Supabase reference anywhere in this file's own CODE] tenant resolution and persistence are the CALLER's responsibility (features/whatsappIntegration/actions.ts), never this Meta-facing layer's — comments MAY document this boundary in prose (which necessarily names the very things it says are absent)", () => {
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/hotelId|hotel_id|createAdminClient|createClient\(|\.from\(|\.rpc\(/);
   });
 
   it("[never a real invocation outside of this test file's own mocks] every fetch call in every test above is mocked — grep this test file for a live graph.facebook.com call", () => {

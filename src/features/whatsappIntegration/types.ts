@@ -56,16 +56,19 @@ export interface EmbeddedSignupErrorData {
 export type EmbeddedSignupMessage = EmbeddedSignupFinishData | EmbeddedSignupCancelData | EmbeddedSignupErrorData;
 
 /**
- * The button's own UI state machine (task section 5) — deliberately never
- * includes a "connected" state: this codebase cannot yet persist a
- * connection (no validated DB schema — see actions.ts), so the UI can only
- * ever reach "awaiting_finalization", never claim success.
+ * The button's own UI state machine. `"connected"` is reachable ONLY after
+ * receiveWhatsAppEmbeddedSignupCode() (actions.ts) returns a genuine
+ * success — meaning the server independently re-verified the WABA/
+ * phone_number_id/app subscription against Meta, encrypted the business
+ * token, AND finalize_hotel_whatsapp_connection_with_secret() (0026)
+ * committed both the connection and its secret atomically. Never set from
+ * the browser's own postMessage/FB.login response alone.
  */
 export type EmbeddedSignupStatus =
   | "not_connected"
   | "loading_sdk"
   | "opening"
-  | "awaiting_finalization"
+  | "connected"
   | "cancelled"
   | "unsupported_flow"
   | "error";

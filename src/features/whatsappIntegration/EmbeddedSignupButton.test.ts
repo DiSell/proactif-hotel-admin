@@ -93,10 +93,18 @@ describe("EmbeddedSignupButton — outcome handling", () => {
 });
 
 describe("EmbeddedSignupButton — never claims a real connection, never shows a token", () => {
-  it("[never renders the literal \"WhatsApp connecté\"] the only positive state is \"finalisation requise\" (doc comments may quote the banned string in prose to explain the rule)", () => {
+  it("[\"WhatsApp Business connecté\" is rendered ONLY behind status === \"connected\"] never unconditionally, never derived from the postMessage/FB.login response alone", () => {
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
-    expect(code).not.toMatch(/WhatsApp connecté/);
-    expect(code).toMatch(/finalisation requise/);
+    expect(code).toMatch(/status === "connected" \? "WhatsApp Business connecté"/);
+  });
+
+  it("[status is only ever set to \"connected\" after a real, awaited server response] never optimistically, never before receiveWhatsAppEmbeddedSignupCode() resolves", () => {
+    const fnStart = source.indexOf("async function handleLoginResponse");
+    const fn = source.slice(fnStart);
+    const awaitIndex = fn.indexOf("await receiveWhatsAppEmbeddedSignupCode(");
+    const connectedIndex = fn.indexOf('setStatus("connected")');
+    expect(awaitIndex).toBeGreaterThan(-1);
+    expect(connectedIndex).toBeGreaterThan(awaitIndex);
   });
 
   it("[required consent-style text present]", () => {

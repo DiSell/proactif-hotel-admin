@@ -40,7 +40,7 @@ describe("WhatsApp transport layer — never reachable from RAG/widget/LLM", () 
   });
 
   it("[no NEXT_PUBLIC_ WhatsApp variable ever READ] doc comments may mention the prefix in prose (to explain its absence) — only an actual process.env.NEXT_PUBLIC_* read is disallowed", () => {
-    for (const file of ["types.ts", "provider.ts", "metaProvider.ts", "replyToken.ts", "sendPartnerRequest.ts", "webhook.ts"]) {
+    for (const file of ["types.ts", "provider.ts", "metaProvider.ts", "replyToken.ts", "sendPartnerRequest.ts", "webhook.ts", "connectionSecretCrypto.ts"]) {
       const source = readSource("lib", "notifications", "whatsapp", file);
       expect(source).not.toMatch(/process\.env\.NEXT_PUBLIC_/);
     }
@@ -64,6 +64,12 @@ describe("WhatsApp transport layer — never reachable from RAG/widget/LLM", () 
       expect(line).not.toMatch(/WHATSAPP_META_ACCESS_TOKEN=.+\S/);
       expect(line).not.toMatch(/WHATSAPP_META_APP_SECRET=.+\S/);
       expect(line).not.toMatch(/WHATSAPP_META_VERIFY_TOKEN=.+\S/);
+      // Same discipline for the connectionSecretCrypto.ts AES key
+      // variables — never a real base64 key or key id committed.
+      expect(line).not.toMatch(/WHATSAPP_CONNECTION_SECRET_KEY_CURRENT_B64=.+\S/);
+      expect(line).not.toMatch(/WHATSAPP_CONNECTION_SECRET_KEY_CURRENT_ID=.+\S/);
+      expect(line).not.toMatch(/WHATSAPP_CONNECTION_SECRET_KEY_PREVIOUS_B64=.+\S/);
+      expect(line).not.toMatch(/WHATSAPP_CONNECTION_SECRET_KEY_PREVIOUS_ID=.+\S/);
     }
   });
 });

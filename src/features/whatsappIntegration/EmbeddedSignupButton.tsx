@@ -35,12 +35,12 @@ interface FacebookLoginResponse {
 }
 
 /**
- * "Connecter WhatsApp Business" — task section 5's own state machine.
- * Deliberately NEVER reaches a "connected" state: this codebase cannot yet
- * persist a real connection (no validated database structure — see
- * actions.ts's own doc comment), so the strongest claim this component
- * ever makes is "awaiting_finalization" ("Connexion Meta validée —
- * finalisation requise", task section 17) — never "WhatsApp connecté".
+ * "Connecter WhatsApp Business" — reaches the real "connected" state ONLY
+ * after receiveWhatsAppEmbeddedSignupCode() (actions.ts) returns a genuine
+ * server-side success (Meta re-verification + encryption + atomic DB
+ * persistence via 0026's own RPC) — never from the browser's own
+ * postMessage/FB.login response alone, and never displayed optimistically
+ * before that server round-trip resolves.
  *
  * Wires together TWO independent Meta channels (confirmed by
  * documentation, see embeddedSignupMessage.ts's own doc comment):
@@ -150,13 +150,13 @@ export function EmbeddedSignupButton() {
       toast.show(result.error ?? "Erreur", "danger");
       return;
     }
-    setStatus("awaiting_finalization");
+    setStatus("connected");
   }
 
   return (
     <div>
       <p className="text-xs font-medium text-ink">
-        {status === "awaiting_finalization" ? "Connexion Meta validée — finalisation requise" : "WhatsApp Business non connecté"}
+        {status === "connected" ? "WhatsApp Business connecté" : "WhatsApp Business non connecté"}
       </p>
       <p className="mt-1 mb-3 text-2xs text-body">
         Connectez votre compte WhatsApp Business pour permettre à Proactif System d&rsquo;utiliser l&rsquo;API officielle Meta.
