@@ -63,6 +63,124 @@ describe("readMetaConfigFromEnv", () => {
   });
 });
 
+describe("readMetaWebhookVerifyConfigFromEnv / verifyMetaWebhookChallenge — GET handshake requires ONLY the verify token", () => {
+  it("[Render's real current state: only WHATSAPP_PROVIDER + WHATSAPP_META_VERIFY_TOKEN set] returns a config — this is the exact bug scenario", async () => {
+    clearWhatsAppEnv();
+    process.env.WHATSAPP_PROVIDER = "meta";
+    process.env.WHATSAPP_META_VERIFY_TOKEN = "render-verify-token";
+    const { readMetaWebhookVerifyConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookVerifyConfigFromEnv()).toEqual({ verifyToken: "render-verify-token" });
+  });
+
+  it.each(["WHATSAPP_META_ACCESS_TOKEN", "WHATSAPP_META_PHONE_NUMBER_ID", "WHATSAPP_META_APP_SECRET", "WHATSAPP_META_API_VERSION"])(
+    "[%s absent] never prevents the GET handshake from being considered configured",
+    async (unrelatedVar) => {
+      clearWhatsAppEnv();
+      process.env.WHATSAPP_PROVIDER = "meta";
+      process.env.WHATSAPP_META_VERIFY_TOKEN = "render-verify-token";
+      delete process.env[unrelatedVar];
+      const { readMetaWebhookVerifyConfigFromEnv } = await import("./metaProvider");
+
+      expect(readMetaWebhookVerifyConfigFromEnv()).toEqual({ verifyToken: "render-verify-token" });
+    }
+  );
+
+  it("[WHATSAPP_PARTNER_REQUEST_TEMPLATE absent] never referenced by this reader at all — the send-side template is a separate concern (features/rag's own sendPartnerRequest.ts)", async () => {
+    clearWhatsAppEnv();
+    delete process.env.WHATSAPP_PARTNER_REQUEST_TEMPLATE;
+    process.env.WHATSAPP_PROVIDER = "meta";
+    process.env.WHATSAPP_META_VERIFY_TOKEN = "render-verify-token";
+    const { readMetaWebhookVerifyConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookVerifyConfigFromEnv()).toEqual({ verifyToken: "render-verify-token" });
+  });
+
+  it("[WHATSAPP_META_VERIFY_TOKEN missing] returns null", async () => {
+    clearWhatsAppEnv();
+    process.env.WHATSAPP_PROVIDER = "meta";
+    const { readMetaWebhookVerifyConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookVerifyConfigFromEnv()).toBeNull();
+  });
+
+  it("[WHATSAPP_PROVIDER not \"meta\"] returns null even with a verify token set", async () => {
+    clearWhatsAppEnv();
+    process.env.WHATSAPP_PROVIDER = "twilio";
+    process.env.WHATSAPP_META_VERIFY_TOKEN = "render-verify-token";
+    const { readMetaWebhookVerifyConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookVerifyConfigFromEnv()).toBeNull();
+  });
+
+  it("[correct token] verifyMetaWebhookChallenge returns the challenge — this is the 200 response Meta expects", async () => {
+    const { verifyMetaWebhookChallenge } = await import("./metaProvider");
+
+    const result = verifyMetaWebhookChallenge({ mode: "subscribe", token: "render-verify-token", challenge: "12345" }, { verifyToken: "render-verify-token" });
+
+    expect(result).toBe("12345");
+  });
+
+  it("[wrong token] verifyMetaWebhookChallenge returns null — this is the 403 response", async () => {
+    const { verifyMetaWebhookChallenge } = await import("./metaProvider");
+
+    const result = verifyMetaWebhookChallenge({ mode: "subscribe", token: "wrong", challenge: "12345" }, { verifyToken: "render-verify-token" });
+
+    expect(result).toBeNull();
+  });
+
+  it("[config null — not configured] returns null regardless of the token supplied", async () => {
+    const { verifyMetaWebhookChallenge } = await import("./metaProvider");
+
+    expect(verifyMetaWebhookChallenge({ mode: "subscribe", token: "anything", challenge: "c" }, null)).toBeNull();
+  });
+
+  it("[no token ever logged] neither the reader nor the verifier calls console.error at all", async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.WHATSAPP_PROVIDER = "meta";
+    process.env.WHATSAPP_META_VERIFY_TOKEN = "render-verify-token";
+    const { readMetaWebhookVerifyConfigFromEnv, verifyMetaWebhookChallenge } = await import("./metaProvider");
+
+    verifyMetaWebhookChallenge({ mode: "subscribe", token: "wrong", challenge: "c" }, readMetaWebhookVerifyConfigFromEnv());
+
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("readMetaWebhookSignatureConfigFromEnv / parseMetaWebhookPayload — POST verification requires APP_SECRET, NEVER made optional", () => {
+  it("[only PROVIDER + APP_SECRET set] returns a config — decoupled from ACCESS_TOKEN/PHONE_NUMBER_ID/API_VERSION/VERIFY_TOKEN", async () => {
+    clearWhatsAppEnv();
+    process.env.WHATSAPP_PROVIDER = "meta";
+    process.env.WHATSAPP_META_APP_SECRET = "render-app-secret";
+    const { readMetaWebhookSignatureConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookSignatureConfigFromEnv()).toEqual({ appSecret: "render-app-secret" });
+  });
+
+  it("[WHATSAPP_META_APP_SECRET missing] returns null — POST verification is never satisfiable without it", async () => {
+    clearWhatsAppEnv();
+    process.env.WHATSAPP_PROVIDER = "meta";
+    const { readMetaWebhookSignatureConfigFromEnv } = await import("./metaProvider");
+
+    expect(readMetaWebhookSignatureConfigFromEnv()).toBeNull();
+  });
+
+  it("[config null] parseMetaWebhookPayload rejects as invalid_signature regardless of the header supplied — APP_SECRET can never be bypassed", async () => {
+    const { parseMetaWebhookPayload } = await import("./metaProvider");
+
+    expect(parseMetaWebhookPayload("{}", "sha256=whatever", null)).toEqual({ ok: false, error: "invalid_signature" });
+  });
+
+  it("[valid signature with a real config] parses successfully", async () => {
+    const { parseMetaWebhookPayload } = await import("./metaProvider");
+    const appSecret = "render-app-secret";
+    const rawBody = JSON.stringify({ entry: [] });
+    const signature = `sha256=${createHmac("sha256", appSecret).update(rawBody).digest("hex")}`;
+
+    expect(parseMetaWebhookPayload(rawBody, signature, { appSecret })).toEqual({ ok: true, events: [] });
+  });
+});
+
 describe("createMetaWhatsAppProvider — sendTemplateMessage (fetch mocked, NEVER a real network call)", () => {
   const message = { toE164: "+33612345678", templateName: "t", languageCode: "fr", bodyParams: [], buttons: [] };
   const sendConfig = { accessToken: "t", phoneNumberId: "123", verifyToken: "v", appSecret: "s", apiVersion: "v21.0" };

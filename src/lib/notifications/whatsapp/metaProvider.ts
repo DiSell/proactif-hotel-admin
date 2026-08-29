@@ -1,5 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { WhatsAppInboundEvent, WhatsAppProvider, WhatsAppSendResult, WhatsAppTemplateMessage, WhatsAppWebhookParseResult } from "./types";
+import type {
+  WhatsAppInboundEvent,
+  WhatsAppProvider,
+  WhatsAppSendResult,
+  WhatsAppTemplateMessage,
+  WhatsAppWebhookChallengeParams,
+  WhatsAppWebhookParseResult,
+} from "./types";
 
 /**
  * Official Meta WhatsApp Business Platform / Cloud API adapter. NEVER
@@ -48,6 +55,91 @@ function timingSafeStringEqual(a: string, b: string): boolean {
   const bufB = Buffer.from(b);
   if (bufA.length !== bufB.length) return false;
   return timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * BUG FIXED HERE: the GET webhook handshake previously went through
+ * getWhatsAppProvider() (provider.ts), which resolves to the
+ * not-configured provider — and therefore ALWAYS returns null from
+ * verifyWebhookChallenge(), regardless of the token Meta sent — unless
+ * readMetaConfigFromEnv() below is satisfied, i.e. unless
+ * WHATSAPP_META_ACCESS_TOKEN/PHONE_NUMBER_ID/APP_SECRET/API_VERSION are
+ * ALSO all set. Those four are needed to SEND a message, never to answer
+ * Meta's initial subscription challenge. During initial webhook setup
+ * (exactly Render's current state: only WHATSAPP_PROVIDER and
+ * WHATSAPP_META_VERIFY_TOKEN configured) this made verification
+ * structurally impossible to pass, no matter how correct the verify token
+ * was — indistinguishable from a genuine wrong-token rejection.
+ *
+ * This function/reader pair depends on NOTHING but the verify token
+ * itself (plus the same WHATSAPP_PROVIDER=meta switch every other
+ * WhatsApp-related reader in this codebase checks, for consistency with
+ * the rest of the provider-selection pattern) — see webhook.ts, which
+ * calls this directly instead of going through getWhatsAppProvider().
+ */
+export interface MetaWebhookVerifyConfig {
+  verifyToken: string;
+}
+
+export function readMetaWebhookVerifyConfigFromEnv(): MetaWebhookVerifyConfig | null {
+  if (process.env.WHATSAPP_PROVIDER !== "meta") return null;
+  const verifyToken = process.env.WHATSAPP_META_VERIFY_TOKEN;
+  if (!verifyToken?.trim()) return null;
+  return { verifyToken };
+}
+
+export function verifyMetaWebhookChallenge(
+  { mode, token, challenge }: WhatsAppWebhookChallengeParams,
+  config: MetaWebhookVerifyConfig | null
+): string | null {
+  if (!config) return null;
+  if (mode !== "subscribe" || !token || !challenge) return null;
+  if (!timingSafeStringEqual(token, config.verifyToken)) return null;
+  return challenge;
+}
+
+/**
+ * Same decoupling as the verify-token reader above, for the SEPARATE
+ * concern of POST signature verification: only WHATSAPP_META_APP_SECRET
+ * (plus WHATSAPP_PROVIDER=meta) is required — NEVER made optional, per the
+ * task's own explicit requirement ("ne rends jamais APP_SECRET optionnel
+ * pour les webhooks entrants de production"). Independent of
+ * ACCESS_TOKEN/PHONE_NUMBER_ID/API_VERSION/the send-side template — those
+ * are irrelevant to verifying an INBOUND request's signature.
+ */
+export interface MetaWebhookSignatureConfig {
+  appSecret: string;
+}
+
+export function readMetaWebhookSignatureConfigFromEnv(): MetaWebhookSignatureConfig | null {
+  if (process.env.WHATSAPP_PROVIDER !== "meta") return null;
+  const appSecret = process.env.WHATSAPP_META_APP_SECRET;
+  if (!appSecret?.trim()) return null;
+  return { appSecret };
+}
+
+export function parseMetaWebhookPayload(
+  rawBody: string,
+  signatureHeader: string | null,
+  config: MetaWebhookSignatureConfig | null
+): WhatsAppWebhookParseResult {
+  if (!config) return { ok: false, error: "invalid_signature" };
+  if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return { ok: false, error: "invalid_signature" };
+
+  const expected = createHmac("sha256", config.appSecret).update(rawBody).digest("hex");
+  const provided = signatureHeader.slice("sha256=".length);
+  if (!timingSafeStringEqual(expected, provided)) return { ok: false, error: "invalid_signature" };
+
+  let json: unknown;
+  try {
+    json = JSON.parse(rawBody);
+  } catch {
+    return { ok: false, error: "malformed_payload" };
+  }
+
+  const events = extractInboundEvents(json);
+  if (events === null) return { ok: false, error: "malformed_payload" };
+  return { ok: true, events };
 }
 
 /** Meta's official Cloud API request shape for a template message with quick-reply buttons — see https://developers.facebook.com/docs/whatsapp/cloud-api. */
@@ -149,29 +241,18 @@ export function createMetaWhatsAppProvider(config: MetaWhatsAppConfig): WhatsApp
       }
     },
 
-    verifyWebhookChallenge({ mode, token, challenge }): string | null {
-      if (mode !== "subscribe" || !token || !challenge) return null;
-      if (!timingSafeStringEqual(token, config.verifyToken)) return null;
-      return challenge;
+    // Delegates to the standalone, narrowly-configured functions above —
+    // when a FULL MetaWhatsAppConfig already exists (the send path), this
+    // preserves identical behavior; webhook.ts itself no longer goes
+    // through this full-config provider at all for GET/POST, precisely to
+    // avoid requiring send-only fields just to answer a webhook (see those
+    // functions' own doc comments for the bug this fixes).
+    verifyWebhookChallenge(params): string | null {
+      return verifyMetaWebhookChallenge(params, { verifyToken: config.verifyToken });
     },
 
     parseWebhookPayload(rawBody: string, signatureHeader: string | null): WhatsAppWebhookParseResult {
-      if (!signatureHeader || !signatureHeader.startsWith("sha256=")) return { ok: false, error: "invalid_signature" };
-
-      const expected = createHmac("sha256", config.appSecret).update(rawBody).digest("hex");
-      const provided = signatureHeader.slice("sha256=".length);
-      if (!timingSafeStringEqual(expected, provided)) return { ok: false, error: "invalid_signature" };
-
-      let json: unknown;
-      try {
-        json = JSON.parse(rawBody);
-      } catch {
-        return { ok: false, error: "malformed_payload" };
-      }
-
-      const events = extractInboundEvents(json);
-      if (events === null) return { ok: false, error: "malformed_payload" };
-      return { ok: true, events };
+      return parseMetaWebhookPayload(rawBody, signatureHeader, { appSecret: config.appSecret });
     },
   };
 }
