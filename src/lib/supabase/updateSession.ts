@@ -12,7 +12,21 @@ import { CLIENT_PORTAL_COOKIE_NAME, isClientScopedPath } from "./cookieScope";
 // param here) is the sole authorization (see
 // features/whatsappIntegration/activationTokenPersistence.ts's own doc
 // comments).
-const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement", "/whatsapp/connect"];
+// /politique-de-confidentialite, /conditions-utilisation,
+// /suppression-donnees: canonical French-named URLs for the Meta
+// Developers Privacy Policy / Terms of Service / Data Deletion
+// Instructions fields — same content as /legal/privacy, /legal/terms,
+// /legal/data-deletion (re-exported, not duplicated), same
+// unauthenticated-by-design posture as those.
+const PUBLIC_PATHS = [
+  "/login",
+  "/client/login",
+  "/partenaires/consentement",
+  "/whatsapp/connect",
+  "/politique-de-confidentialite",
+  "/conditions-utilisation",
+  "/suppression-donnees",
+];
 // The public widget — embed script, its config/chat API, and the standalone
 // chat page rendered inside the embed iframe — must be reachable by an
 // anonymous visitor on a hotel's own site. Nobody browsing a hotel's
@@ -23,7 +37,12 @@ const PUBLIC_PATHS = ["/login", "/client/login", "/partenaires/consentement", "/
 // /api/webhooks/whatsapp: called directly by Meta, with no Supabase session
 // at all — authorization is the webhook's own signature/verify-token check
 // (see lib/notifications/whatsapp/webhook.ts), never this middleware.
-const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/", "/api/webhooks/"];
+// /legal/*: the privacy policy, terms of use, and data-deletion pages must
+// be reachable by anyone (including Meta's own app-review process and
+// Meta's "Data Deletion Instructions URL" requirement) with no
+// session/cookie at all — same unauthenticated-by-design shape as
+// /widget/, never gated behind login.
+const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/", "/api/webhooks/", "/legal/"];
 const PUBLIC_EXACT_PATHS = ["/widget.js"];
 
 export function isPublicPath(pathname: string) {

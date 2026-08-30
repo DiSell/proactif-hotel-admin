@@ -57,6 +57,22 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/api/widgetsomething/chat")).toBe(false);
   });
 
+  it("[legal pages] /legal/privacy, /legal/terms, and /legal/data-deletion are public — no session/cookie required, reachable by Meta's own app-review process and its Data Deletion Instructions URL requirement", () => {
+    expect(isPublicPath("/legal/privacy")).toBe(true);
+    expect(isPublicPath("/legal/terms")).toBe(true);
+    expect(isPublicPath("/legal/data-deletion")).toBe(true);
+  });
+
+  it("[canonical French legal URLs for Meta Developers] /politique-de-confidentialite, /conditions-utilisation, /suppression-donnees are public", () => {
+    expect(isPublicPath("/politique-de-confidentialite")).toBe(true);
+    expect(isPublicPath("/conditions-utilisation")).toBe(true);
+    expect(isPublicPath("/suppression-donnees")).toBe(true);
+  });
+
+  it("[no accidental prefix collision on /legal/] a path that merely starts with 'legal' but isn't under /legal/ is NOT public", () => {
+    expect(isPublicPath("/legalsomething")).toBe(false);
+  });
+
   it("[WhatsApp activation link] /whatsapp/connect/[token] is public — the hotel's own WhatsApp Business owner has no Proactif account, the token in the URL is the sole authorization", () => {
     expect(isPublicPath("/whatsapp/connect/abc123")).toBe(true);
     expect(isPublicPath("/whatsapp/connect")).toBe(true);
