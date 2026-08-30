@@ -82,13 +82,11 @@ describe("EmbeddedSignupButton — outcome handling", () => {
     expect(block).toMatch(/setStatus\("unsupported_flow"\)/);
   });
 
-  it("[success path calls the activation-token action with this component's own activationToken prop, the code, and the untrusted signupResult hints]", () => {
-    // The doc comment above also mentions the function name in prose (with
-    // no "await" prefix) — anchor on "await ..." to land on the real call.
-    const callStart = source.indexOf("await receiveWhatsAppEmbeddedSignupCodeFromActivation(");
+  it("[success path submits through submitEmbeddedSignupCode(props, ...), never hardcoding one mode] the code and the untrusted signupResult hints are forwarded as-is", () => {
+    const callStart = source.indexOf("await submitEmbeddedSignupCode(");
     const callEnd = source.indexOf(");", callStart);
     const call = source.slice(callStart, callEnd);
-    expect(call).toMatch(/receiveWhatsAppEmbeddedSignupCodeFromActivation\(activationToken, code as string, \{/);
+    expect(call).toMatch(/submitEmbeddedSignupCode\(props, code as string, \{/);
     expect(call).toMatch(/event: outcome\.event/);
     expect(call).toMatch(/wabaId: outcome\.wabaId/);
     expect(call).toMatch(/phoneNumberId: outcome\.phoneNumberId/);
@@ -96,17 +94,25 @@ describe("EmbeddedSignupButton — outcome handling", () => {
   });
 });
 
-describe("EmbeddedSignupButton — activationToken prop (public activation page context)", () => {
-  it("[accepts activationToken as its only prop] never hotelId, never derives a tenant itself — the server derives hotelId from the token", () => {
-    expect(source).toMatch(/export function EmbeddedSignupButton\(\{ activationToken \}: \{ activationToken: string \}\)/);
-    // Doc comments legitimately mention hotelId in prose (explaining how the
-    // server derives it) — only the executable code must never reference it.
+describe("EmbeddedSignupButton — dual-mode props (task: ONE component, not two near-identical ones)", () => {
+  it("[accepts a mode-discriminated props union] activation mode carries a token, client mode carries nothing — never a bare hotelId prop in either", () => {
+    expect(source).toMatch(/export type EmbeddedSignupButtonProps = \{ mode: "activation"; activationToken: string \} \| \{ mode: "client" \};/);
+    expect(source).toMatch(/export function EmbeddedSignupButton\(props: EmbeddedSignupButtonProps\)/);
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     expect(code).not.toMatch(/hotelId/);
   });
 
-  it("[imports the activation-scoped action] never the removed admin-direct receiveWhatsAppEmbeddedSignupCodeBackoffice", () => {
-    expect(source).toMatch(/import \{ receiveWhatsAppEmbeddedSignupCodeFromActivation \} from "\.\/actions";/);
+  it("[submitEmbeddedSignupCode dispatches by mode] activation -> receiveWhatsAppEmbeddedSignupCodeFromActivation(token, ...), client -> receiveWhatsAppEmbeddedSignupCodeClient(...) with no token/hotelId argument", () => {
+    const fnStart = source.indexOf("function submitEmbeddedSignupCode");
+    const fnEnd = source.indexOf("\nexport function EmbeddedSignupButton", fnStart);
+    const fn = source.slice(fnStart, fnEnd);
+    expect(fn).toMatch(/props\.mode === "activation"/);
+    expect(fn).toMatch(/receiveWhatsAppEmbeddedSignupCodeFromActivation\(props\.activationToken, code, signupResult\)/);
+    expect(fn).toMatch(/receiveWhatsAppEmbeddedSignupCodeClient\(code, signupResult\)/);
+  });
+
+  it("[imports both scoped actions] never the removed admin-direct receiveWhatsAppEmbeddedSignupCodeBackoffice", () => {
+    expect(source).toMatch(/import \{ receiveWhatsAppEmbeddedSignupCodeFromActivation, receiveWhatsAppEmbeddedSignupCodeClient \} from "\.\/actions";/);
     expect(source).not.toMatch(/receiveWhatsAppEmbeddedSignupCodeBackoffice/);
   });
 });
@@ -117,10 +123,10 @@ describe("EmbeddedSignupButton — never claims a real connection, never shows a
     expect(code).toMatch(/if \(status === "connected"\) \{\s*return <p[^>]*>WhatsApp Business est maintenant connecté à votre établissement\.<\/p>;/);
   });
 
-  it("[status is only ever set to \"connected\" after a real, awaited server response] never optimistically, never before receiveWhatsAppEmbeddedSignupCodeFromActivation() resolves", () => {
+  it("[status is only ever set to \"connected\" after a real, awaited server response] never optimistically, never before submitEmbeddedSignupCode() resolves", () => {
     const fnStart = source.indexOf("async function handleLoginResponse");
     const fn = source.slice(fnStart);
-    const awaitIndex = fn.indexOf("await receiveWhatsAppEmbeddedSignupCodeFromActivation(");
+    const awaitIndex = fn.indexOf("await submitEmbeddedSignupCode(");
     const connectedIndex = fn.indexOf('setStatus("connected")');
     expect(awaitIndex).toBeGreaterThan(-1);
     expect(connectedIndex).toBeGreaterThan(awaitIndex);
@@ -147,8 +153,8 @@ describe("EmbeddedSignupButton — never claims a real connection, never shows a
   });
 });
 
-describe("EmbeddedSignupButton — public route, deliberately public (the token itself is the authorization)", () => {
-  it("[no /client/whatsapp reference remains anywhere; /whatsapp/connect IS deliberately public, /etablissements/.../whatsapp is NOT] this component now renders only under the public activation route", async () => {
+describe("EmbeddedSignupButton — activation mode's own route is deliberately public, client mode's is not", () => {
+  it("[/whatsapp/connect IS public (activation mode, token is the authorization); /client/whatsapp and /etablissements/.../whatsapp are NOT (client/admin modes, gated by session)]", async () => {
     const { readFileSync: read } = await import("node:fs");
     const { fileURLToPath: toPath } = await import("node:url");
     const { dirname: dir, join: j } = await import("node:path");

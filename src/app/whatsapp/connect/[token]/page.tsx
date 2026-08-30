@@ -47,7 +47,7 @@ export default async function WhatsAppActivationPage({ params }: PageProps<"/wha
       <h1 className="mb-2 text-lg font-semibold text-ink">Connecter WhatsApp Business</h1>
       <p className="mb-6 text-xs text-body">Cette connexion permet à votre établissement d&rsquo;utiliser WhatsApp avec Proactif System.</p>
       <ToastProvider>
-        <EmbeddedSignupButton activationToken={token} />
+        <EmbeddedSignupButton mode="activation" activationToken={token} />
       </ToastProvider>
     </Card>
   );

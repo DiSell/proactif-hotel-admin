@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { loadMetaSdk, type MetaSdkWindow } from "./metaSdk";
 import { META_EMBEDDED_SIGNUP_ORIGIN, classifyEmbeddedSignupOutcome, parseEmbeddedSignupMessage } from "./embeddedSignupMessage";
-import { receiveWhatsAppEmbeddedSignupCodeFromActivation } from "./actions";
+import { receiveWhatsAppEmbeddedSignupCodeFromActivation, receiveWhatsAppEmbeddedSignupCodeClient } from "./actions";
 import type { EmbeddedSignupMessage, EmbeddedSignupStatus } from "./types";
+import type { ActionResult } from "@/lib/actionResult";
+import type { EmbeddedSignupReceipt, EmbeddedSignupResultHints } from "./actions";
 
 // Confirmed against Meta's own current Embedded Signup implementation docs
 // (checked 2026-08-29) — bump this periodically per Meta's own Graph API
@@ -35,27 +37,35 @@ interface FacebookLoginResponse {
 }
 
 /**
- * "Connecter mon WhatsApp Business" — rendered EXCLUSIVELY on the public
- * activation page (/whatsapp/connect/[token]), reached by a hotel's own
- * WhatsApp Business owner who has NO Proactif account — never from the
- * admin dashboard (which only generates/copies the activation link, and
- * never imports this component at all) and never from the client portal
- * (that screen and its ClientSidebarNav entry have been removed entirely).
+ * ONE component, TWO independent authorization contexts — never two
+ * near-identical components (task: "NE PAS créer deux composants presque
+ * identiques"):
  *
- * `activationToken` is the page's own [token] route param, forwarded
- * as-is to the server action — this component never decides or enforces
- * authorization itself. The token IS the authorization:
- * receiveWhatsAppEmbeddedSignupCodeFromActivation() (actions.ts) derives
- * hotelId EXCLUSIVELY from an atomic, server-side claim of this token,
- * never from any value this component could supply.
+ *   - `{ mode: "activation", activationToken }` — the PUBLIC activation
+ *     page (/whatsapp/connect/[token]), reached by a hotel's own WhatsApp
+ *     Business owner who has NO Proactif account. The token is the sole
+ *     authorization; receiveWhatsAppEmbeddedSignupCodeFromActivation()
+ *     (actions.ts) derives hotelId EXCLUSIVELY from an atomic, server-side
+ *     claim of this token.
+ *   - `{ mode: "client" }` — the authenticated CLIENT portal
+ *     (/client/whatsapp). No token, no hotelId prop at all:
+ *     receiveWhatsAppEmbeddedSignupCodeClient() (actions.ts) derives
+ *     hotelId EXCLUSIVELY from requireClientAccess()'s own session.
  *
- * Reaches the real "connected" state ONLY after that action returns a
- * genuine server-side success (Meta re-verification + encryption + atomic
- * DB persistence via 0026's own RPC) — never from the browser's own
- * postMessage/FB.login response alone, and never displayed optimistically
- * before that server round-trip resolves. A failure at any step (Meta
- * cancellation/error, crypto, RPC) never consumes the activation token —
- * the same link can be retried until it is used, expires, or is revoked.
+ * Either way, this component NEVER decides or enforces authorization
+ * itself and NEVER supplies a hotelId to the server — only the mode's own
+ * server action call differs; every other line of behavior (Meta SDK
+ * loading, FB.login params, outcome classification, status rendering) is
+ * shared identically.
+ *
+ * Reaches the real "connected" state ONLY after the resolved action
+ * returns a genuine server-side success (Meta re-verification + encryption
+ * + atomic DB persistence via 0026's own RPC) — never from the browser's
+ * own postMessage/FB.login response alone, and never displayed
+ * optimistically before that server round-trip resolves. A failure at any
+ * step (Meta cancellation/error, crypto, RPC) never consumes the
+ * activation token in "activation" mode — the same link can be retried
+ * until it is used, expires, or is revoked.
  *
  * Wires together TWO independent Meta channels (confirmed by
  * documentation, see embeddedSignupMessage.ts's own doc comment):
@@ -66,7 +76,19 @@ interface FacebookLoginResponse {
  * classifyEmbeddedSignupOutcome() (a pure, DOM-free function) is the ONLY
  * place these two channels are reconciled — see its own doc comment.
  */
-export function EmbeddedSignupButton({ activationToken }: { activationToken: string }) {
+export type EmbeddedSignupButtonProps = { mode: "activation"; activationToken: string } | { mode: "client" };
+
+function submitEmbeddedSignupCode(
+  props: EmbeddedSignupButtonProps,
+  code: string,
+  signupResult: EmbeddedSignupResultHints
+): Promise<ActionResult<EmbeddedSignupReceipt>> {
+  return props.mode === "activation"
+    ? receiveWhatsAppEmbeddedSignupCodeFromActivation(props.activationToken, code, signupResult)
+    : receiveWhatsAppEmbeddedSignupCodeClient(code, signupResult);
+}
+
+export function EmbeddedSignupButton(props: EmbeddedSignupButtonProps) {
   const toast = useToast();
   const [status, setStatus] = useState<EmbeddedSignupStatus>("not_connected");
   const lastMessageRef = useRef<EmbeddedSignupMessage | null>(null);
@@ -156,11 +178,10 @@ export function EmbeddedSignupButton({ activationToken }: { activationToken: str
     // event both present. The hint ids travel alongside the code as
     // `signupResult` (task section 5) — the server treats them as
     // untrusted until it independently re-verifies each one against Meta.
-    // `activationToken` is this component's own prop, resolved by the
-    // public page from its own [token] route param — never chosen by this
-    // component, and hotelId is never sent at all (the server derives it
-    // from the token itself).
-    const result = await receiveWhatsAppEmbeddedSignupCodeFromActivation(activationToken, code as string, {
+    // hotelId is NEVER sent from here in either mode — the server derives
+    // it from the activation token (mode "activation") or from the
+    // caller's own session (mode "client").
+    const result = await submitEmbeddedSignupCode(props, code as string, {
       event: outcome.event,
       wabaId: outcome.wabaId,
       phoneNumberId: outcome.phoneNumberId,

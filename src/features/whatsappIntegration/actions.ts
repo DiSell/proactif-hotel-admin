@@ -1,6 +1,6 @@
 "use server";
 
-import { requireHotelAccess } from "@/lib/auth/session";
+import { requireHotelAccess, requireClientAccess } from "@/lib/auth/session";
 import { finalizeEmbeddedSignup } from "@/lib/notifications/whatsapp/metaEmbeddedSignup";
 import { encryptWhatsAppConnectionSecret } from "@/lib/notifications/whatsapp/connectionSecretCrypto";
 import { persistWhatsAppConnection } from "@/lib/notifications/whatsapp/connectionPersistence";
@@ -15,24 +15,28 @@ import type { ActionResult } from "@/lib/actionResult";
 import type { EmbeddedSignupFinishEvent, HotelWhatsAppConnectionType } from "./types";
 
 /**
- * WhatsApp Business connection now lives in the ADMIN dashboard
- * (/etablissements/[id]/whatsapp), never in the client portal — the client
- * portal's own /client/whatsapp page and its ClientSidebarNav entry have
- * been removed entirely. The admin dashboard itself no longer triggers
- * Meta's Embedded Signup directly either: it only generates/copies an
- * activation LINK (generateWhatsAppActivationLinkBackoffice below); the
- * hotel's own WhatsApp Business owner is the one who opens that link
- * (src/app/whatsapp/connect/[token]/page.tsx, no Proactif account needed)
- * and completes Embedded Signup there.
+ * THREE entry points into WhatsApp Business connection, one shared
+ * backend:
+ *   - ADMIN (/etablissements/[id]/whatsapp): never triggers Meta's
+ *     Embedded Signup directly — only generates/copies an activation LINK
+ *     (generateWhatsAppActivationLinkBackoffice below).
+ *   - CLIENT PORTAL (/client/whatsapp) — the MAIN, direct path: an
+ *     authenticated hotel_admin connects WhatsApp for their own
+ *     establishment with no link/token at all
+ *     (receiveWhatsAppEmbeddedSignupCodeClient below).
+ *   - PUBLIC ACTIVATION LINK (/whatsapp/connect/[token]) — the OPTIONAL
+ *     path for someone with NO Proactif account
+ *     (receiveWhatsAppEmbeddedSignupCodeFromActivation below), reached by
+ *     opening a link an admin generated for them.
  *
- * ONE shared backend orchestration remains regardless of entry point:
- * this file's own finalizeWhatsAppEmbeddedSignupForHotel() below runs the
- * exact same Meta-exchange -> encrypt -> persist chain — only the
- * AUTHORIZATION layer differs between the two callers (an authenticated
- * admin session re-verified by requireHotelAccess() when GENERATING a
- * link, versus an anonymous activation-token claim that resolves hotelId
- * server-side when CONSUMING one) — never two competing implementations of
- * the Meta/crypto/persistence chain itself.
+ * ONE shared backend orchestration regardless of entry point: this file's
+ * own finalizeWhatsAppEmbeddedSignupForHotel() below runs the exact same
+ * Meta-exchange -> encrypt -> persist chain — only the AUTHORIZATION layer
+ * differs between the three callers (requireHotelAccess() for the admin
+ * link-generation step, requireClientAccess() for the client-portal
+ * session, an anonymous activation-token claim for the public link) —
+ * never two competing implementations of the Meta/crypto/persistence chain
+ * itself.
  */
 export interface EmbeddedSignupReceipt {
   received: true;
@@ -180,14 +184,14 @@ export async function generateWhatsAppActivationLinkBackoffice(hotelId: string):
 }
 
 /**
- * The ONLY externally-callable entry point into the WhatsApp Embedded
- * Signup finalization chain — reached exclusively from the PUBLIC
+ * The OPTIONAL path's entry point — reached exclusively from the PUBLIC
  * activation page (src/app/whatsapp/connect/[token]/page.tsx), never from
- * an authenticated admin/client session. `activationToken` IS the sole
- * authorization: there is no requireHotelAccess/requireClientAccess call
- * here at all, and hotelId is NEVER accepted as a parameter — it comes
- * EXCLUSIVELY from claimActivationToken()'s own atomic claim (task section
- * 5), never from anything the browser supplies.
+ * an authenticated admin/client session (that's
+ * receiveWhatsAppEmbeddedSignupCodeClient below). `activationToken` IS the
+ * sole authorization: there is no requireHotelAccess/requireClientAccess
+ * call here at all, and hotelId is NEVER accepted as a parameter — it
+ * comes EXCLUSIVELY from claimActivationToken()'s own atomic claim (task
+ * section 5), never from anything the browser supplies.
  *
  * Concurrency (task sections 1/2/3/12): the lease is claimed atomically
  * BEFORE any Meta call is made, so at most one concurrent callback per
@@ -225,4 +229,26 @@ export async function receiveWhatsAppEmbeddedSignupCodeFromActivation(
   }
 
   return result;
+}
+
+/**
+ * The main, direct path: a hotel_admin already signed into the client
+ * portal (/client/whatsapp) connecting WhatsApp for their OWN establishment
+ * — no link, no token, no admin session involved. `hotelId` is NEVER a
+ * parameter here and is NEVER accepted from the browser in any form:
+ * requireClientAccess() derives it EXCLUSIVELY from the caller's own
+ * client-portal session (see its own doc comment in lib/auth/session.ts) —
+ * a client authenticated as hotel A's admin can therefore never reach hotel
+ * B's connection, structurally, regardless of what the browser sends.
+ *
+ * Calls the SAME shared orchestrator as the other two entry points above —
+ * never a second implementation of the Meta-exchange -> encrypt -> persist
+ * chain.
+ */
+export async function receiveWhatsAppEmbeddedSignupCodeClient(
+  code: string,
+  signupResult: EmbeddedSignupResultHints
+): Promise<ActionResult<EmbeddedSignupReceipt>> {
+  const { hotelId } = await requireClientAccess();
+  return finalizeWhatsAppEmbeddedSignupForHotel(hotelId, code, signupResult);
 }

@@ -24,8 +24,12 @@ function sliceFunction(exportedName: string): string {
 const mockRequireHotelAccess = vi.fn<(...args: unknown[]) => Promise<{ userId: string; profile: { id: string; role: string }; supabase: object }>>(
   async () => ({ userId: "admin-1", profile: { id: "admin-1", role: "superadmin" }, supabase: {} })
 );
+const mockRequireClientAccess = vi.fn<(...args: unknown[]) => Promise<{ userId: string; profile: { id: string; role: string }; hotelId: string }>>(
+  async () => ({ userId: "client-1", profile: { id: "client-1", role: "hotel_admin" }, hotelId: "hotel-a" })
+);
 vi.mock("@/lib/auth/session", () => ({
   requireHotelAccess: (...args: unknown[]) => mockRequireHotelAccess(...args),
+  requireClientAccess: (...args: unknown[]) => mockRequireClientAccess(...args),
 }));
 
 const mockFinalizeEmbeddedSignup = vi.fn();
@@ -56,6 +60,7 @@ vi.mock("./activationTokenPersistence", () => ({
 
 afterEach(() => {
   mockRequireHotelAccess.mockClear();
+  mockRequireClientAccess.mockClear();
   mockFinalizeEmbeddedSignup.mockReset();
   mockEncrypt.mockReset();
   mockPersist.mockReset();
@@ -176,7 +181,11 @@ describe("receiveWhatsAppEmbeddedSignupCodeFromActivation — structural guarant
 
   it("[token IS the authorization] never calls requireHotelAccess/requireClientAccess/requireSuperadmin — the browser has no session at all here", () => {
     const fn = sliceFunction("receiveWhatsAppEmbeddedSignupCodeFromActivation");
-    expect(fn).not.toMatch(/requireHotelAccess|requireClientAccess|requireSuperadmin/);
+    // sliceFunction's own "up to the next export" boundary also captures the
+    // NEXT function's doc comment (which legitimately mentions
+    // requireClientAccess in prose) — strip comments before matching.
+    const code = fn.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/requireHotelAccess|requireClientAccess|requireSuperadmin/);
   });
 
   it("[hotelId obtained ONLY via the atomic claim] claimActivationToken(...) is called before finalizeWhatsAppEmbeddedSignupForHotel", () => {
@@ -386,5 +395,97 @@ describe("receiveWhatsAppEmbeddedSignupCodeFromActivation — orchestration (moc
     expect(source).toMatch(/finalized: true/);
     expect(source).not.toMatch(/status:\s*"active"/);
     expect(source).not.toMatch(/connected:\s*true/);
+  });
+});
+
+describe("receiveWhatsAppEmbeddedSignupCodeClient — structural guarantees", () => {
+  it("[the MAIN, direct path] takes exactly (code: string, signupResult: EmbeddedSignupResultHints) — NEVER a hotelId parameter", () => {
+    const signatureStart = source.indexOf("export async function receiveWhatsAppEmbeddedSignupCodeClient(");
+    expect(signatureStart).toBeGreaterThan(-1);
+    const signatureEnd = source.indexOf(")", source.indexOf("): Promise", signatureStart));
+    const signature = source.slice(signatureStart, signatureEnd);
+    expect(signature).toMatch(/code: string/);
+    expect(signature).toMatch(/signupResult: EmbeddedSignupResultHints/);
+    expect(signature).not.toMatch(/hotelId/);
+  });
+
+  it("[hotelId comes EXCLUSIVELY from requireClientAccess()] never requireHotelAccess/requireSuperadmin, never a browser-supplied value", () => {
+    const fn = sliceFunction("receiveWhatsAppEmbeddedSignupCodeClient");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    const code = fn.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/requireHotelAccess|requireSuperadmin/);
+  });
+
+  it("[reuses the SAME shared orchestrator] never a second Meta-exchange/encrypt/persist implementation", () => {
+    const fn = sliceFunction("receiveWhatsAppEmbeddedSignupCodeClient");
+    expect(fn).toMatch(/return finalizeWhatsAppEmbeddedSignupForHotel\(hotelId, code, signupResult\);/);
+  });
+});
+
+describe("receiveWhatsAppEmbeddedSignupCodeClient — orchestration (mocked auth/Meta/crypto/RPC, no real call anywhere)", () => {
+  it("[success] resolves hotelId from the session, finalizes, encrypts, persists", async () => {
+    mockRequireClientAccess.mockResolvedValueOnce({ userId: "client-1", profile: { id: "client-1", role: "hotel_admin" }, hotelId: HOTEL_ID });
+    mockFinalizeEmbeddedSignup.mockResolvedValueOnce(FINALIZE_SUCCESS);
+    mockEncrypt.mockReturnValueOnce(ENCRYPT_RESULT);
+    mockPersist.mockResolvedValueOnce(PERSIST_SUCCESS);
+    const { receiveWhatsAppEmbeddedSignupCodeClient } = await import("./actions");
+
+    const result = await receiveWhatsAppEmbeddedSignupCodeClient(CODE, SIGNUP_RESULT);
+
+    expect(result).toEqual({
+      ok: true,
+      data: { received: true, finalized: true, connectionType: "coexistence", connectedAt: "2026-01-01T00:00:00Z" },
+    });
+    expect(mockPersist.mock.calls[0][0].hotelId).toBe(HOTEL_ID);
+  });
+
+  it("[5/9 — client A can never configure hotel B] the hotelId used is EXACTLY the one requireClientAccess() resolved for THIS caller's session — there is no way to override it", async () => {
+    const HOTEL_B = "hotel-b";
+    mockRequireClientAccess.mockResolvedValueOnce({ userId: "client-2", profile: { id: "client-2", role: "hotel_admin" }, hotelId: HOTEL_B });
+    mockFinalizeEmbeddedSignup.mockResolvedValueOnce(FINALIZE_SUCCESS);
+    mockEncrypt.mockReturnValueOnce(ENCRYPT_RESULT);
+    mockPersist.mockResolvedValueOnce(PERSIST_SUCCESS);
+    const { receiveWhatsAppEmbeddedSignupCodeClient } = await import("./actions");
+
+    await receiveWhatsAppEmbeddedSignupCodeClient(CODE, SIGNUP_RESULT);
+
+    expect(mockPersist.mock.calls[0][0].hotelId).toBe(HOTEL_B);
+    expect(mockPersist.mock.calls[0][0].hotelId).not.toBe(HOTEL_ID);
+  });
+
+  it("[unauthenticated caller never reaches Meta/crypto/RPC] requireClientAccess() rejecting stops the chain immediately", async () => {
+    mockRequireClientAccess.mockRejectedValueOnce(new Error("not authenticated"));
+    const { receiveWhatsAppEmbeddedSignupCodeClient } = await import("./actions");
+
+    await expect(receiveWhatsAppEmbeddedSignupCodeClient(CODE, SIGNUP_RESULT)).rejects.toThrow();
+
+    expect(mockFinalizeEmbeddedSignup).not.toHaveBeenCalled();
+    expect(mockEncrypt).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("[Meta failure never persists, never claims success] same generic error as the other two entry points", async () => {
+    mockFinalizeEmbeddedSignup.mockResolvedValueOnce({ ok: false, errorCode: "code_exchange_failed" });
+    const { receiveWhatsAppEmbeddedSignupCodeClient } = await import("./actions");
+
+    const result = await receiveWhatsAppEmbeddedSignupCodeClient(CODE, SIGNUP_RESULT);
+
+    expect(result).toEqual({ ok: false, error: "La connexion WhatsApp n'a pas pu être finalisée." });
+    expect(mockEncrypt).not.toHaveBeenCalled();
+    expect(mockPersist).not.toHaveBeenCalled();
+  });
+
+  it("[the plaintext business token never appears anywhere in the client-facing ActionResult]", async () => {
+    mockFinalizeEmbeddedSignup.mockResolvedValueOnce(FINALIZE_SUCCESS);
+    mockEncrypt.mockReturnValueOnce(ENCRYPT_RESULT);
+    mockPersist.mockResolvedValueOnce(PERSIST_SUCCESS);
+    const { receiveWhatsAppEmbeddedSignupCodeClient } = await import("./actions");
+
+    const result = await receiveWhatsAppEmbeddedSignupCodeClient(CODE, SIGNUP_RESULT);
+    expect(JSON.stringify(result)).not.toMatch(new RegExp(PLAINTEXT_TOKEN));
+  });
+
+  it("[no real Meta call possible from this test file]", () => {
+    expect(source).not.toMatch(/fetch\(/);
   });
 });

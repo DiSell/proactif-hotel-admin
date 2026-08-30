@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 /**
- * End-to-end verification that WhatsApp configuration has moved from the
- * client portal to the admin dashboard (task: "TRANSFÉRER TOUTE
- * L'INTERFACE DE CONFIGURATION WHATSAPP DU PORTAIL CLIENT VERS LE
- * DASHBOARD ADMIN"). Source-level only, matching this repo's own
- * convention for Next.js page/layout files (none of
- * src/app/(app)/etablissements/[id]/**'s existing pages have a dedicated
- * test file either — see e.g. widget/page.tsx, partenaires/page.tsx).
+ * End-to-end verification of the WhatsApp integration across its THREE
+ * entry points: the admin dashboard (generates/manages an activation
+ * link, never touches Meta itself), the client portal (the MAIN direct
+ * path — an authenticated hotel_admin connects WhatsApp for their own
+ * establishment with no link/token involved), and the public activation
+ * link (the OPTIONAL path for someone with no Proactif account). Source-
+ * level only, matching this repo's own convention for Next.js page/layout
+ * files (none of src/app/(app)/etablissements/[id]/**'s existing pages
+ * have a dedicated test file either — see e.g. widget/page.tsx,
+ * partenaires/page.tsx).
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const repoSrc = join(here, "..", "..");
@@ -20,36 +23,38 @@ function readSource(...segments: string[]): string {
   return readFileSync(join(repoSrc, ...segments), "utf8");
 }
 
-describe("Client portal — WhatsApp screen fully removed", () => {
-  it("[1] no WhatsApp entry left in ClientSidebarNav", () => {
+describe("Client portal — WhatsApp direct-connect path (the MAIN path)", () => {
+  it("[1] WhatsApp entry present in ClientSidebarNav, pointing at /client/whatsapp", () => {
     const source = readSource("components", "layout", "ClientSidebarNav.tsx");
-    expect(source).not.toMatch(/\/client\/whatsapp/);
-    expect(source).not.toMatch(/label:\s*"WhatsApp"/);
+    expect(source).toMatch(/href: "\/client\/whatsapp"/);
+    expect(source).toMatch(/label:\s*"WhatsApp"/);
   });
 
-  it("[2] the /client/(portal)/whatsapp page directory no longer exists", () => {
-    const clientWhatsappDir = join(repoSrc, "app", "client", "(portal)", "whatsapp");
-    expect(existsSync(clientWhatsappDir)).toBe(false);
+  it("[2] the /client/(portal)/whatsapp page exists", () => {
+    const clientWhatsappPage = join(repoSrc, "app", "client", "(portal)", "whatsapp", "page.tsx");
+    expect(existsSync(clientWhatsappPage)).toBe(true);
   });
 
-  it("[17] no remaining LIVE reference to /client/whatsapp anywhere in the app (doc comments and test files legitimately name the removed path in prose, so both are excluded)", () => {
-    const offenders: string[] = [];
-    function walk(dir: string) {
-      for (const entry of readdirSync(dir)) {
-        const full = join(dir, entry);
-        if (statSync(full).isDirectory()) {
-          if (entry === "node_modules" || entry === ".next") continue;
-          walk(full);
-        } else if (/\.(ts|tsx)$/.test(entry) && !/\.test\.tsx?$/.test(entry)) {
-          const content = readFileSync(full, "utf8")
-            .replace(/\/\*[\s\S]*?\*\//g, "")
-            .replace(/\/\/.*$/gm, "");
-          if (content.includes("/client/whatsapp")) offenders.push(full);
-        }
-      }
-    }
-    walk(repoSrc);
-    expect(offenders).toEqual([]);
+  it("[3/4/7/10 — the client page reads its own connection via the client-scoped query, resolves hotelId server-side only, and renders EmbeddedSignupButton in client mode] never a [id] param, never a hotelId prop", () => {
+    const source = readSource("app", "client", "(portal)", "whatsapp", "page.tsx");
+    expect(source).toMatch(/getHotelWhatsAppConnectionForClient\(\)/);
+    expect(source).toMatch(/<EmbeddedSignupButton mode="client" \/>/);
+    // Its own doc comment legitimately explains hotelId resolution in prose
+    // — only the executable code must never reference it.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/hotelId/);
+  });
+
+  it("[no jargon in the client page's own rendered strings]", () => {
+    const source = readSource("app", "client", "(portal)", "whatsapp", "page.tsx");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/\bWABA\b|Cloud API|Business Integration System User|Graph API|\btoken\b/i);
+  });
+
+  it("[required client-page copy present]", () => {
+    const source = readSource("app", "client", "(portal)", "whatsapp", "page.tsx");
+    expect(source).toMatch(/title="WhatsApp Business"/);
+    expect(source).toMatch(/Connectez le compte WhatsApp Business de votre établissement\./);
   });
 });
 
@@ -120,8 +125,10 @@ describe("Public activation page — /whatsapp/connect/[token]", () => {
     expect(source).not.toMatch(/hotelId/);
   });
 
-  it("[13 — the ONLY place EmbeddedSignupButton is rendered] with the activationToken prop, never hotelId", () => {
-    expect(source).toMatch(/<EmbeddedSignupButton activationToken=\{token\} \/>/);
+  it("[13 — renders EmbeddedSignupButton in activation mode] with the activationToken prop, never hotelId — the client page (client mode) is the only other place this component is ever rendered", () => {
+    expect(source).toMatch(/<EmbeddedSignupButton mode="activation" activationToken=\{token\} \/>/);
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code).not.toMatch(/hotelId/);
   });
 
   it("[required public-page copy present] title, intro text, no jargon", () => {
