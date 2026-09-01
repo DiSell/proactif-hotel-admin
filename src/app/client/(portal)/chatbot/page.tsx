@@ -6,6 +6,7 @@ import { DEFAULT_ASSISTANT_NAME } from "@/features/client/schema";
 import { DEFAULT_WELCOME_MESSAGE } from "@/features/widget/publicHotel";
 import { listHotelEvents } from "@/features/events/queries";
 import { EventsManager } from "@/features/events/EventsManager";
+import type { HotelEvent } from "@/types/database";
 
 export default async function ClientChatbotPage() {
   const [chatbotData, widgetData] = await Promise.all([getClientChatbotInfo(), getClientWidgetInfo()]);
@@ -13,7 +14,20 @@ export default async function ClientChatbotPage() {
   // call above — never re-derived or trusted from anywhere else. The
   // client-portal cookie scope (lib/supabase/cookieScope.ts) is what makes
   // listHotelEvents' RLS-scoped read see only this hotel's own rows.
-  const events = await listHotelEvents(chatbotData.hotelId, await createClientPortalClient());
+  //
+  // Caught here (rather than left to throw, unlike listHotelPartners' own
+  // call sites) so that a failure specific to this ONE section — e.g.
+  // migration 0032_hotel_events.sql not yet applied on a given environment
+  // — degrades to an empty events list instead of crashing the entire
+  // page, taking the already-working chatbot personalization form down
+  // with it.
+  let events: HotelEvent[];
+  try {
+    events = await listHotelEvents(chatbotData.hotelId, await createClientPortalClient());
+  } catch (err) {
+    console.error("ClientChatbotPage: listHotelEvents failed", { hotelId: chatbotData.hotelId, message: (err as Error).message });
+    events = [];
+  }
 
   // Assistant name: hotels.assistant_name — reused as-is (no new column).
   // Welcome message: widget_settings.welcome_message, NOT
