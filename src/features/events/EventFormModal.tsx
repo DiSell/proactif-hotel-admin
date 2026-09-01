@@ -147,6 +147,7 @@ export function EventFormModal({ hotelId, event, onClose, onSaved }: EventFormMo
           {isTemporary && (
             <div className="flex items-center gap-2">
               <Toggle checked={showAsBanner} onChange={setShowAsBanner} label="Afficher comme information importante dans le chatbot" />
+              <span className="text-xs text-ink">Bandeau chatbot</span>
             </div>
           )}
         </div>

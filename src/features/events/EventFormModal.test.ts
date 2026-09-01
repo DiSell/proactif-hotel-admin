@@ -12,6 +12,11 @@ describe("EventFormModal — impossible d'activer le bandeau sur un événement 
     expect(source).toMatch(rendersBannerToggle);
   });
 
+  it("[banner toggle has a VISIBLE caption next to it] Toggle's own `label` prop is aria-label only (see components/ui/Toggle.tsx) — never rendered as text, so an adjacent <span> is required, same pattern already used for the 'Actif'/'Inactif' toggle", () => {
+    const bannerToggleBlock = source.slice(source.indexOf("<Toggle checked={showAsBanner}"), source.indexOf("</div>", source.indexOf("<Toggle checked={showAsBanner}")));
+    expect(bannerToggleBlock).toMatch(/<span className="text-xs text-ink">.+<\/span>/);
+  });
+
   it("[switching to 'permanent' clears showAsBanner immediately] a value set while 'temporary' can never survive a type switch", () => {
     const fn = source.slice(source.indexOf("function handleTypeChange"), source.indexOf("function handleSubmit"));
     expect(fn).toMatch(/if \(nextType === "permanent"\) \{/);
