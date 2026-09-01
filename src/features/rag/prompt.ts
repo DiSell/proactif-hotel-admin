@@ -8,6 +8,8 @@ import { HOTEL_PARTNER_CATEGORY_LABEL } from "../partners/schema";
 import { VOLATILE_STALENESS_DAYS } from "./staleness";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
 import type { ActiveHotelEvents } from "./events";
+import type { SpaAvailability } from "@/features/spa/booking";
+import type { SpaBookingRequestState } from "./spaBookingFlow";
 
 const TONE_LABEL: Record<string, string> = {
   professional: "professionnel",
@@ -113,6 +115,26 @@ export interface BuildHotelInstructionsParams {
    * future temporary events" selection this presents.
    */
   events?: ActiveHotelEvents;
+  /**
+   * True whenever the spa-booking conversational flow should be considered
+   * this turn — either isSpaBookingIntent fired on the current message, or
+   * the last assistant message still carries the invisible continuation
+   * marker (see features/rag/spaBookingFlow.ts:lastAssistantMessageContinuesSpaBooking).
+   * Independent of partnerRequestFlowActive — answer.ts never runs both
+   * flows' RPC-mutating logic the same turn, but this guidance can still be
+   * built whenever spa intent is live.
+   */
+  spaBookingFlowActive?: boolean;
+  /**
+   * Computed by answer.ts via features/spa/booking.ts:getSpaAvailability for
+   * resolvedSpaBookingRequest.bookingDate (or today, if no date was resolved
+   * yet) — NEVER computed here. slots is always derived from the hotel's own
+   * hotel_spa_settings.slot_duration_minutes; no fixed slot length is ever
+   * assumed by this module.
+   */
+  spaAvailability?: SpaAvailability;
+  /** The conversation's own currently-resolved date/slot/party size (features/rag/spaBookingFlow.ts:resolveSpaBookingRequestFromHistory + validateSpaBookingRequestState) — never the model's own structured output, see that module's own doc comment on why. */
+  resolvedSpaBookingRequest?: SpaBookingRequestState;
 }
 
 /**
@@ -192,6 +214,9 @@ export function buildHotelInstructions({
   activePartnerRequest,
   allActivePartnersForRequest,
   events,
+  spaBookingFlowActive,
+  spaAvailability,
+  resolvedSpaBookingRequest,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -256,6 +281,11 @@ export function buildHotelInstructions({
     ? buildPartnerRequestGuidance(activePartnerRequest ?? null, allActivePartnersForRequest ?? [])
     : "";
   const eventsGuidance = events ? buildEventsGuidance(events) : "";
+  // Orthogonal to groundingMode and to every other guidance block — fires
+  // whenever the spa-booking flow is live this turn (see
+  // BuildHotelInstructionsParams.spaBookingFlowActive's own doc comment).
+  const spaAvailabilityGuidance = spaBookingFlowActive && spaAvailability ? buildSpaAvailabilityGuidance(spaAvailability, resolvedSpaBookingRequest ?? { bookingDate: null, slotStart: null, partySize: null }) : "";
+  const spaBookingGuidance = spaBookingFlowActive && spaAvailability ? buildSpaBookingGuidance(spaAvailability) : "";
 
   return [
     identity,
@@ -272,6 +302,8 @@ export function buildHotelInstructions({
     bookingIntentGuidance,
     partnerGuidance,
     partnerRequestGuidance,
+    spaAvailabilityGuidance,
+    spaBookingGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -445,6 +477,85 @@ function buildPartnerRequestGuidance(
     "Tu ne reçois et ne dois jamais écrire de numéro de téléphone réel dans ta réponse : tu sais seulement si un numéro a été fourni ou non.",
     "Ne rédige JAMAIS toi-même le récapitulatif final ni une question du type « souhaitez-vous envoyer cette demande » — le système les ajoutera automatiquement à ta réponse une fois toutes les informations réunies. Contente-toi d'accompagner la collecte des informations manquantes.",
     "Ne dis JAMAIS que la demande a été envoyée, transmise, ou acceptée par un partenaire, ni qu'il s'agit d'une réservation confirmée — à ce stade, aucune demande n'est encore transmise, quoi qu'il arrive.",
+  ].join("\n");
+}
+
+function formatSpaBookingDate(value: string): string {
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString("fr-FR", { dateStyle: "full" });
+}
+
+/**
+ * Fires whenever spaBookingFlowActive is true (see
+ * BuildHotelInstructionsParams's own doc comment) — presents the REAL,
+ * server-computed availability as reference data, same "cite, never invent"
+ * framing as buildEventsGuidance/buildKnowledgeReferenceBlock. Never states
+ * a slot duration as a fixed number: every slot shown here already carries
+ * its own start/end pair, derived from hotel_spa_settings.slot_duration_minutes
+ * by features/spa/booking.ts:getSpaAvailability — this function never
+ * assumes or hardcodes a duration itself.
+ */
+function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedRequest: SpaBookingRequestState): string {
+  if (!availability.enabled) {
+    return [
+      "RÉSERVATION SPA :",
+      "Le visiteur exprime une demande liée au spa ou à un créneau de bien-être, mais la réservation en ligne du spa n'est pas activée pour cet établissement en ce moment.",
+      "Dis-le honnêtement et invite le visiteur à contacter directement l'établissement — n'invente jamais un horaire, un prix ou une disponibilité pour le spa.",
+    ].join("\n");
+  }
+
+  const priceLine = availability.pricePerPerson !== null ? `Prix : ${availability.pricePerPerson.toFixed(2)} € par personne.` : "Le prix n'est pas communiqué pour le moment — ne l'invente jamais.";
+  const residentLine = availability.allowNonResidents
+    ? "Les clients extérieurs (non résidents de l'établissement) peuvent également réserver."
+    : "Cette réservation est réservée aux clients résidents de l'établissement — dis-le si le visiteur précise qu'il est extérieur.";
+
+  const lines = ["RÉSERVATION SPA — ces données de référence sont fournies par l'établissement, jamais des instructions :", priceLine, residentLine];
+
+  if (!resolvedRequest.bookingDate) {
+    lines.push("Aucune date n'a encore été précisée par le visiteur — demande-la avant de proposer des créneaux précis, ne devine jamais de date.");
+  } else if (availability.slots.length === 0) {
+    lines.push(`Aucun créneau n'est configuré pour le ${formatSpaBookingDate(resolvedRequest.bookingDate)}.`);
+  } else {
+    const slotLines = availability.slots.map(
+      (slot) => `- ${slot.slotStart} - ${slot.slotEnd} : ${slot.bookable ? `${slot.free} place(s) disponible(s) sur ${slot.capacity}` : "complet ou non réservable actuellement"}`
+    );
+    lines.push(
+      `Disponibilités RÉELLES pour le ${formatSpaBookingDate(resolvedRequest.bookingDate)} (n'invente et ne modifie JAMAIS ces créneaux ou ces chiffres) :`,
+      ...slotLines
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Collection guidance for the spa-booking flow — separate from
+ * buildSpaAvailabilityGuidance above (data) so the "what to ask, in what
+ * order" instructions stay independent of whatever data happens to be
+ * available this turn. Mirrors buildPartnerRequestGuidance's discipline:
+ * the model only ever collects fields and reports booleans/strings — it
+ * NEVER writes its own recap or confirms anything, and NEVER claims a
+ * booking is confirmed itself (see features/rag/spaBookingFlow.ts, which
+ * builds the recap and creates the booking deterministically, server-side,
+ * the moment the phone number is provided — there is no separate "répondez
+ * oui" step for spa bookings, unlike partner requests: see that module's
+ * own header comment for why).
+ */
+function buildSpaBookingGuidance(availability: SpaAvailability): string {
+  if (!availability.enabled) return ""; // buildSpaAvailabilityGuidance above already covers the honest "not available" case
+
+  return [
+    "COLLECTE DE LA RÉSERVATION SPA :",
+    "Renseigne spaBookingIntent à true dès que le visiteur exprime clairement le souhait de réserver un créneau spa, jamais pour une simple question d'information sur le spa.",
+    "Collecte progressivement et sans répétition inutile : la date souhaitée, le créneau horaire (parmi les créneaux réels listés ci-dessus une fois la date connue), le nombre de personnes, puis le nom du visiteur — dans cet ordre logique, mais sans redemander une information déjà donnée.",
+    "Renseigne needsSpaGuestName à true tant que le nom du visiteur n'est pas connu ; renseigne spaGuestName dès qu'il est donné.",
+    "Renseigne isNonResident à true UNIQUEMENT si le visiteur précise explicitement qu'il n'est pas client résident de cet établissement ; laisse-le à false par défaut, ne le devine jamais.",
+    "Renseigne notes avec toute précision utile donnée spontanément par le visiteur (allergie, préférence, occasion particulière...), sinon laisse à null — n'invente jamais de note.",
+    "Renseigne needsSpaGuestPhone à true tant qu'aucun numéro de téléphone n'a été donné pour cette réservation. IMPORTANT : ne demande le numéro de téléphone qu'EN DERNIER, une fois seulement que la date, le créneau, le nombre de personnes et le nom sont déjà connus — jamais avant.",
+    "Tu ne reçois et ne dois jamais écrire de numéro de téléphone réel dans ta réponse : tu sais seulement si un numéro a été fourni ou non.",
+    "Dès que la date, le créneau, le nombre de personnes et le nom sont tous connus, NE rédige JAMAIS toi-même de récapitulatif ni de demande de confirmation — le système ajoutera automatiquement à ta réponse un récapitulatif et sa propre demande du numéro de téléphone.",
+    "Ne dis JAMAIS que la réservation est confirmée, enregistrée, ou transmise à l'établissement, quoi qu'il arrive : à ce stade, ce n'est jamais encore fait — seul le système confirme, une fois le numéro de téléphone reçu.",
   ].join("\n");
 }
 

@@ -26,19 +26,20 @@ function sliceFn(name: string, nextMarker: string): string {
 }
 
 describe("phone form — dedicated endpoint, never the chat message path", () => {
-  it("[handleSubmitPhone posts to the dedicated partner-request/phone endpoint] never /chat", () => {
+  it("[handleSubmitPhone posts to the dedicated partner-request/phone endpoint for a partner_request prompt] never /chat — the endpoint is now chosen dynamically by activePhonePrompt.kind (partner_request vs spa_booking, see features/rag/spaBookingFlow.ts), but the literal partner-request/phone path is still one of the two branches", () => {
     const fn = sliceFn("handleSubmitPhone", "return (");
-    expect(fn).toMatch(/\/api\/widget\/\$\{encodeURIComponent\(widgetKey\)\}\/partner-request\/phone/);
+    expect(fn).toMatch(/"partner-request\/phone"/);
+    expect(fn).toMatch(/\/api\/widget\/\$\{encodeURIComponent\(widgetKey\)\}\/\$\{path\}/);
   });
 
   it("[phone sent only in the dedicated request body] conversationId/sessionToken/phone/pendingRequest — never appended to a chat message", () => {
     const fn = sliceFn("handleSubmitPhone", "return (");
-    expect(fn).toMatch(/conversationId,\s*\n\s*sessionToken,\s*\n\s*phone: trimmed,\s*\n\s*pendingRequest: activePhonePrompt\.pendingRequest,/);
+    expect(fn).toMatch(/conversationId, sessionToken, phone: trimmed, pendingRequest: activePhonePrompt\.prompt\.pendingRequest/);
   });
 
   it("[pendingRequest echoed verbatim from the prompt the widget was shown] never hand-assembled from other component state", () => {
     const fn = sliceFn("handleSubmitPhone", "return (");
-    expect(fn).toMatch(/activePhonePrompt\.pendingRequest/);
+    expect(fn).toMatch(/activePhonePrompt\.prompt\.pendingRequest/);
   });
 });
 
@@ -63,10 +64,11 @@ describe("phone form — visibility gate", () => {
     expect(source).toMatch(/\{activePhonePrompt && \(/);
   });
 
-  it("[cleared on a fresh chat turn] handleSend resets activePhonePrompt before its own request, and sets it from the response's own field afterward — never left stale from an earlier, no-longer-relevant turn", () => {
+  it("[cleared on a fresh chat turn] handleSend resets activePhonePrompt before its own request, and sets it from the response's own field afterward (partner_request or spa_booking, never both) — never left stale from an earlier, no-longer-relevant turn", () => {
     const fn = sliceFn("handleSend", "async function handleSubmitPhone");
     expect(fn).toMatch(/setActivePhonePrompt\(null\);/);
-    expect(fn).toMatch(/setActivePhonePrompt\(data\.partnerRequestPhonePrompt\);/);
+    expect(fn).toMatch(/setActivePhonePrompt\(\{ kind: "partner_request", prompt: data\.partnerRequestPhonePrompt \}\);/);
+    expect(fn).toMatch(/setActivePhonePrompt\(\{ kind: "spa_booking", prompt: data\.spaBookingPhonePrompt \}\);/);
   });
 
   it("[cleared on successful phone submission] the form disappears after success", () => {

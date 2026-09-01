@@ -6,7 +6,10 @@ import { DEFAULT_ASSISTANT_NAME } from "@/features/client/schema";
 import { DEFAULT_WELCOME_MESSAGE } from "@/features/widget/publicHotel";
 import { listHotelEvents } from "@/features/events/queries";
 import { EventsManager } from "@/features/events/EventsManager";
-import type { HotelEvent } from "@/types/database";
+import { getHotelSpaSettings, listSpaBookings } from "@/features/spa/queries";
+import { SpaSettingsForm } from "@/features/spa/SpaSettingsForm";
+import { SpaBookingsList } from "@/features/spa/SpaBookingsList";
+import type { HotelEvent, HotelSpaSettings, SpaBooking } from "@/types/database";
 
 export default async function ClientChatbotPage() {
   const [chatbotData, widgetData] = await Promise.all([getClientChatbotInfo(), getClientWidgetInfo()]);
@@ -27,6 +30,20 @@ export default async function ClientChatbotPage() {
   } catch (err) {
     console.error("ClientChatbotPage: listHotelEvents failed", { hotelId: chatbotData.hotelId, message: (err as Error).message });
     events = [];
+  }
+
+  // Same controlled-degradation pattern as listHotelEvents above (a
+  // permanent, user-mandated requirement after a real production
+  // incident): a query failure here must never crash the rest of the page.
+  let spaSettings: HotelSpaSettings | null;
+  let spaBookings: SpaBooking[];
+  try {
+    const spaSupabase = await createClientPortalClient();
+    [spaSettings, spaBookings] = await Promise.all([getHotelSpaSettings(chatbotData.hotelId, spaSupabase), listSpaBookings(chatbotData.hotelId, spaSupabase)]);
+  } catch (err) {
+    console.error("ClientChatbotPage: spa queries failed", { hotelId: chatbotData.hotelId, message: (err as Error).message });
+    spaSettings = null;
+    spaBookings = [];
   }
 
   // Assistant name: hotels.assistant_name — reused as-is (no new column).
@@ -57,6 +74,18 @@ export default async function ClientChatbotPage() {
           </p>
         </div>
         <EventsManager hotelId={chatbotData.hotelId} events={events} />
+      </div>
+
+      <div className="flex flex-col gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-ink">Réservation spa</h2>
+          <p className="mt-1 text-xs text-body">
+            Configurez les horaires, la durée des créneaux, le prix et la capacité de votre espace spa. Une fois activée, votre chatbot pourra prendre des
+            réservations directement dans la conversation, et vous serez notifié par email à chaque réservation.
+          </p>
+        </div>
+        <SpaSettingsForm hotelId={chatbotData.hotelId} settings={spaSettings} />
+        <SpaBookingsList hotelId={chatbotData.hotelId} bookings={spaBookings} />
       </div>
     </div>
   );

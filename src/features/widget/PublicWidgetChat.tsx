@@ -56,6 +56,30 @@ interface PartnerRequestPhonePrompt {
   pendingRequest: PendingPartnerRequestFields;
 }
 
+/** Mirrors features/rag/types.ts's PendingSpaBookingFields/SpaBookingPhonePrompt — see those types' own doc comments. */
+interface PendingSpaBookingFields {
+  bookingDate: string;
+  slotStart: string;
+  partySize: number;
+  guestName: string | null;
+  isNonResident: boolean;
+  notes: string | null;
+}
+
+interface SpaBookingPhonePrompt {
+  pendingBooking: PendingSpaBookingFields;
+}
+
+/**
+ * The widget's own local union of the two structured-phone-form kinds this
+ * component can show — never both at once (the backend guarantees
+ * partnerRequestPhonePrompt/spaBookingPhonePrompt are never both non-null
+ * the same turn). One shared form skeleton (JSX further below) branches on
+ * `kind` for its label and submit target, rather than duplicating the whole
+ * form block per kind.
+ */
+type ActivePhonePrompt = { kind: "partner_request"; prompt: PartnerRequestPhonePrompt } | { kind: "spa_booking"; prompt: SpaBookingPhonePrompt };
+
 interface ChatApiResponse {
   conversationId: string;
   reply: string;
@@ -64,6 +88,7 @@ interface ChatApiResponse {
   action: ChatAction | null;
   partnerRecommendations: PartnerRecommendation[];
   partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
+  spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
 }
 
 interface PublicWidgetChatProps {
@@ -219,7 +244,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   // inferred by parsing `reply`. Cleared explicitly on successful submit;
   // a later chat turn without the prompt also clears it (see handleSend),
   // so a stale form never lingers past the point it's no longer relevant.
-  const [activePhonePrompt, setActivePhonePrompt] = useState<PartnerRequestPhonePrompt | null>(null);
+  const [activePhonePrompt, setActivePhonePrompt] = useState<ActivePhonePrompt | null>(null);
   const [phoneInput, setPhoneInput] = useState("");
   const [phoneSubmitting, setPhoneSubmitting] = useState(false);
   const [phoneError, setPhoneError] = useState<string | null>(null);
@@ -332,7 +357,13 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           partnerRecommendations: data.partnerRecommendations,
         },
       ]);
-      setActivePhonePrompt(data.partnerRequestPhonePrompt);
+      if (data.partnerRequestPhonePrompt) {
+        setActivePhonePrompt({ kind: "partner_request", prompt: data.partnerRequestPhonePrompt });
+      } else if (data.spaBookingPhonePrompt) {
+        setActivePhonePrompt({ kind: "spa_booking", prompt: data.spaBookingPhonePrompt });
+      } else {
+        setActivePhonePrompt(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Une erreur est survenue.");
     } finally {
@@ -355,15 +386,16 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     setPhoneError(null);
 
     try {
-      const response = await fetch(`/api/widget/${encodeURIComponent(widgetKey)}/partner-request/phone`, {
+      const path = activePhonePrompt.kind === "partner_request" ? "partner-request/phone" : "spa-booking/phone";
+      const requestBody =
+        activePhonePrompt.kind === "partner_request"
+          ? { conversationId, sessionToken, phone: trimmed, pendingRequest: activePhonePrompt.prompt.pendingRequest }
+          : { conversationId, sessionToken, phone: trimmed, pendingBooking: activePhonePrompt.prompt.pendingBooking };
+
+      const response = await fetch(`/api/widget/${encodeURIComponent(widgetKey)}/${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          conversationId,
-          sessionToken,
-          phone: trimmed,
-          pendingRequest: activePhonePrompt.pendingRequest,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const body = await response.json().catch(() => null);
@@ -582,7 +614,9 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
             }}
           >
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#1A1D1A" }}>
-              À quel numéro souhaitez-vous recevoir la réponse de {activePhonePrompt.partnerName} ?
+              {activePhonePrompt.kind === "partner_request"
+                ? `À quel numéro souhaitez-vous recevoir la réponse de ${activePhonePrompt.prompt.partnerName} ?`
+                : "Merci de communiquer votre numéro de téléphone pour confirmer votre réservation spa."}
             </p>
             <input
               type="tel"
@@ -610,7 +644,9 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
               }}
             />
             <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#6b6b6b" }}>
-              Votre numéro sera utilisé uniquement pour transmettre cette demande et vous communiquer la réponse du partenaire.
+              {activePhonePrompt.kind === "partner_request"
+                ? "Votre numéro sera utilisé uniquement pour transmettre cette demande et vous communiquer la réponse du partenaire."
+                : "Votre numéro sera utilisé uniquement pour confirmer votre réservation et vous contacter si nécessaire."}
             </p>
             {phoneError && <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#B23B3B" }}>{phoneError}</p>}
             <button

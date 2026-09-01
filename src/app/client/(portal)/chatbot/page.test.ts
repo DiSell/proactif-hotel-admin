@@ -33,3 +33,30 @@ describe("ClientChatbotPage — listHotelEvents failure never crashes the whole 
     expect(catchBlock).toMatch(/console\.error\(/);
   });
 });
+
+/**
+ * Same permanent, user-mandated degradation pattern — added alongside the
+ * "Réservation spa" section, mirroring listHotelEvents' own try/catch above
+ * exactly (a query failure here must never crash the rest of the page,
+ * either).
+ */
+describe("ClientChatbotPage — spa queries failure never crashes the whole page", () => {
+  it("[wrapped in try/catch] a query failure degrades to null settings and an empty bookings list", () => {
+    const callIndex = source.indexOf("getHotelSpaSettings(chatbotData.hotelId");
+    expect(callIndex).toBeGreaterThan(-1);
+    const tryIndex = source.lastIndexOf("try {", callIndex);
+    const catchIndex = source.indexOf("} catch", callIndex);
+    expect(tryIndex).toBeGreaterThan(-1);
+    expect(catchIndex).toBeGreaterThan(callIndex);
+    const catchBlock = source.slice(catchIndex, source.indexOf("const assistantName", catchIndex));
+    expect(catchBlock).toMatch(/spaSettings = null;/);
+    expect(catchBlock).toMatch(/spaBookings = \[\];/);
+  });
+
+  it("[failure is logged, not swallowed silently]", () => {
+    const callIndex = source.indexOf("getHotelSpaSettings(chatbotData.hotelId");
+    const catchIndex = source.indexOf("} catch", callIndex);
+    const catchBlock = source.slice(catchIndex, catchIndex + 300);
+    expect(catchBlock).toMatch(/console\.error\(/);
+  });
+});

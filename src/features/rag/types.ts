@@ -195,6 +195,42 @@ export interface PartnerRequestPhonePrompt {
   pendingRequest: PendingPartnerRequestFields;
 }
 
+/**
+ * Everything the structured widget phone form needs to render itself AND to
+ * echo back, unmodified, to POST /api/widget/[widgetKey]/spa-booking/phone
+ * once the visitor submits a number — mirrors PendingPartnerRequestFields's
+ * own doc comment exactly, with the same reasoning: no spa_bookings row
+ * exists yet at this point (see features/rag/spaBookingFlow.ts's own header
+ * comment on why spa bookings carry no persisted in-progress state at all —
+ * a stronger version of the same "nothing to attach it to yet" reasoning).
+ * bookingDate/slotStart/partySize were independently validated against a
+ * real calendar/capacity check before this prompt was ever shown (see
+ * spaBookingFlow.ts's own doc comment on why these never come from the
+ * model's own structured output) — not sensitive data, and re-validated
+ * again server-side before ever being used (submitStructuredSpaBookingPhone
+ * never trusts them as-is).
+ */
+export interface PendingSpaBookingFields {
+  bookingDate: string;
+  slotStart: string;
+  partySize: number;
+  guestName: string | null;
+  isNonResident: boolean;
+  notes: string | null;
+}
+
+/**
+ * Present exactly when the widget must show the dedicated, structured
+ * phone-collection form for a spa booking instead of (or in addition to)
+ * the model's own conversational reply text — same deterministic-backend-
+ * signal discipline as PartnerRequestPhonePrompt. Never both
+ * partnerRequestPhonePrompt and spaBookingPhonePrompt non-null the same
+ * turn (see answer.ts: only one of the two flows ever runs per turn).
+ */
+export interface SpaBookingPhonePrompt {
+  pendingBooking: PendingSpaBookingFields;
+}
+
 export interface AnswerQuestionResult {
   reply: string;
   sources: RetrievedChunk[];
@@ -223,4 +259,6 @@ export interface AnswerQuestionResult {
    * field.
    */
   partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
+  /** Additive field, always present, null on every turn that doesn't need it — see SpaBookingPhonePrompt's own doc comment. */
+  spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
 }

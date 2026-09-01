@@ -229,6 +229,8 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // form — never something PublicWidgetChat.tsx infers by parsing
         // `reply`. See features/rag/types.ts:PartnerRequestPhonePrompt.
         partnerRequestPhonePrompt: result.partnerRequestPhonePrompt,
+        // Same discipline, for a spa booking — see features/rag/types.ts:SpaBookingPhonePrompt. Never both non-null the same turn.
+        spaBookingPhonePrompt: result.spaBookingPhonePrompt,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

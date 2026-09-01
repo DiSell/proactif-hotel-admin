@@ -8,6 +8,14 @@ import { maskPhoneForDisplay } from "@/features/partnerRequests/phoneRedaction";
 import { formatPartnerRequestDate, formatPartnerRequestTime } from "@/features/partnerRequests/presentation";
 import { loadActiveHotelPartners } from "./partners";
 import type { PendingPartnerRequestFields, PartnerRequestPhonePrompt, RagPartner } from "./types";
+import { isExplicitConfirmation } from "./confirmation";
+
+/**
+ * Extracted to features/rag/confirmation.ts (domain-agnostic, reused by
+ * features/rag/spaBookingFlow.ts) — re-exported here so this module's own
+ * existing tests/call sites keep working unchanged.
+ */
+export { isExplicitConfirmation } from "./confirmation";
 
 /**
  * KNOWN LIMITATION (free-text path only — see submitStructuredGuestPhone
@@ -28,31 +36,6 @@ import type { PendingPartnerRequestFields, PartnerRequestPhonePrompt, RagPartner
  * forward explicitly via partnerRequestPhonePrompt.pendingRequest, echoed
  * back by the widget itself, not by re-scanning chat history.
  */
-
-/**
- * Server-side safety net on top of the model's own confirmPartnerRequest
- * field — "pas de confirmation implicite" must hold structurally, not only
- * via prompting (same discipline as answer.ts never trusting a raw
- * recommendedAccommodationTypeId/recommendedPartnerIds without independent
- * validation). A model that mis-fires confirmPartnerRequest=true on an
- * ambiguous reply is still blocked here unless the visitor's own message
- * plausibly contains an explicit affirmative.
- */
-const EXPLICIT_CONFIRMATION_PATTERNS: RegExp[] = [
-  /\boui\b/i,
-  /\byes\b/i,
-  /\bje\s+confirme\b/i,
-  /\bd['’]accord\b/i,
-  /\ballez-y\b/i,
-  /\benvoyez\b/i,
-  /\bconfirm[ée]?\b/i,
-  /\bok\b/i,
-  /\bc['’]est\s+bon\b/i,
-];
-
-export function isExplicitConfirmation(message: string): boolean {
-  return EXPLICIT_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(message));
-}
 
 export interface PartnerRequestModelOutput {
   partnerRequestIntent: boolean;

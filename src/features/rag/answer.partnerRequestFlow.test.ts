@@ -139,8 +139,8 @@ describe("answerGrounded / answerNoContext — partner request wiring", () => {
   it("[partnerRequestPhonePrompt threaded into the final result] both branches return it alongside reply", () => {
     const groundedFn = sliceFn("answerGrounded", "async function answerNoContext");
     const noContextFn = sliceFn("answerNoContext", "async function loadHistory");
-    expect(groundedFn).toMatch(/partnerRequestPhonePrompt \};/);
-    expect(noContextFn).toMatch(/partnerRequestPhonePrompt \};/);
+    expect(groundedFn).toMatch(/partnerRequestPhonePrompt, spaBookingPhonePrompt \};/);
+    expect(noContextFn).toMatch(/partnerRequestPhonePrompt, spaBookingPhonePrompt \};/);
   });
 });
 

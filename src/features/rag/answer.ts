@@ -20,6 +20,17 @@ import {
   wantsAllPartners,
 } from "./partners";
 import { loadActiveHotelEvents, type ActiveHotelEvents } from "./events";
+import { getSpaAvailability, type SpaAvailability } from "@/features/spa/booking";
+import {
+  isSpaBookingIntent,
+  lastAssistantMessageContinuesSpaBooking,
+  processSpaBookingTurn,
+  resolveSpaBookingRequestFromHistory,
+  validateSpaBookingRequestState,
+  withSpaContinuationMarker,
+  type SpaBookingModelOutput,
+  type SpaBookingRequestState,
+} from "./spaBookingFlow";
 import { shouldResolveStayContext, isAvailabilityRequest } from "../availability/gates";
 import { resolveStayRequestFromHistory } from "../availability/extractStayRequest";
 import { validateStayRequestState } from "../availability/stayRequest";
@@ -36,6 +47,7 @@ import type {
   RagPartner,
   RetrievedChunk,
   RoomRecommendation,
+  SpaBookingPhonePrompt,
 } from "./types";
 import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
 import { redactPhoneNumbers } from "@/features/partnerRequests/phoneRedaction";
@@ -163,6 +175,25 @@ const partnerRequestOutputFields = {
 };
 
 /**
+ * Minimal extension for the spa-booking flow — see
+ * features/rag/spaBookingFlow.ts's own SpaBookingModelOutput doc comment for
+ * why bookingDate/slotStart/partySize are deliberately ABSENT here (they
+ * come exclusively from a separate, validated extraction call, never the
+ * main model's own structured output) and why the field names are distinct
+ * from partnerRequestOutputFields's own guestName/needsGuestName/
+ * needsGuestPhone despite serving an analogous role — both sets are spread
+ * into the SAME schema below.
+ */
+const spaBookingOutputFields = {
+  spaBookingIntent: z.boolean(),
+  spaGuestName: z.string().nullable(),
+  needsSpaGuestName: z.boolean(),
+  needsSpaGuestPhone: z.boolean(),
+  isNonResident: z.boolean(),
+  notes: z.string().nullable(),
+};
+
+/**
  * Structured output schema for the "no_context" branch only. Without a
  * chunk count to infer answerStatus from, the model itself has to say
  * whether this turn was a valid behavioral answer, an unsourced factual
@@ -176,6 +207,7 @@ const noContextReplySchema = z.object({
   /** Partner intent is orthogonal to groundingMode (see isPartnerIntent) — a no-context turn can still recommend a partner. Same "unverified until matched" discipline as the grounded schema's field. */
   recommendedPartnerIds: z.array(z.string()).nullable(),
   ...partnerRequestOutputFields,
+  ...spaBookingOutputFields,
 });
 
 /**
@@ -191,6 +223,7 @@ const groundedReplySchema = z.object({
   /** Same "unverified until matched" discipline as recommendedAccommodationTypeId — see buildPartnerRecommendations below. */
   recommendedPartnerIds: z.array(z.string()).nullable(),
   ...partnerRequestOutputFields,
+  ...spaBookingOutputFields,
 });
 
 /**
@@ -363,6 +396,31 @@ export async function answerQuestion({
   // fails the whole chat turn.
   const events = await loadActiveHotelEvents(supabase, hotelId, new Date().toISOString().slice(0, 10));
 
+  // Spa booking: DB-backed partner state always outranks this heuristic
+  // (see spaBookingFlow.ts's own header comment on why spa bookings carry
+  // no persisted in-progress row) — a fresh message expressing both intents
+  // at once also resolves to the partner flow, a documented, low-stakes
+  // tie-break. lastAssistantMessageContinuesSpaBooking lets a keyword-free
+  // reply ("2 personnes", a bare phone number) still be recognized as
+  // continuing an active spa-booking collection.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const spaBookingFlowActive = !partnerRequestFlowActive && (isSpaBookingIntent(message) || lastAssistantMessageContinuesSpaBooking(historyInput));
+
+  let spaAvailability: SpaAvailability = { enabled: false, date: todayIso, pricePerPerson: null, allowNonResidents: false, slots: [] };
+  let resolvedSpaBookingRequest: SpaBookingRequestState = { bookingDate: null, slotStart: null, partySize: null };
+  if (spaBookingFlowActive) {
+    try {
+      const rawSpaState = await resolveSpaBookingRequestFromHistory([...historyInput, { role: "user", content: message }], todayIso);
+      resolvedSpaBookingRequest = validateSpaBookingRequestState(rawSpaState);
+      spaAvailability = await getSpaAvailability(hotelId, resolvedSpaBookingRequest.bookingDate ?? todayIso, supabase);
+    } catch (err) {
+      // Best-effort enrichment — never fails the whole turn, same discipline
+      // as the stay-request resolution block above. Both stay at their safe
+      // fallback ("disabled"/all-null) values on failure.
+      console.error("answerQuestion: spa booking resolution failed", { hotelId, message: (err as Error).message });
+    }
+  }
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -386,6 +444,9 @@ export async function answerQuestion({
       partnerRequestFlowActive,
       allPartners,
       events,
+      spaBookingFlowActive,
+      spaAvailability,
+      resolvedSpaBookingRequest,
     });
   }
 
@@ -407,6 +468,9 @@ export async function answerQuestion({
     partnerRequestFlowActive,
     allPartners,
     events,
+    spaBookingFlowActive,
+    spaAvailability,
+    resolvedSpaBookingRequest,
   });
 }
 
@@ -448,6 +512,47 @@ async function applyPartnerRequestFlow(
   } catch (err) {
     console.error("answerQuestion: partner request flow failed", { hotelId: params.hotelId, conversationId: params.conversationId, message: (err as Error).message });
     return { reply, partnerRequestPhonePrompt: null };
+  }
+}
+
+/**
+ * Mirrors applyPartnerRequestFlow above — same best-effort discipline (own
+ * try/catch, never lets a spa-booking RPC failure surface as a generic
+ * "OpenAI call failed" error). The ONE structural difference: whenever the
+ * conversation is still mid-collection (outcome.continuesFlow), the
+ * invisible continuation marker is appended to whatever reply text is about
+ * to be persisted — this is the SOLE place that marker is ever written (see
+ * spaBookingFlow.ts:withSpaContinuationMarker/lastAssistantMessageContinuesSpaBooking
+ * for how a later turn recognizes it).
+ */
+async function applySpaBookingFlow(
+  reply: string,
+  params: {
+    hotelId: string;
+    conversationId: string;
+    message: string;
+    normalizedPhoneE164: string | null;
+    availability: SpaAvailability;
+    resolvedSpaBookingRequest: SpaBookingRequestState;
+    modelOutput: SpaBookingModelOutput;
+  }
+): Promise<{ reply: string; spaBookingPhonePrompt: SpaBookingPhonePrompt | null }> {
+  try {
+    const outcome = await processSpaBookingTurn({
+      hotelId: params.hotelId,
+      conversationId: params.conversationId,
+      message: params.message,
+      normalizedPhoneE164: params.normalizedPhoneE164,
+      availability: params.availability,
+      resolvedRequest: params.resolvedSpaBookingRequest,
+      modelOutput: params.modelOutput,
+    });
+    let nextReply = outcome.replySuffix ? (outcome.replaceReply ? outcome.replySuffix : `${reply}\n\n${outcome.replySuffix}`) : reply;
+    if (outcome.continuesFlow) nextReply = withSpaContinuationMarker(nextReply);
+    return { reply: nextReply, spaBookingPhonePrompt: outcome.phonePrompt };
+  } catch (err) {
+    console.error("answerQuestion: spa booking flow failed", { hotelId: params.hotelId, conversationId: params.conversationId, message: (err as Error).message });
+    return { reply, spaBookingPhonePrompt: null };
   }
 }
 
@@ -563,6 +668,9 @@ async function answerGrounded(
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
     events: ActiveHotelEvents;
+    spaBookingFlowActive: boolean;
+    spaAvailability: SpaAvailability;
+    resolvedSpaBookingRequest: SpaBookingRequestState;
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -587,6 +695,9 @@ async function answerGrounded(
     partnerRequestFlowActive,
     allPartners,
     events,
+    spaBookingFlowActive,
+    spaAvailability,
+    resolvedSpaBookingRequest,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -603,6 +714,9 @@ async function answerGrounded(
     activePartnerRequest,
     allActivePartnersForRequest: allPartners,
     events,
+    spaBookingFlowActive,
+    spaAvailability,
+    resolvedSpaBookingRequest,
   });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
@@ -617,6 +731,7 @@ async function answerGrounded(
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
   let partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null = null;
+  let spaBookingPhonePrompt: SpaBookingPhonePrompt | null = null;
 
   try {
     const client = getOpenAIClient();
@@ -635,6 +750,9 @@ async function answerGrounded(
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
 
+    // Mutually exclusive per turn — never both (see answerQuestion's own
+    // spaBookingFlowActive computation, which is already false whenever
+    // partnerRequestFlowActive is true).
     if (partnerRequestFlowActive) {
       const flowResult = await applyPartnerRequestFlow(reply, {
         hotelId,
@@ -647,6 +765,18 @@ async function answerGrounded(
       });
       reply = flowResult.reply;
       partnerRequestPhonePrompt = flowResult.partnerRequestPhonePrompt;
+    } else if (spaBookingFlowActive) {
+      const flowResult = await applySpaBookingFlow(reply, {
+        hotelId,
+        conversationId,
+        message,
+        normalizedPhoneE164,
+        availability: spaAvailability,
+        resolvedSpaBookingRequest,
+        modelOutput: response.output_parsed,
+      });
+      reply = flowResult.reply;
+      spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
     }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
@@ -701,7 +831,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt };
 }
 
 /**
@@ -733,6 +863,9 @@ async function answerNoContext(
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
     events: ActiveHotelEvents;
+    spaBookingFlowActive: boolean;
+    spaAvailability: SpaAvailability;
+    resolvedSpaBookingRequest: SpaBookingRequestState;
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -753,6 +886,9 @@ async function answerNoContext(
     partnerRequestFlowActive,
     allPartners,
     events,
+    spaBookingFlowActive,
+    spaAvailability,
+    resolvedSpaBookingRequest,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -767,6 +903,9 @@ async function answerNoContext(
     activePartnerRequest,
     allActivePartnersForRequest: allPartners,
     events,
+    spaBookingFlowActive,
+    spaAvailability,
+    resolvedSpaBookingRequest,
   });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
@@ -776,6 +915,7 @@ async function answerNoContext(
   let inputTokens: number | null = null;
   let outputTokens: number | null = null;
   let partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null = null;
+  let spaBookingPhonePrompt: SpaBookingPhonePrompt | null = null;
 
   try {
     const client = getOpenAIClient();
@@ -806,6 +946,18 @@ async function answerNoContext(
       });
       reply = flowResult.reply;
       partnerRequestPhonePrompt = flowResult.partnerRequestPhonePrompt;
+    } else if (spaBookingFlowActive) {
+      const flowResult = await applySpaBookingFlow(reply, {
+        hotelId,
+        conversationId,
+        message,
+        normalizedPhoneE164,
+        availability: spaAvailability,
+        resolvedSpaBookingRequest,
+        modelOutput: response.output_parsed,
+      });
+      reply = flowResult.reply;
+      spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
     }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });
@@ -830,7 +982,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -891,5 +1043,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null };
 }

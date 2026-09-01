@@ -64,6 +64,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
     action: null,
     partnerRecommendations: [],
     partnerRequestPhonePrompt: null,
+    spaBookingPhonePrompt: null,
     ...overrides,
   };
 }
@@ -349,7 +350,7 @@ describe("POST /api/widget/[widgetKey]/chat — conversation possession (session
 });
 
 describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
-  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations/partnerRequestPhonePrompt — never sources", async () => {
+  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations/partnerRequestPhonePrompt/spaBookingPhonePrompt — never sources", async () => {
     const deps = makeDeps({
       answerQuestion: vi.fn(async () =>
         makeAnswerResult({ action: { type: "booking", label: "Réserver", url: "https://booking.example.com" } })
@@ -360,7 +361,7 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(Object.keys(body).sort()).toEqual(
-      ["action", "answerStatus", "conversationId", "partnerRecommendations", "partnerRequestPhonePrompt", "reply", "roomRecommendation"].sort()
+      ["action", "answerStatus", "conversationId", "partnerRecommendations", "partnerRequestPhonePrompt", "spaBookingPhonePrompt", "reply", "roomRecommendation"].sort()
     );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });
   });

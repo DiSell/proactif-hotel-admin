@@ -529,6 +529,72 @@ export interface HotelEvent {
   updated_at: string;
 }
 
+/**
+ * Per-hotel spa-booking configuration — at most one row per hotel
+ * (0033_hotel_spa_settings.sql, hotel_id unique). `enabled = false` (the
+ * default) or a missing row both mean "this hotel does not offer spa
+ * booking" — every reader in features/spa/ and features/rag/ treats them
+ * identically, never distinguishing "never configured" from "configured but
+ * turned off". `slot_duration_minutes` is the SINGLE source of truth for how
+ * long a slot lasts — never hardcode a duration (e.g. 120) anywhere else;
+ * every slot boundary/label is always derived from this column.
+ */
+export interface HotelSpaSettings {
+  id: string;
+  hotel_id: string;
+  enabled: boolean;
+  /** "HH:MM:SS" (Postgres `time`). */
+  opens_at: string;
+  closes_at: string;
+  slot_duration_minutes: number;
+  capacity_per_slot: number;
+  price_per_person: number | null;
+  allow_non_residents: boolean;
+  advance_booking_days: number;
+  min_notice_hours: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type SpaBookingStatus = "confirmed" | "cancelled";
+export type SpaBookingCancelledBy = "guest" | "hotel" | "system";
+export type SpaBookingNotificationStatus = "pending" | "sent" | "failed";
+
+/**
+ * A guest's spa reservation — created EXCLUSIVELY via the create_spa_booking()
+ * SECURITY DEFINER RPC (0034_spa_bookings.sql), never a direct insert (see
+ * features/spa/booking.ts). Auto-confirmed on creation (no accept/reject
+ * negotiation, unlike hotel_partners' consent flow or partner_requests' state
+ * machine) — the hotel is notified (owner_notification_status/owner_notified_at)
+ * so staff can be present, not asked to approve. slot_end/price_per_person_snapshot
+ * are frozen at booking time from hotel_spa_settings, so a later change to
+ * the hotel's settings never retroactively alters an existing booking's
+ * displayed price or duration.
+ */
+export interface SpaBooking {
+  id: string;
+  hotel_id: string;
+  conversation_id: string;
+  guest_name: string | null;
+  guest_phone_e164: string | null;
+  party_size: number;
+  is_non_resident: boolean;
+  notes: string | null;
+  /** "YYYY-MM-DD" */
+  booking_date: string;
+  /** "HH:MM:SS" (Postgres `time`) */
+  slot_start: string;
+  slot_end: string;
+  price_per_person_snapshot: number | null;
+  status: SpaBookingStatus;
+  cancelled_by: SpaBookingCancelledBy | null;
+  cancelled_at: string | null;
+  owner_notification_status: SpaBookingNotificationStatus;
+  owner_notified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Row shape returned by the match_knowledge_chunks() RPC. */
 export interface MatchedChunk {
   chunk_id: string;
