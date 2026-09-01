@@ -43,6 +43,8 @@ function toRow(input: HotelSpaSettingsInput) {
     allow_non_residents: input.allow_non_residents,
     advance_booking_days: input.advance_booking_days,
     min_notice_hours: input.min_notice_hours,
+    approval_mode: input.approval_mode,
+    whatsapp_admin_phone_e164: input.whatsapp_admin_phone_e164,
   };
 }
 
@@ -92,4 +94,25 @@ async function cancelSpaBookingInternal(hotelId: string, bookingId: string, scop
 
 export async function cancelSpaBookingClient(hotelId: string, bookingId: string): Promise<ActionResult<null>> {
   return cancelSpaBookingInternal(hotelId, bookingId, "client");
+}
+
+/** The client-portal counterpart to cancelSpaBookingClient — the UI fallback for approving a pending_approval booking, always available regardless of whether WhatsApp itself is configured/working (0035_spa_booking_approval.sql). */
+async function approveSpaBookingInternal(hotelId: string, bookingId: string, scope: AuthScope): Promise<ActionResult<null>> {
+  const { supabase } = await requireHotelAccess(hotelId, scope);
+
+  const { error } = await supabase.rpc("approve_spa_booking", {
+    p_hotel_id: hotelId,
+    p_booking_id: bookingId,
+  });
+  if (error) {
+    console.error("approveSpaBooking: rpc failed", { message: error.message });
+    return { ok: false, error: "Impossible de confirmer cette réservation." };
+  }
+
+  revalidateSpaPaths();
+  return { ok: true, data: null };
+}
+
+export async function approveSpaBookingClient(hotelId: string, bookingId: string): Promise<ActionResult<null>> {
+  return approveSpaBookingInternal(hotelId, bookingId, "client");
 }

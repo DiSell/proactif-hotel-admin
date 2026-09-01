@@ -539,6 +539,8 @@ export interface HotelEvent {
  * long a slot lasts — never hardcode a duration (e.g. 120) anywhere else;
  * every slot boundary/label is always derived from this column.
  */
+export type SpaApprovalMode = "auto" | "manual";
+
 export interface HotelSpaSettings {
   id: string;
   hotel_id: string;
@@ -552,24 +554,38 @@ export interface HotelSpaSettings {
   allow_non_residents: boolean;
   advance_booking_days: number;
   min_notice_hours: number;
+  /**
+   * "auto" (default): a booking is confirmed immediately, exactly the
+   * original behavior. "manual" (0035_spa_booking_approval.sql): a booking
+   * is created as "pending_approval" and the hotel is notified via
+   * WhatsApp (whatsapp_admin_phone_e164) with Confirmer/Refuser buttons —
+   * the guest is told their request awaits validation, never that it's
+   * confirmed. See features/spa/deliveryService.ts.
+   */
+  approval_mode: SpaApprovalMode;
+  /** E.164. Only meaningful when approval_mode = "manual" — the hotel's OWN number for receiving approval requests, unrelated to hotel_whatsapp_connections (that per-hotel connection is not wired to any send/receive path today — this uses the same shared system WhatsApp account as partner notifications). */
+  whatsapp_admin_phone_e164: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export type SpaBookingStatus = "confirmed" | "cancelled";
+export type SpaBookingStatus = "pending_approval" | "confirmed" | "cancelled";
 export type SpaBookingCancelledBy = "guest" | "hotel" | "system";
 export type SpaBookingNotificationStatus = "pending" | "sent" | "failed";
 
 /**
  * A guest's spa reservation — created EXCLUSIVELY via the create_spa_booking()
- * SECURITY DEFINER RPC (0034_spa_bookings.sql), never a direct insert (see
- * features/spa/booking.ts). Auto-confirmed on creation (no accept/reject
- * negotiation, unlike hotel_partners' consent flow or partner_requests' state
- * machine) — the hotel is notified (owner_notification_status/owner_notified_at)
- * so staff can be present, not asked to approve. slot_end/price_per_person_snapshot
- * are frozen at booking time from hotel_spa_settings, so a later change to
- * the hotel's settings never retroactively alters an existing booking's
- * displayed price or duration.
+ * SECURITY DEFINER RPC (0034_spa_bookings.sql/0035_spa_booking_approval.sql),
+ * never a direct insert (see features/spa/booking.ts). Two lifecycles
+ * depending on the hotel's own hotel_spa_settings.approval_mode:
+ * "auto" -> created directly as "confirmed" (original behavior, no
+ * accept/reject negotiation); "manual" -> created as "pending_approval",
+ * then moved to "confirmed" (approve_spa_booking) or "cancelled"
+ * (cancel_spa_booking — rejecting IS cancelling, no separate status) by the
+ * hotel's own decision. slot_end/price_per_person_snapshot are frozen at
+ * booking time from hotel_spa_settings, so a later change to the hotel's
+ * settings never retroactively alters an existing booking's displayed price
+ * or duration.
  */
 export interface SpaBooking {
   id: string;
@@ -589,8 +605,25 @@ export interface SpaBooking {
   status: SpaBookingStatus;
   cancelled_by: SpaBookingCancelledBy | null;
   cancelled_at: string | null;
+  /** Set when the hotel approves or cancels/rejects a booking (0035_spa_booking_approval.sql) — null for a booking still pending_approval, or one that was auto-confirmed and never touched again. */
+  responded_at: string | null;
   owner_notification_status: SpaBookingNotificationStatus;
   owner_notified_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Row shape of public.spa_booking_deliveries (0035_spa_booking_approval.sql) — one row per WhatsApp transmission ATTEMPT of an approval request to the hotel, never the source of truth for SpaBooking.status. Deliberately EXCLUDES accept_reply_token_hash/reject_reply_token_hash — same "never even in the TS type" discipline as PartnerRequestDelivery. */
+export type SpaBookingDeliveryStatus = "queued" | "sending" | "sent" | "failed" | "unknown";
+
+export interface SpaBookingDelivery {
+  id: string;
+  hotel_id: string;
+  booking_id: string;
+  provider: string;
+  status: SpaBookingDeliveryStatus;
+  provider_message_id: string | null;
+  last_error_code: string | null;
   created_at: string;
   updated_at: string;
 }

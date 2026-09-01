@@ -8,13 +8,18 @@ import { Toggle } from "@/components/ui/Toggle";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { upsertHotelSpaSettingsClient } from "./actions";
-import { DEFAULT_SPA_SETTINGS_INPUT, type HotelSpaSettingsInput } from "./schema";
+import { DEFAULT_SPA_SETTINGS_INPUT, HOTEL_SPA_APPROVAL_MODES, type HotelSpaSettingsInput } from "./schema";
 import type { HotelSpaSettings } from "@/types/database";
 
 interface SpaSettingsFormProps {
   hotelId: string;
   settings: HotelSpaSettings | null;
 }
+
+const APPROVAL_MODE_LABEL: Record<(typeof HOTEL_SPA_APPROVAL_MODES)[number], string> = {
+  auto: "Confirmation automatique",
+  manual: "Validation manuelle par l'hôtel",
+};
 
 function toInput(settings: HotelSpaSettings | null): HotelSpaSettingsInput {
   if (!settings) return DEFAULT_SPA_SETTINGS_INPUT;
@@ -28,6 +33,8 @@ function toInput(settings: HotelSpaSettings | null): HotelSpaSettingsInput {
     allow_non_residents: settings.allow_non_residents,
     advance_booking_days: settings.advance_booking_days,
     min_notice_hours: settings.min_notice_hours,
+    approval_mode: settings.approval_mode,
+    whatsapp_admin_phone_e164: settings.whatsapp_admin_phone_e164,
   };
 }
 
@@ -162,6 +169,45 @@ export function SpaSettingsForm({ hotelId, settings }: SpaSettingsFormProps) {
         <Toggle checked={form.allow_non_residents} onChange={(value) => update("allow_non_residents", value)} label="Autoriser les clients extérieurs" />
         <span className="text-xs text-ink">Clients extérieurs {form.allow_non_residents ? "autorisés" : "non autorisés"}</span>
       </div>
+
+      <FormField
+        label="Validation des réservations"
+        htmlFor="spa_approval_mode"
+        required
+        error={errors.approval_mode}
+        hint="En validation manuelle, chaque réservation reste « en attente » jusqu'à ce que vous la confirmiez ou la refusiez — utile si vous gérez votre planning par ailleurs."
+      >
+        <select
+          id="spa_approval_mode"
+          value={form.approval_mode}
+          onChange={(event) => update("approval_mode", event.target.value as HotelSpaSettingsInput["approval_mode"])}
+          className={inputClassName(Boolean(errors.approval_mode))}
+        >
+          {HOTEL_SPA_APPROVAL_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {APPROVAL_MODE_LABEL[mode]}
+            </option>
+          ))}
+        </select>
+      </FormField>
+
+      {form.approval_mode === "manual" && (
+        <FormField
+          label="Numéro WhatsApp pour la validation"
+          htmlFor="spa_whatsapp_admin_phone"
+          error={errors.whatsapp_admin_phone_e164}
+          hint="Format international, ex. +33612345678. Vous recevrez chaque demande avec des boutons Confirmer/Refuser. Facultatif : sans ce numéro (ou si WhatsApp n'est pas encore actif), vous pourrez toujours valider depuis la liste des réservations ci-dessous et par email."
+        >
+          <input
+            id="spa_whatsapp_admin_phone"
+            type="tel"
+            value={form.whatsapp_admin_phone_e164 ?? ""}
+            onChange={(event) => update("whatsapp_admin_phone_e164", event.target.value === "" ? null : event.target.value)}
+            placeholder="+33612345678"
+            className={inputClassName(Boolean(errors.whatsapp_admin_phone_e164))}
+          />
+        </FormField>
+      )}
 
       <div>
         <Button variant="primary" onClick={handleSubmit} disabled={isPending}>

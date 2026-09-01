@@ -8,6 +8,8 @@ function makeDeps(overrides: Partial<WhatsAppWebhookDeps> = {}): WhatsAppWebhook
     handleWebhookPost: vi.fn<() => WebhookPostOutcome>(() => ({ ok: true, buttonTokens: [] })),
     resolvePartnerReplyToken: vi.fn(async () => null),
     applyPartnerReplyCommand: vi.fn(async () => undefined),
+    resolveSpaBookingReplyToken: vi.fn(async () => null),
+    applySpaBookingReplyCommand: vi.fn(async () => undefined),
     ...overrides,
   };
 }
@@ -88,12 +90,53 @@ describe("POST /api/webhooks/whatsapp — inbound button replies", () => {
     expect(applyPartnerReplyCommand).toHaveBeenCalledWith("req-1", "hotel-1", "partner_accept", null);
   });
 
-  it("[unresolvable token] resolvePartnerReplyToken returns null -> applyPartnerReplyCommand never called for it, request still succeeds", async () => {
+  it("[unresolvable token] resolvePartnerReplyToken AND resolveSpaBookingReplyToken both return null -> neither apply function called, request still succeeds", async () => {
     const resolvePartnerReplyToken = vi.fn(async () => null);
     const applyPartnerReplyCommand = vi.fn(async () => undefined);
+    const resolveSpaBookingReplyToken = vi.fn(async () => null);
+    const applySpaBookingReplyCommand = vi.fn(async () => undefined);
     const deps = makeDeps({
       handleWebhookPost: vi.fn<() => WebhookPostOutcome>(() => ({ ok: true, buttonTokens: ["unknown-or-foreign-token"] })),
       resolvePartnerReplyToken,
+      applyPartnerReplyCommand,
+      resolveSpaBookingReplyToken,
+      applySpaBookingReplyCommand,
+    });
+    const { POST } = createWhatsAppWebhookHandlers(deps);
+
+    const response = await POST(postRequest("{}", "sha256=good"));
+
+    expect(response.status).toBe(200);
+    expect(resolveSpaBookingReplyToken).toHaveBeenCalledWith("unknown-or-foreign-token");
+    expect(applyPartnerReplyCommand).not.toHaveBeenCalled();
+    expect(applySpaBookingReplyCommand).not.toHaveBeenCalled();
+  });
+
+  it("[spa booking token] a token that resolves as a partner reply is NEVER tried against resolveSpaBookingReplyToken — the two token spaces are checked in order, and a partner match short-circuits", async () => {
+    const resolvePartnerReplyToken = vi.fn(async () => ({ deliveryId: "d1", hotelId: "hotel-1", partnerRequestId: "req-1", command: "partner_accept" as const }));
+    const resolveSpaBookingReplyToken = vi.fn(async () => null);
+    const deps = makeDeps({
+      handleWebhookPost: vi.fn<() => WebhookPostOutcome>(() => ({ ok: true, buttonTokens: ["opaque-token-abc"] })),
+      resolvePartnerReplyToken,
+      resolveSpaBookingReplyToken,
+    });
+    const { POST } = createWhatsAppWebhookHandlers(deps);
+
+    await POST(postRequest("{}", "sha256=good"));
+
+    expect(resolveSpaBookingReplyToken).not.toHaveBeenCalled();
+  });
+
+  it("[spa booking token] a token unresolvable as a partner reply resolves as a spa approval reply, dispatches applySpaBookingReplyCommand with the decoded ids/command", async () => {
+    const resolvePartnerReplyToken = vi.fn(async () => null);
+    const resolveSpaBookingReplyToken = vi.fn(async () => ({ deliveryId: "delivery-1", hotelId: "hotel-1", bookingId: "booking-1", command: "approve" as const }));
+    const applySpaBookingReplyCommand = vi.fn(async () => undefined);
+    const applyPartnerReplyCommand = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      handleWebhookPost: vi.fn<() => WebhookPostOutcome>(() => ({ ok: true, buttonTokens: ["opaque-spa-token"] })),
+      resolvePartnerReplyToken,
+      resolveSpaBookingReplyToken,
+      applySpaBookingReplyCommand,
       applyPartnerReplyCommand,
     });
     const { POST } = createWhatsAppWebhookHandlers(deps);
@@ -101,7 +144,25 @@ describe("POST /api/webhooks/whatsapp — inbound button replies", () => {
     const response = await POST(postRequest("{}", "sha256=good"));
 
     expect(response.status).toBe(200);
+    expect(applySpaBookingReplyCommand).toHaveBeenCalledWith("booking-1", "hotel-1", "approve");
     expect(applyPartnerReplyCommand).not.toHaveBeenCalled();
+  });
+
+  it("[spa booking reply failure never fails the whole request] applySpaBookingReplyCommand throwing still returns 200", async () => {
+    const resolveSpaBookingReplyToken = vi.fn(async () => ({ deliveryId: "delivery-1", hotelId: "hotel-1", bookingId: "booking-1", command: "reject" as const }));
+    const applySpaBookingReplyCommand = vi.fn().mockRejectedValueOnce(new Error("spa_booking is not in a cancellable status"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deps = makeDeps({
+      handleWebhookPost: vi.fn<() => WebhookPostOutcome>(() => ({ ok: true, buttonTokens: ["opaque-spa-token"] })),
+      resolveSpaBookingReplyToken,
+      applySpaBookingReplyCommand,
+    });
+    const { POST } = createWhatsAppWebhookHandlers(deps);
+
+    const response = await POST(postRequest("{}", "sha256=good"));
+
+    expect(response.status).toBe(200);
+    consoleErrorSpy.mockRestore();
   });
 
   it("[raw body passed through unparsed] the exact request body text reaches handleWebhookPost, not a re-serialized object", async () => {

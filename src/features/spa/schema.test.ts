@@ -53,4 +53,26 @@ describe("hotelSpaSettingsSchema", () => {
     const result = hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, opens_at: "10h00" });
     expect(result.success).toBe(false);
   });
+
+  it("[approval_mode accepts 'auto' and 'manual', rejects anything else]", () => {
+    expect(hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, approval_mode: "auto" }).success).toBe(true);
+    expect(hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, approval_mode: "manual" }).success).toBe(true);
+    expect(hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, approval_mode: "something_else" }).success).toBe(false);
+  });
+
+  it("[whatsapp_admin_phone_e164 is optional even in manual mode] an empty string normalizes to null, never required", () => {
+    const result = hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, approval_mode: "manual", whatsapp_admin_phone_e164: "" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.whatsapp_admin_phone_e164).toBeNull();
+  });
+
+  it("[whatsapp_admin_phone_e164 rejects a non-E.164 value]", () => {
+    const result = hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, whatsapp_admin_phone_e164: "0612345678" });
+    expect(result.success).toBe(false);
+  });
+
+  it("[whatsapp_admin_phone_e164 accepts a valid E.164 value]", () => {
+    const result = hotelSpaSettingsSchema.safeParse({ ...VALID_INPUT, whatsapp_admin_phone_e164: "+33612345678" });
+    expect(result.success).toBe(true);
+  });
 });

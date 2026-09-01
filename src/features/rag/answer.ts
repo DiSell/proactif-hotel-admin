@@ -402,7 +402,7 @@ export async function answerQuestion({
   // resolved this turn, and never runs the costlier extraction call
   // (resolveSpaBookingRequestFromHistory) unless spa actually wins the
   // precedence decision.
-  let spaAvailability: SpaAvailability = { enabled: false, date: todayIso, pricePerPerson: null, allowNonResidents: false, slots: [] };
+  let spaAvailability: SpaAvailability = { enabled: false, date: todayIso, pricePerPerson: null, allowNonResidents: false, approvalMode: "auto", slots: [] };
   if (spaBookingCandidateActive) {
     try {
       spaAvailability = await getSpaAvailability(hotelId, todayIso, supabase);

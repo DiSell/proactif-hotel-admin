@@ -61,6 +61,7 @@ describe("spa/actions.ts — structural guarantees", () => {
   it("[only the client scope is exported] no back-office spa-settings UI was requested", () => {
     expect(source).toMatch(/upsertHotelSpaSettingsInternal\(hotelId, input, "client"\)/);
     expect(source).toMatch(/cancelSpaBookingInternal\(hotelId, bookingId, "client"\)/);
+    expect(source).toMatch(/approveSpaBookingInternal\(hotelId, bookingId, "client"\)/);
     expect(source).not.toMatch(/"backoffice"/);
   });
 
@@ -154,5 +155,37 @@ describe("cancelSpaBookingClient", () => {
 
     const result = await cancelSpaBookingClient(HOTEL_ID, BOOKING_ID);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("approveSpaBookingClient", () => {
+  it("[calls requireHotelAccess with \"client\"]", async () => {
+    const { supabase } = fakeSupabase();
+    mockRequireHotelAccess.mockResolvedValueOnce({ userId: "u1", profile: { id: "u1", role: "hotel_admin" }, supabase });
+    const { approveSpaBookingClient } = await import("./actions");
+
+    await approveSpaBookingClient(HOTEL_ID, BOOKING_ID);
+    expect(mockRequireHotelAccess).toHaveBeenCalledWith(HOTEL_ID, "client");
+  });
+
+  it("[tenant isolation] the RPC call carries both hotel_id and booking_id", async () => {
+    const { supabase, calls } = fakeSupabase();
+    mockRequireHotelAccess.mockResolvedValueOnce({ userId: "u1", profile: { id: "u1", role: "hotel_admin" }, supabase });
+    const { approveSpaBookingClient } = await import("./actions");
+
+    await approveSpaBookingClient(HOTEL_ID, BOOKING_ID);
+    const rpcCall = calls.find((c) => c.method === "rpc");
+    expect(rpcCall?.args[0]).toBe("approve_spa_booking");
+    expect(rpcCall?.args[1]).toMatchObject({ p_hotel_id: HOTEL_ID, p_booking_id: BOOKING_ID });
+  });
+
+  it("[rpc failure] clean ActionResult, never a raw throw", async () => {
+    const { supabase } = fakeSupabase({ rpcError: { message: "spa_booking is not pending approval", code: "P1008" } });
+    mockRequireHotelAccess.mockResolvedValueOnce({ userId: "u1", profile: { id: "u1", role: "hotel_admin" }, supabase });
+    const { approveSpaBookingClient } = await import("./actions");
+
+    const result = await approveSpaBookingClient(HOTEL_ID, BOOKING_ID);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toMatch(/pending approval/);
   });
 });

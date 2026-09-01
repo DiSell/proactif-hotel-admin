@@ -23,6 +23,11 @@ function parseTimeToMinutes(value: string): number {
 
 const timeSchema = z.string().trim().regex(TIME_FORMAT, "Heure invalide (HH:MM attendu).");
 
+/** Same E.164 shape as every other phone field in this codebase (features/partnerRequests, hotel_partners). */
+const E164_FORMAT = /^\+[1-9][0-9]{7,14}$/;
+
+export const HOTEL_SPA_APPROVAL_MODES = ["auto", "manual"] as const;
+
 export const hotelSpaSettingsSchema = z
   .object({
     enabled: z.boolean(),
@@ -34,6 +39,19 @@ export const hotelSpaSettingsSchema = z
     allow_non_residents: z.boolean(),
     advance_booking_days: z.number().int().min(0).max(365, "365 jours maximum."),
     min_notice_hours: z.number().int().min(0).max(168, "168 heures (7 jours) maximum."),
+    approval_mode: z.enum(HOTEL_SPA_APPROVAL_MODES, { message: "Choisissez un mode de validation." }),
+    // Optional even in "manual" mode, deliberately — the client-portal
+    // Confirmer/Refuser buttons (SpaBookingsList.tsx) always work regardless,
+    // and a new Meta-approved message template is an external prerequisite
+    // for WhatsApp itself to ever actually send (see 0035_spa_booking_approval.sql).
+    whatsapp_admin_phone_e164: z
+      .string()
+      .trim()
+      .optional()
+      .or(z.literal(""))
+      .nullable()
+      .transform((value) => (value ? value : null))
+      .refine((value) => value === null || E164_FORMAT.test(value), { message: "Numéro invalide (format international requis, ex. +33612345678)." }),
   })
   .superRefine((data, ctx) => {
     const opensMinutes = parseTimeToMinutes(data.opens_at);
@@ -66,4 +84,6 @@ export const DEFAULT_SPA_SETTINGS_INPUT: HotelSpaSettingsInput = {
   allow_non_residents: true,
   advance_booking_days: 30,
   min_notice_hours: 2,
+  approval_mode: "auto",
+  whatsapp_admin_phone_e164: null,
 };

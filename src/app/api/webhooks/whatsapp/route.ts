@@ -15,12 +15,18 @@ import {
   resolvePartnerReplyToken as resolvePartnerReplyTokenImpl,
   applyPartnerReplyCommand as applyPartnerReplyCommandImpl,
 } from "@/features/partnerRequests/deliveryService";
+import {
+  resolveSpaBookingReplyToken as resolveSpaBookingReplyTokenImpl,
+  applySpaBookingReplyCommand as applySpaBookingReplyCommandImpl,
+} from "@/features/spa/deliveryService";
 
 export interface WhatsAppWebhookDeps {
   handleWebhookChallenge: typeof handleWebhookChallenge;
   handleWebhookPost: typeof handleWebhookPost;
   resolvePartnerReplyToken: typeof resolvePartnerReplyTokenImpl;
   applyPartnerReplyCommand: typeof applyPartnerReplyCommandImpl;
+  resolveSpaBookingReplyToken: typeof resolveSpaBookingReplyTokenImpl;
+  applySpaBookingReplyCommand: typeof applySpaBookingReplyCommandImpl;
 }
 
 const defaultDeps: WhatsAppWebhookDeps = {
@@ -28,6 +34,8 @@ const defaultDeps: WhatsAppWebhookDeps = {
   handleWebhookPost,
   resolvePartnerReplyToken: resolvePartnerReplyTokenImpl,
   applyPartnerReplyCommand: applyPartnerReplyCommandImpl,
+  resolveSpaBookingReplyToken: resolveSpaBookingReplyTokenImpl,
+  applySpaBookingReplyCommand: applySpaBookingReplyCommandImpl,
 };
 
 export function createWhatsAppWebhookHandlers(deps: WhatsAppWebhookDeps = defaultDeps) {
@@ -66,24 +74,41 @@ export function createWhatsAppWebhookHandlers(deps: WhatsAppWebhookDeps = defaul
       // 'unknown' (task section 9) — an unsigned/foreign/stale token, or
       // one belonging to a 'failed' delivery, resolves to null and is
       // silently dropped here, never surfaced as a best-guess reply.
-      const resolved = await deps.resolvePartnerReplyToken(token);
-      if (!resolved) continue;
+      const resolvedPartner = await deps.resolvePartnerReplyToken(token);
+      if (resolvedPartner) {
+        try {
+          // message is always null here: a partner's free-text explanation
+          // (e.g. an alternative time) is not part of this task's scope —
+          // only the deterministic button tap itself is acted on (task
+          // section 12's own "préférer des réponses déterministes" guidance).
+          // apply_partner_request_command() itself is the FINAL authorization
+          // check — it re-validates the partner_request's current status
+          // under its own row lock before allowing this transition at all.
+          await deps.applyPartnerReplyCommand(resolvedPartner.partnerRequestId, resolvedPartner.hotelId, resolvedPartner.command, null);
+        } catch (err) {
+          // A single bad/already-resolved/race-lost reply must never fail
+          // the whole webhook delivery — Meta retries on any non-2xx
+          // response, which would re-deliver every OTHER event in this same
+          // payload too. Logged, never thrown, never leaked to the response.
+          console.error("POST /api/webhooks/whatsapp: applying partner reply failed", { message: (err as Error).message });
+        }
+        continue;
+      }
+
+      // Not a partner reply token — try the spa-booking-approval reply
+      // space next (0035_spa_booking_approval.sql). The two token spaces
+      // are entirely independent (never decoded, only hash-looked-up), so
+      // trying one after the other is the only way to tell which domain a
+      // given inbound tap belongs to — same "try each in turn" discipline
+      // resolvePartnerReplyToken itself already uses across its own three
+      // hash columns.
+      const resolvedSpa = await deps.resolveSpaBookingReplyToken(token);
+      if (!resolvedSpa) continue;
 
       try {
-        // message is always null here: a partner's free-text explanation
-        // (e.g. an alternative time) is not part of this task's scope —
-        // only the deterministic button tap itself is acted on (task
-        // section 12's own "préférer des réponses déterministes" guidance).
-        // apply_partner_request_command() itself is the FINAL authorization
-        // check — it re-validates the partner_request's current status
-        // under its own row lock before allowing this transition at all.
-        await deps.applyPartnerReplyCommand(resolved.partnerRequestId, resolved.hotelId, resolved.command, null);
+        await deps.applySpaBookingReplyCommand(resolvedSpa.bookingId, resolvedSpa.hotelId, resolvedSpa.command);
       } catch (err) {
-        // A single bad/already-resolved/race-lost reply must never fail
-        // the whole webhook delivery — Meta retries on any non-2xx
-        // response, which would re-deliver every OTHER event in this same
-        // payload too. Logged, never thrown, never leaked to the response.
-        console.error("POST /api/webhooks/whatsapp: applying partner reply failed", { message: (err as Error).message });
+        console.error("POST /api/webhooks/whatsapp: applying spa booking reply failed", { message: (err as Error).message });
       }
     }
 

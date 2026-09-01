@@ -39,3 +39,20 @@ describe("SpaSettingsForm — no fixed slot duration assumed", () => {
     expect(source).toMatch(/value=\{form\.slot_duration_minutes\}/);
   });
 });
+
+describe("SpaSettingsForm — approval mode (0035_spa_booking_approval.sql)", () => {
+  it("[both modes offered] auto and manual are both selectable, derived from HOTEL_SPA_APPROVAL_MODES, never hardcoded twice", () => {
+    expect(source).toMatch(/HOTEL_SPA_APPROVAL_MODES\.map/);
+    expect(source).toMatch(/auto: "Confirmation automatique"/);
+    expect(source).toMatch(/manual: "Validation manuelle par l'hôtel"/);
+  });
+
+  it("[WhatsApp admin phone only shown in manual mode] never rendered when approval_mode is auto", () => {
+    expect(source).toMatch(/\{form\.approval_mode === "manual" && \(/);
+  });
+
+  it("[WhatsApp admin phone is optional] an empty value is submitted as null, never an empty string", () => {
+    const block = source.slice(source.indexOf('id="spa_whatsapp_admin_phone"'), source.indexOf("/>", source.indexOf('id="spa_whatsapp_admin_phone"')));
+    expect(block).toMatch(/event\.target\.value === "" \? null : event\.target\.value/);
+  });
+});

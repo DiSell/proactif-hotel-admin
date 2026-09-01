@@ -188,6 +188,7 @@ function buildSpaRecapAwaitingPhone(fields: {
   guestName: string | null;
   isNonResident: boolean;
   pricePerPerson: number | null;
+  approvalMode: "auto" | "manual";
 }): string {
   const lines = ["Voici le récapitulatif de votre réservation spa :", `- Date : ${formatBookingDateForRecap(fields.bookingDate)}`, `- Créneau : ${fields.slotStart} - ${fields.slotEnd}`, `- Nombre de personnes : ${fields.partySize}`];
   if (fields.guestName) lines.push(`- Nom : ${fields.guestName}`);
@@ -195,16 +196,26 @@ function buildSpaRecapAwaitingPhone(fields: {
   if (fields.pricePerPerson !== null) {
     lines.push(`- Prix estimé : ${(fields.pricePerPerson * fields.partySize).toFixed(2)} € (${fields.pricePerPerson.toFixed(2)} €/personne)`);
   }
+  lines.push("", "Aucun paiement n'est demandé à ce stade.");
+  // approval_mode = "manual" (0035_spa_booking_approval.sql): giving the
+  // phone number submits the request, it does NOT confirm it — the hotel
+  // still decides. approval_mode = "auto": unchanged, original wording.
   lines.push(
-    "",
-    "Aucun paiement n'est demandé à ce stade.",
-    "Cette réservation n'est PAS encore enregistrée : en communiquant votre numéro de téléphone ci-dessous, vous confirmez définitivement cette réservation."
+    fields.approvalMode === "manual"
+      ? "Cette demande n'est PAS encore enregistrée : en communiquant votre numéro de téléphone ci-dessous, vous transmettez définitivement cette demande à l'établissement, qui doit encore la valider."
+      : "Cette réservation n'est PAS encore enregistrée : en communiquant votre numéro de téléphone ci-dessous, vous confirmez définitivement cette réservation."
   );
   return lines.join("\n");
 }
 
 function buildSpaBookingResultMessage(result: CreateSpaBookingResult, slotStart: string, slotEnd: string, availability: SpaAvailability): string {
   if (result.ok) {
+    // approval_mode = "manual" (0035_spa_booking_approval.sql): the booking
+    // is NOT confirmed yet — never say "confirmée", the hotel still has to
+    // decide. approval_mode = "auto": unchanged, original behavior.
+    if (result.status === "pending_approval") {
+      return `Votre demande de réservation spa pour le créneau ${slotStart} - ${slotEnd} a bien été transmise à l'établissement. Elle n'est pas encore confirmée : vous serez recontacté(e) dès sa validation.`;
+    }
     return `Votre réservation spa est confirmée pour le créneau ${slotStart} - ${slotEnd}. L'établissement a été informé de votre venue.`;
   }
   switch (result.code) {
@@ -343,6 +354,7 @@ export async function processSpaBookingTurn(params: ProcessSpaBookingTurnParams)
       guestName,
       isNonResident: modelOutput.isNonResident,
       pricePerPerson: availability.pricePerPerson,
+      approvalMode: availability.approvalMode,
     }),
     phonePrompt: {
       pendingBooking: {

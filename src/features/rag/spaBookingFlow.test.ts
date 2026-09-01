@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CreateSpaBookingResult, SpaAvailability } from "@/features/spa/booking";
 import type { SpaBookingModelOutput, SpaBookingRequestState } from "./spaBookingFlow";
 
-const mockCreateSpaBookingForChatbot = vi.fn<(...args: unknown[]) => Promise<CreateSpaBookingResult>>(async () => ({ ok: true, bookingId: "booking-1" }));
+const mockCreateSpaBookingForChatbot = vi.fn<(...args: unknown[]) => Promise<CreateSpaBookingResult>>(async () => ({ ok: true, bookingId: "booking-1", status: "confirmed" }));
 vi.mock("@/features/spa/booking", () => ({
   createSpaBookingForChatbot: (...args: unknown[]) => mockCreateSpaBookingForChatbot(...args),
 }));
@@ -12,16 +12,17 @@ const ENABLED_AVAILABILITY: SpaAvailability = {
   date: "2026-09-15",
   pricePerPerson: 30,
   allowNonResidents: true,
+  approvalMode: "auto",
   slots: [{ slotStart: "10:00", slotEnd: "12:00", capacity: 4, booked: 0, free: 4, bookable: true }],
 };
 
-const DISABLED_AVAILABILITY: SpaAvailability = { enabled: false, date: "2026-09-15", pricePerPerson: null, allowNonResidents: false, slots: [] };
+const DISABLED_AVAILABILITY: SpaAvailability = { enabled: false, date: "2026-09-15", pricePerPerson: null, allowNonResidents: false, approvalMode: "auto", slots: [] };
 
 const FULL_RESOLVED_REQUEST: SpaBookingRequestState = { bookingDate: "2026-09-15", slotStart: "10:00", partySize: 2 };
 
 afterEach(() => {
   mockCreateSpaBookingForChatbot.mockClear();
-  mockCreateSpaBookingForChatbot.mockResolvedValue({ ok: true, bookingId: "booking-1" });
+  mockCreateSpaBookingForChatbot.mockResolvedValue({ ok: true, bookingId: "booking-1", status: "confirmed" });
 });
 
 const BASE_MODEL_OUTPUT: SpaBookingModelOutput = {
@@ -260,7 +261,7 @@ describe("processSpaBookingTurn", () => {
   });
 
   it("[phone given this turn] creates the booking immediately — no separate 'oui' step", async () => {
-    mockCreateSpaBookingForChatbot.mockResolvedValueOnce({ ok: true, bookingId: "booking-1" });
+    mockCreateSpaBookingForChatbot.mockResolvedValueOnce({ ok: true, bookingId: "booking-1", status: "confirmed" });
     const { processSpaBookingTurn } = await import("./spaBookingFlow");
     const outcome = await processSpaBookingTurn({
       hotelId: "h1",
@@ -360,7 +361,7 @@ describe("submitStructuredSpaBookingPhone", () => {
   });
 
   it("[valid slot] calls createSpaBookingForChatbot and returns its outcome as a message", async () => {
-    mockCreateSpaBookingForChatbot.mockResolvedValueOnce({ ok: true, bookingId: "booking-2" });
+    mockCreateSpaBookingForChatbot.mockResolvedValueOnce({ ok: true, bookingId: "booking-2", status: "confirmed" });
     const { submitStructuredSpaBookingPhone } = await import("./spaBookingFlow");
     const result = await submitStructuredSpaBookingPhone({
       hotelId: "h1",

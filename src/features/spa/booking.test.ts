@@ -7,23 +7,32 @@ vi.mock("@/lib/email/templates/spaBookingNotification", () => ({
   spaBookingNotificationTemplate: vi.fn(() => ({ subject: "s", html: "h", text: "t" })),
 }));
 
+const mockDeliverSpaBookingApprovalRequest = vi.fn<(...args: unknown[]) => Promise<{ ok: boolean; providerMessageId?: string }>>(async () => ({ ok: true, providerMessageId: "wamid.test" }));
+vi.mock("./deliveryService", () => ({
+  deliverSpaBookingApprovalRequest: (...args: unknown[]) => mockDeliverSpaBookingApprovalRequest(...args),
+}));
+
 interface FakeRow {
   [key: string]: unknown;
 }
 
 function makeQueryBuilder(rows: FakeRow[]) {
-  const filters: [string, unknown][] = [];
+  const predicates: ((row: FakeRow) => boolean)[] = [];
   const builder = {
     eq(col: string, val: unknown) {
-      filters.push([col, val]);
+      predicates.push((row) => row[col] === val);
+      return builder;
+    },
+    in(col: string, values: unknown[]) {
+      predicates.push((row) => values.includes(row[col]));
       return builder;
     },
     async maybeSingle() {
-      const match = rows.find((r) => filters.every(([c, v]) => r[c] === v));
+      const match = rows.find((r) => predicates.every((p) => p(r)));
       return { data: match ?? null, error: null };
     },
     returns() {
-      const filtered = rows.filter((r) => filters.every(([c, v]) => r[c] === v));
+      const filtered = rows.filter((r) => predicates.every((p) => p(r)));
       return Promise.resolve({ data: filtered, error: null });
     },
   };
@@ -53,7 +62,7 @@ describe("getSpaAvailability", () => {
     const supabase = makeFakeSupabase({ hotel_spa_settings: [] });
 
     const result = await getSpaAvailability(HOTEL_ID, "2026-09-15", supabase);
-    expect(result).toEqual({ enabled: false, date: "2026-09-15", pricePerPerson: null, allowNonResidents: false, slots: [] });
+    expect(result).toEqual({ enabled: false, date: "2026-09-15", pricePerPerson: null, allowNonResidents: false, approvalMode: "auto", slots: [] });
   });
 
   it("[disabled explicitly] enabled: false row also degrades to no slots", async () => {
@@ -69,7 +78,7 @@ describe("getSpaAvailability", () => {
   it("[slots derived from slot_duration_minutes — never a hardcoded duration] a 30-minute configuration on a 09:00-09:30 window produces exactly one 30-minute slot", async () => {
     const { getSpaAvailability } = await import("./booking");
     const supabase = makeFakeSupabase({
-      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, opens_at: "09:00", closes_at: "09:30", slot_duration_minutes: 30, capacity_per_slot: 2, price_per_person: null, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 0 }],
+      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, approval_mode: "auto", opens_at: "09:00", closes_at: "09:30", slot_duration_minutes: 30, capacity_per_slot: 2, price_per_person: null, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 0 }],
       spa_bookings: [],
     });
 
@@ -80,7 +89,7 @@ describe("getSpaAvailability", () => {
   it("[capacity math] booked party_size reduces free, never goes negative", async () => {
     const { getSpaAvailability } = await import("./booking");
     const supabase = makeFakeSupabase({
-      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, opens_at: "10:00", closes_at: "14:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: 30, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 0 }],
+      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, approval_mode: "auto", opens_at: "10:00", closes_at: "14:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: 30, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 0 }],
       spa_bookings: [
         { hotel_id: HOTEL_ID, booking_date: "2026-09-15", status: "confirmed", slot_start: "10:00:00", party_size: 3 },
         { hotel_id: HOTEL_ID, booking_date: "2026-09-15", status: "confirmed", slot_start: "10:00:00", party_size: 2 },
@@ -97,7 +106,7 @@ describe("getSpaAvailability", () => {
   it("[advance window] a date beyond advance_booking_days is never bookable", async () => {
     const { getSpaAvailability } = await import("./booking");
     const supabase = makeFakeSupabase({
-      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, opens_at: "10:00", closes_at: "12:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: null, allow_non_residents: true, advance_booking_days: 5, min_notice_hours: 0 }],
+      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, approval_mode: "auto", opens_at: "10:00", closes_at: "12:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: null, allow_non_residents: true, advance_booking_days: 5, min_notice_hours: 0 }],
       spa_bookings: [],
     });
 
@@ -109,7 +118,7 @@ describe("getSpaAvailability", () => {
   it("[min notice] a same-day slot starting sooner than min_notice_hours is never bookable", async () => {
     const { getSpaAvailability } = await import("./booking");
     const supabase = makeFakeSupabase({
-      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, opens_at: "10:00", closes_at: "14:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: null, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 3 }],
+      hotel_spa_settings: [{ hotel_id: HOTEL_ID, enabled: true, approval_mode: "auto", opens_at: "10:00", closes_at: "14:00", slot_duration_minutes: 120, capacity_per_slot: 4, price_per_person: null, allow_non_residents: true, advance_booking_days: 30, min_notice_hours: 3 }],
       spa_bookings: [],
     });
 
@@ -134,15 +143,54 @@ describe("createSpaBookingForChatbot", () => {
     slotStart: "10:00",
   };
 
-  it("[success] returns the new booking id and attempts owner notification", async () => {
+  it("[success] returns the new booking id and status, and attempts owner notification", async () => {
     const { createSpaBookingForChatbot } = await import("./booking");
     const supabase = makeFakeSupabase(
-      { hotels: [{ id: HOTEL_ID, name: "Hôtel Test", email: "contact@hotel.test" }], chatbot_settings: [{ hotel_id: HOTEL_ID, handoff_email: null }] },
+      {
+        hotels: [{ id: HOTEL_ID, name: "Hôtel Test", email: "contact@hotel.test" }],
+        chatbot_settings: [{ hotel_id: HOTEL_ID, handoff_email: null }],
+        spa_bookings: [{ id: "booking-1", status: "confirmed" }],
+      },
       async (name) => (name === "create_spa_booking" ? { data: "booking-1", error: null } : { data: null, error: null })
     );
 
     const result = await createSpaBookingForChatbot(BASE_PARAMS, supabase);
-    expect(result).toEqual({ ok: true, bookingId: "booking-1" });
+    expect(result).toEqual({ ok: true, bookingId: "booking-1", status: "confirmed" });
+    expect(mockDeliverSpaBookingApprovalRequest).not.toHaveBeenCalled();
+  });
+
+  it("[manual approval mode] status pending_approval triggers the WhatsApp approval delivery, best-effort", async () => {
+    mockDeliverSpaBookingApprovalRequest.mockClear();
+    const { createSpaBookingForChatbot } = await import("./booking");
+    const supabase = makeFakeSupabase(
+      {
+        hotels: [{ id: HOTEL_ID, name: "Hôtel Test", email: "contact@hotel.test" }],
+        chatbot_settings: [{ hotel_id: HOTEL_ID, handoff_email: null }],
+        spa_bookings: [{ id: "booking-1", status: "pending_approval" }],
+      },
+      async (name) => (name === "create_spa_booking" ? { data: "booking-1", error: null } : { data: null, error: null })
+    );
+
+    const result = await createSpaBookingForChatbot(BASE_PARAMS, supabase);
+    expect(result).toEqual({ ok: true, bookingId: "booking-1", status: "pending_approval" });
+    expect(mockDeliverSpaBookingApprovalRequest).toHaveBeenCalledWith("booking-1", HOTEL_ID, { supabase });
+  });
+
+  it("[manual approval mode] a WhatsApp delivery failure never fails the booking itself", async () => {
+    mockDeliverSpaBookingApprovalRequest.mockClear();
+    mockDeliverSpaBookingApprovalRequest.mockRejectedValueOnce(new Error("provider down"));
+    const { createSpaBookingForChatbot } = await import("./booking");
+    const supabase = makeFakeSupabase(
+      {
+        hotels: [{ id: HOTEL_ID, name: "Hôtel Test", email: "contact@hotel.test" }],
+        chatbot_settings: [{ hotel_id: HOTEL_ID, handoff_email: null }],
+        spa_bookings: [{ id: "booking-1", status: "pending_approval" }],
+      },
+      async (name) => (name === "create_spa_booking" ? { data: "booking-1", error: null } : { data: null, error: null })
+    );
+
+    const result = await createSpaBookingForChatbot(BASE_PARAMS, supabase);
+    expect(result).toEqual({ ok: true, bookingId: "booking-1", status: "pending_approval" });
   });
 
   it("[slot_full] SQLSTATE P1006 maps to code 'slot_full'", async () => {
@@ -169,7 +217,7 @@ describe("createSpaBookingForChatbot", () => {
     );
 
     const result = await createSpaBookingForChatbot(BASE_PARAMS, supabase);
-    expect(result).toEqual({ ok: true, bookingId: "existing-booking" });
+    expect(result).toEqual({ ok: true, bookingId: "existing-booking", status: "confirmed" });
   });
 
   it("[unknown error] any other SQLSTATE degrades to a generic 'error' code, never throws", async () => {

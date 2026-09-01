@@ -2,7 +2,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendEmail } from "@/lib/email/sendEmail";
 import { spaBookingNotificationTemplate } from "@/lib/email/templates/spaBookingNotification";
-import type { HotelSpaSettings } from "@/types/database";
+import { deliverSpaBookingApprovalRequest } from "./deliveryService";
+import type { HotelSpaSettings, SpaBookingStatus } from "@/types/database";
 
 /**
  * Chatbot-facing reads/writes — mirrors features/rag/events.ts's own split
@@ -14,13 +15,22 @@ import type { HotelSpaSettings } from "@/types/database";
 
 type PromptSpaSettingsRow = Pick<
   HotelSpaSettings,
-  "enabled" | "opens_at" | "closes_at" | "slot_duration_minutes" | "capacity_per_slot" | "price_per_person" | "allow_non_residents" | "advance_booking_days" | "min_notice_hours"
+  | "enabled"
+  | "opens_at"
+  | "closes_at"
+  | "slot_duration_minutes"
+  | "capacity_per_slot"
+  | "price_per_person"
+  | "allow_non_residents"
+  | "advance_booking_days"
+  | "min_notice_hours"
+  | "approval_mode"
 >;
 
 async function getHotelSpaSettingsForChatbot(hotelId: string, supabase: SupabaseClient): Promise<PromptSpaSettingsRow | null> {
   const { data, error } = await supabase
     .from("hotel_spa_settings")
-    .select("enabled, opens_at, closes_at, slot_duration_minutes, capacity_per_slot, price_per_person, allow_non_residents, advance_booking_days, min_notice_hours")
+    .select("enabled, opens_at, closes_at, slot_duration_minutes, capacity_per_slot, price_per_person, allow_non_residents, advance_booking_days, min_notice_hours, approval_mode")
     .eq("hotel_id", hotelId)
     .maybeSingle<PromptSpaSettingsRow>();
   if (error) {
@@ -65,10 +75,19 @@ export interface SpaAvailability {
   date: string;
   pricePerPerson: number | null;
   allowNonResidents: boolean;
+  /** "auto": a booking is confirmed immediately. "manual": a booking is created as pending_approval and the hotel must confirm/refuse it (0035_spa_booking_approval.sql) — the guest must never be told the booking is confirmed in this mode. */
+  approvalMode: "auto" | "manual";
   slots: SpaAvailabilitySlot[];
 }
 
-const DISABLED_AVAILABILITY = (date: string): SpaAvailability => ({ enabled: false, date, pricePerPerson: null, allowNonResidents: false, slots: [] });
+const DISABLED_AVAILABILITY = (date: string): SpaAvailability => ({
+  enabled: false,
+  date,
+  pricePerPerson: null,
+  allowNonResidents: false,
+  approvalMode: "auto",
+  slots: [],
+});
 
 function isSlotBookable(dateIso: string, slotStartMinutes: number, settings: PromptSpaSettingsRow, nowMs: number): boolean {
   const todayIso = new Date(nowMs).toISOString().slice(0, 10);
@@ -102,7 +121,11 @@ export async function getSpaAvailability(
     .select("slot_start, party_size")
     .eq("hotel_id", hotelId)
     .eq("booking_date", dateIso)
-    .eq("status", "confirmed")
+    // pending_approval already occupies its slot's capacity, exactly like
+    // create_spa_booking()'s own aggregate (0035_spa_booking_approval.sql)
+    // — otherwise the chat could show a slot as free while a decision is
+    // still pending on it.
+    .in("status", ["confirmed", "pending_approval"])
     .returns<{ slot_start: string; party_size: number }[]>();
 
   if (error) {
@@ -132,12 +155,19 @@ export async function getSpaAvailability(
     });
   }
 
-  return { enabled: true, date: dateIso, pricePerPerson: settings.price_per_person, allowNonResidents: settings.allow_non_residents, slots };
+  return {
+    enabled: true,
+    date: dateIso,
+    pricePerPerson: settings.price_per_person,
+    allowNonResidents: settings.allow_non_residents,
+    approvalMode: settings.approval_mode,
+    slots,
+  };
 }
 
 export type CreateSpaBookingErrorCode = "not_enabled" | "outside_window" | "invalid_slot" | "min_notice" | "non_resident_not_allowed" | "slot_full" | "error";
 
-export type CreateSpaBookingResult = { ok: true; bookingId: string } | { ok: false; code: CreateSpaBookingErrorCode };
+export type CreateSpaBookingResult = { ok: true; bookingId: string; status: Exclude<SpaBookingStatus, "cancelled"> } | { ok: false; code: CreateSpaBookingErrorCode };
 
 export interface CreateSpaBookingParams {
   hotelId: string;
@@ -190,13 +220,13 @@ export async function createSpaBookingForChatbot(params: CreateSpaBookingParams,
     if (error.code === "23505") {
       const { data: existing, error: rereadError } = await supabase
         .from("spa_bookings")
-        .select("id")
+        .select("id, status")
         .eq("conversation_id", params.conversationId)
         .eq("booking_date", params.bookingDate)
         .eq("slot_start", params.slotStart)
-        .eq("status", "confirmed")
-        .maybeSingle<{ id: string }>();
-      if (!rereadError && existing) return { ok: true, bookingId: existing.id };
+        .in("status", ["confirmed", "pending_approval"])
+        .maybeSingle<{ id: string; status: Exclude<SpaBookingStatus, "cancelled"> }>();
+      if (!rereadError && existing) return { ok: true, bookingId: existing.id, status: existing.status };
     }
 
     const mapped = SQLSTATE_TO_ERROR_CODE[error.code ?? ""];
@@ -207,14 +237,33 @@ export async function createSpaBookingForChatbot(params: CreateSpaBookingParams,
   }
 
   const bookingId = data as string;
+
+  // The RPC only returns the new id — re-read the actual status it decided
+  // (auto vs manual approval_mode) rather than re-deriving it from a
+  // separately-fetched settings row, which could have changed between this
+  // call and the RPC's own read.
+  const { data: created } = await supabase.from("spa_bookings").select("status").eq("id", bookingId).maybeSingle<{ status: Exclude<SpaBookingStatus, "cancelled"> }>();
+  const status: Exclude<SpaBookingStatus, "cancelled"> = created?.status ?? "confirmed";
+
   await notifySpaBookingOwner(
     bookingId,
     params.hotelId,
-    { guestName: params.guestName, guestPhoneE164: params.guestPhoneE164, partySize: params.partySize, bookingDate: params.bookingDate, slotStart: params.slotStart, isNonResident: params.isNonResident, notes: params.notes },
+    { guestName: params.guestName, guestPhoneE164: params.guestPhoneE164, partySize: params.partySize, bookingDate: params.bookingDate, slotStart: params.slotStart, isNonResident: params.isNonResident, notes: params.notes, status },
     supabase
   );
 
-  return { ok: true, bookingId };
+  if (status === "pending_approval") {
+    // Best-effort, never blocks the booking itself — the client-portal
+    // Confirmer/Refuser buttons (SpaBookingsList.tsx) always work regardless
+    // of whether WhatsApp is configured or this specific send succeeds.
+    try {
+      await deliverSpaBookingApprovalRequest(bookingId, params.hotelId, { supabase });
+    } catch (err) {
+      console.error("createSpaBookingForChatbot: WhatsApp approval delivery failed", { hotelId: params.hotelId, bookingId, message: (err as Error).message });
+    }
+  }
+
+  return { ok: true, bookingId, status };
 }
 
 async function markSpaBookingNotification(bookingId: string, hotelId: string, status: "sent" | "failed", supabase: SupabaseClient): Promise<void> {
@@ -236,7 +285,16 @@ async function markSpaBookingNotification(bookingId: string, hotelId: string, st
 async function notifySpaBookingOwner(
   bookingId: string,
   hotelId: string,
-  booking: { guestName: string | null; guestPhoneE164: string | null; partySize: number; bookingDate: string; slotStart: string; isNonResident: boolean; notes: string | null },
+  booking: {
+    guestName: string | null;
+    guestPhoneE164: string | null;
+    partySize: number;
+    bookingDate: string;
+    slotStart: string;
+    isNonResident: boolean;
+    notes: string | null;
+    status: Exclude<SpaBookingStatus, "cancelled">;
+  },
   supabase: SupabaseClient
 ): Promise<void> {
   try {
@@ -260,6 +318,7 @@ async function notifySpaBookingOwner(
       slotStart: booking.slotStart,
       isNonResident: booking.isNonResident,
       notes: booking.notes,
+      status: booking.status,
     });
 
     const result = await sendEmail({ to: targetEmail, subject: template.subject, html: template.html, text: template.text });
