@@ -850,7 +850,20 @@ describe("buildHotelInstructions — spa booking guidance (real-time config must
       resolvedSpaBookingRequest: NO_DATE_RESOLVED,
     });
     expect(instructions).toMatch(/Ne mentionne JAMAIS cette information spontanément ou par défaut/);
-    expect(instructions).toMatch(/UNIQUEMENT si le visiteur pose explicitement la question, ou précise lui-même qu'il n'est pas résident/);
+    expect(instructions).toMatch(/UNIQUEMENT si le visiteur pose explicitement la question de son éligibilité, ou précise lui-même qu'il n'est pas résident/);
+  });
+
+  it("[non-resident policy suppressed even if mentioned elsewhere] the model must not repeat it just because it also appears in the hotel's own 'événements/informations' block or a knowledge-base reference — a real, reported bug: an existing permanent event describing spa access for non-residents kept leaking into every spa reply regardless of this specific spa-availability instruction", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+      events: { permanent: [{ title: "Accès au spa", content: "Le spa est accessible aux personnes qui ne séjournent pas à l'hôtel." }], temporary: [] },
+    });
+    expect(instructions).toMatch(/MÊME SI cette même politique est aussi mentionnée dans les « informations de l'établissement »/);
   });
 
   it("[non-resident policy — restricted case] same conditional-only instruction when non-residents are NOT allowed", () => {
