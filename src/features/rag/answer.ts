@@ -20,6 +20,7 @@ import {
   wantsAllPartners,
 } from "./partners";
 import { loadActiveHotelEvents, type ActiveHotelEvents } from "./events";
+import { flagConversationForModeration } from "./moderation";
 import { getSpaAvailability, type SpaAvailability } from "@/features/spa/booking";
 import {
   isSpaBookingIntent,
@@ -194,6 +195,21 @@ const spaBookingOutputFields = {
 };
 
 /**
+ * Orthogonal to every other flow above — the model self-reports whether the
+ * VISITOR'S CURRENT message itself is abusive (insult, hateful content,
+ * harassment, jailbreak attempt), per the absolute rules in prompt.ts. Never
+ * gated by partner/spa intent: checked and acted upon (see
+ * applyModerationFlag below) after every single model call, in both
+ * answerGrounded and answerNoContext. flagReason is a short, neutral,
+ * staff-facing description — the model is instructed to never repeat the
+ * actual slur/insult text into it (see prompt.ts).
+ */
+const moderationOutputFields = {
+  flaggedAsAbusive: z.boolean(),
+  flagReason: z.string().nullable(),
+};
+
+/**
  * Structured output schema for the "no_context" branch only. Without a
  * chunk count to infer answerStatus from, the model itself has to say
  * whether this turn was a valid behavioral answer, an unsourced factual
@@ -208,6 +224,7 @@ const noContextReplySchema = z.object({
   recommendedPartnerIds: z.array(z.string()).nullable(),
   ...partnerRequestOutputFields,
   ...spaBookingOutputFields,
+  ...moderationOutputFields,
 });
 
 /**
@@ -224,7 +241,23 @@ const groundedReplySchema = z.object({
   recommendedPartnerIds: z.array(z.string()).nullable(),
   ...partnerRequestOutputFields,
   ...spaBookingOutputFields,
+  ...moderationOutputFields,
 });
+
+/**
+ * Best-effort, never fails the turn — flagConversationForModeration
+ * (moderation.ts) already swallows and logs every error itself, and is
+ * idempotent (at most one notification per conversation). Awaited, not
+ * fire-and-forget: a serverless request handler can be torn down as soon as
+ * its response is sent, which would silently drop an un-awaited RPC/email
+ * call. A defensive fallback reason covers the case where the model reports
+ * flaggedAsAbusive without a flagReason, so flag_conversation() never
+ * receives a null reason on the very first flag.
+ */
+async function applyModerationFlag(hotelId: string, conversationId: string, modelOutput: { flaggedAsAbusive: boolean; flagReason: string | null }, supabase: SupabaseClient): Promise<void> {
+  if (!modelOutput.flaggedAsAbusive) return;
+  await flagConversationForModeration(hotelId, conversationId, modelOutput.flagReason?.trim() || "comportement signalé par l'assistant", supabase);
+}
 
 /**
  * Orchestrates one turn: persists the visitor's message, retrieves
@@ -780,6 +813,10 @@ async function answerGrounded(
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
 
+    // Orthogonal to partner/spa flow gating below — a visitor can be flagged
+    // mid-partner-request just as easily as mid-greeting.
+    await applyModerationFlag(hotelId, conversationId, response.output_parsed, supabase);
+
     // Mutually exclusive per turn — never both (see answerQuestion's own
     // spaBookingFlowActive computation, which is already false whenever
     // partnerRequestFlowActive is true).
@@ -963,6 +1000,10 @@ async function answerNoContext(
     recommendedPartnerIds = response.output_parsed.recommendedPartnerIds;
     inputTokens = response.usage?.input_tokens ?? null;
     outputTokens = response.usage?.output_tokens ?? null;
+
+    // Orthogonal to partner/spa flow gating below — see answerGrounded's own
+    // identical call for why this runs unconditionally, right after parse.
+    await applyModerationFlag(hotelId, conversationId, response.output_parsed, supabase);
 
     if (partnerRequestFlowActive) {
       const flowResult = await applyPartnerRequestFlow(reply, {

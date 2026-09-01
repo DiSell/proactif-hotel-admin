@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getClientConversations } from "@/features/client/queries";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/Card";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" });
@@ -26,7 +27,11 @@ export default async function ClientConversationsPage() {
                 className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5 hover:border-border-hover"
               >
                 <div className="min-w-0">
-                  <p className="text-2xs text-body">{formatDateTime(conversation.startedAt)}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-2xs text-body">{formatDateTime(conversation.startedAt)}</p>
+                    {conversation.blockedAt && <StatusBadge label="Bloquée" tone="neutral" />}
+                    {conversation.flaggedAt && <StatusBadge label="Signalée" tone="warning" />}
+                  </div>
                   <p className="truncate text-xs text-ink">{conversation.lastMessagePreview ?? "—"}</p>
                 </div>
                 <span className="ml-3 shrink-0 text-2xs text-body">

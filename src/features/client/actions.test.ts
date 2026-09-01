@@ -80,3 +80,30 @@ describe("setPhotoManagementMode", () => {
     expect(fn).toMatch(/\.eq\("id", hotelId\)/);
   });
 });
+
+describe("blockConversationClient / unblockConversationClient", () => {
+  it("[hotelId never accepted as input] each exported function takes only `conversationId`", () => {
+    for (const name of ["blockConversationClient", "unblockConversationClient"]) {
+      const signatureStart = source.indexOf(`export async function ${name}(`);
+      const signatureEnd = source.indexOf(")", signatureStart);
+      const signature = source.slice(signatureStart, signatureEnd);
+      expect(signature).not.toMatch(/hotelId/);
+      expect(signature).toMatch(/conversationId/);
+    }
+  });
+
+  it("[hotelId resolved from the caller's own session, never trusted from elsewhere]", () => {
+    for (const name of ["blockConversationClient", "unblockConversationClient"]) {
+      const fn = sliceFunction(name);
+      expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    }
+  });
+
+  it("[calls the matching SECURITY DEFINER RPC with p_hotel_id/p_conversation_id]", () => {
+    const blockFn = sliceFunction("blockConversationClient");
+    expect(blockFn).toMatch(/\.rpc\("block_conversation", \{ p_hotel_id: hotelId, p_conversation_id: conversationId \}\)/);
+
+    const unblockFn = sliceFunction("unblockConversationClient");
+    expect(unblockFn).toMatch(/\.rpc\("unblock_conversation", \{ p_hotel_id: hotelId, p_conversation_id: conversationId \}\)/);
+  });
+});

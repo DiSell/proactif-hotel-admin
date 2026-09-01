@@ -99,3 +99,47 @@ export async function setPhotoManagementMode(mode: PhotoManagementMode): Promise
   revalidatePath("/client/photos");
   return { ok: true, data: null };
 }
+
+/**
+ * Blocks/unblocks a visitor's ongoing widget session on ONE conversation —
+ * see block_conversation()/unblock_conversation() (0036_conversation_moderation.sql)
+ * and the widget chat route's own check on conversations.blocked_at. hotelId
+ * is never accepted as a parameter, same discipline as every other action in
+ * this file — always resolved from the caller's own session via
+ * requireClientAccess(), so a hotel_admin can never target another hotel's
+ * conversation no matter what a crafted request contains (the RPC itself
+ * re-validates ownership server-side regardless, via is_hotel_admin_for).
+ *
+ * Session-scoped, not visitor-scoped (see moderation.ts/0036's own doc
+ * comment): blocking targets this one conversation's own session_id — a
+ * visitor who clears their browser storage gets a fresh, unblocked session.
+ * An accepted, already-communicated limitation, not a gap specific to this
+ * action.
+ */
+export async function blockConversationClient(conversationId: string): Promise<ActionResult<null>> {
+  const { hotelId } = await requireClientAccess();
+  const supabase = createAdminClient();
+
+  const { error } = await supabase.rpc("block_conversation", { p_hotel_id: hotelId, p_conversation_id: conversationId });
+  if (error) {
+    console.error("blockConversationClient: rpc failed", { message: error.message });
+    return { ok: false, error: "Impossible de bloquer ce visiteur." };
+  }
+
+  revalidatePath(`/client/conversations/${conversationId}`);
+  return { ok: true, data: null };
+}
+
+export async function unblockConversationClient(conversationId: string): Promise<ActionResult<null>> {
+  const { hotelId } = await requireClientAccess();
+  const supabase = createAdminClient();
+
+  const { error } = await supabase.rpc("unblock_conversation", { p_hotel_id: hotelId, p_conversation_id: conversationId });
+  if (error) {
+    console.error("unblockConversationClient: rpc failed", { message: error.message });
+    return { ok: false, error: "Impossible de débloquer ce visiteur." };
+  }
+
+  revalidatePath(`/client/conversations/${conversationId}`);
+  return { ok: true, data: null };
+}

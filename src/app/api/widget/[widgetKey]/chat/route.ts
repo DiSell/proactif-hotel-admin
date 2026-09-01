@@ -168,7 +168,7 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // bypasses RLS entirely for this query.
         const { data: conversation, error: convError } = await supabase
           .from("conversations")
-          .select("id, session_id")
+          .select("id, session_id, blocked_at")
           .eq("id", requestedConversationId)
           .eq("hotel_id", hotelId)
           .maybeSingle();
@@ -182,6 +182,15 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // never a distinguishable response.
         if (!conversation || !sessionTokensMatch(conversation.session_id, sessionTokenHash)) {
           return NextResponse.json({ error: "Conversation introuvable." }, { status: 404 });
+        }
+
+        // Checked right after ownership is established, before the message
+        // count query and before answerQuestion (which is what actually
+        // calls OpenAI) — a blocked visitor's session is rejected at the
+        // cheapest possible point. See block_conversation()
+        // (0036_conversation_moderation.sql) and features/client/actions.ts.
+        if (conversation.blocked_at) {
+          return NextResponse.json({ error: "Cette conversation n'est plus disponible." }, { status: 403 });
         }
 
         const { count: messageCount, error: countError } = await supabase

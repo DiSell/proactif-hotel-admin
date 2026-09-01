@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getClientConversationDetail } from "@/features/client/queries";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/Card";
+import { ConversationModerationPanel } from "@/features/client/ConversationModerationPanel";
 
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" });
@@ -24,6 +25,13 @@ export default async function ClientConversationDetailPage({ params }: PageProps
   return (
     <div className="mx-auto flex max-w-[800px] flex-col gap-6 p-6 md:p-8">
       <PageHeader title="Conversation" subtitle={formatDateTime(conversation.startedAt)} backHref="/client/conversations" backLabel="Conversations" />
+
+      <ConversationModerationPanel
+        conversationId={conversation.id}
+        flaggedAt={conversation.flaggedAt}
+        flagReason={conversation.flagReason}
+        blockedAt={conversation.blockedAt}
+      />
 
       <Card className="flex flex-col gap-3 p-6">
         {conversation.messages.length === 0 ? (

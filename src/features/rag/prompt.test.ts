@@ -157,6 +157,18 @@ describe("buildHotelInstructions — absolute rules: hostility, insults, and mal
     const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "no_context" });
     expect(instructions).toMatch(/insultant, méprisant ou agressif/);
   });
+
+  it("[flaggedAsAbusive self-report] scoped to the CURRENT message only, never a general mood/impatience/legitimate-complaint", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    expect(instructions).toMatch(/Renseigne flaggedAsAbusive à true UNIQUEMENT si le message du visiteur QUE TU VIENS DE RECEVOIR/);
+    expect(instructions).toMatch(/laisse-le à false pour tout le reste, y compris une simple réclamation, un mécontentement légitime, ou un ton simplement familier ou impatient/);
+  });
+
+  it("[flagReason never repeats the abusive text] must stay short/neutral/staff-facing, null when not flagged", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    expect(instructions).toMatch(/ne recopie JAMAIS l'insulte ou le propos exact du visiteur dans flagReason/);
+    expect(instructions).toMatch(/Laisse flagReason à null lorsque flaggedAsAbusive est false/);
+  });
 });
 
 describe("buildHotelInstructions", () => {

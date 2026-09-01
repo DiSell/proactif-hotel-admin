@@ -17,12 +17,15 @@ export interface ConversationSummary {
   lastMessageAt: string | null;
   messageCount: number;
   lastMessagePreview: string | null;
+  /** Set once, the first time the model's own moderation self-report flags this conversation (0036_conversation_moderation.sql) — never cleared automatically. */
+  flaggedAt: string | null;
+  blockedAt: string | null;
 }
 
 async function summarizeConversations(
   supabase: Awaited<ReturnType<typeof createClientPortalClient>>,
   hotelId: string,
-  conversations: { id: string; started_at: string; last_message_at: string | null }[]
+  conversations: { id: string; started_at: string; last_message_at: string | null; flagged_at: string | null; blocked_at: string | null }[]
 ): Promise<ConversationSummary[]> {
   if (conversations.length === 0) return [];
   const ids = conversations.map((c) => c.id);
@@ -49,6 +52,8 @@ async function summarizeConversations(
     lastMessageAt: conversation.last_message_at,
     messageCount: countByConversation.get(conversation.id) ?? 0,
     lastMessagePreview: lastMessageByConversation.get(conversation.id) ?? null,
+    flaggedAt: conversation.flagged_at,
+    blockedAt: conversation.blocked_at,
   }));
 }
 
@@ -90,7 +95,7 @@ export async function getClientDashboard(): Promise<ClientDashboardData> {
     supabase.from("conversations").select("*", { count: "exact", head: true }).eq("hotel_id", hotelId).gte("started_at", thirtyDaysAgo),
     supabase
       .from("conversations")
-      .select("id, started_at, last_message_at")
+      .select("id, started_at, last_message_at, flagged_at, blocked_at")
       .eq("hotel_id", hotelId)
       .order("started_at", { ascending: false })
       .limit(5),
@@ -121,7 +126,7 @@ export async function getClientConversations(): Promise<{ hotelId: string; conve
 
   const { data: conversations, error } = await supabase
     .from("conversations")
-    .select("id, started_at, last_message_at")
+    .select("id, started_at, last_message_at, flagged_at, blocked_at")
     .eq("hotel_id", hotelId)
     .order("started_at", { ascending: false })
     .limit(CONVERSATIONS_LIST_LIMIT);
@@ -140,6 +145,9 @@ export interface ConversationMessage {
 export interface ConversationDetail {
   id: string;
   startedAt: string;
+  flaggedAt: string | null;
+  flagReason: string | null;
+  blockedAt: string | null;
   messages: ConversationMessage[];
 }
 
@@ -156,7 +164,7 @@ export async function getClientConversationDetail(conversationId: string): Promi
 
   const { data: conversation, error: conversationError } = await supabase
     .from("conversations")
-    .select("id, started_at")
+    .select("id, started_at, flagged_at, flag_reason, blocked_at")
     .eq("id", conversationId)
     .eq("hotel_id", hotelId)
     .maybeSingle();
@@ -174,6 +182,9 @@ export async function getClientConversationDetail(conversationId: string): Promi
   return {
     id: conversation.id,
     startedAt: conversation.started_at,
+    flaggedAt: conversation.flagged_at,
+    flagReason: conversation.flag_reason,
+    blockedAt: conversation.blocked_at,
     messages: (messages ?? []).map((message) => ({
       id: message.id,
       role: message.role,

@@ -71,7 +71,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
 
 /** Fake Supabase client covering exactly the query shapes route.ts uses — conversations (select/insert) and messages (count select). */
 function fakeSupabase(options: {
-  conversationLookup?: { data: { id: string; session_id: string } | null; error: { message: string } | null };
+  conversationLookup?: { data: { id: string; session_id: string; blocked_at?: string | null } | null; error: { message: string } | null };
   messageCount?: { count: number | null; error: { message: string } | null };
   insertConversation?: { data: { id: string } | null; error: { message: string } | null };
 }): SupabaseClient {
@@ -310,6 +310,32 @@ describe("POST /api/widget/[widgetKey]/chat — conversation possession (session
     const body = await response.json();
     expect(body.error).not.toMatch(/connection reset/);
     expect(deps.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  it("[conversation blocked] rejected with 403 before the message-count query or answerQuestion — a moderation block short-circuits before any further cost is spent (see block_conversation(), 0036_conversation_moderation.sql)", async () => {
+    const supabase = fakeSupabase({
+      conversationLookup: { data: { id: "conv-1", session_id: VALID_TOKEN_HASH, blocked_at: "2026-01-01T00:00:00Z" }, error: null },
+    });
+    const deps = makeDeps({ createSupabaseClient: () => supabase });
+    const handler = createChatHandler(deps);
+
+    const response = await handler(makeRequest({ conversationId: "e64afb80-6dc7-4e4b-b00e-484dfd557794", message: "hello", sessionToken: VALID_TOKEN }), context);
+
+    expect(response.status).toBe(403);
+    expect(deps.answerQuestion).not.toHaveBeenCalled();
+  });
+
+  it("[conversation not blocked] blocked_at absent/null proceeds normally", async () => {
+    const supabase = fakeSupabase({
+      conversationLookup: { data: { id: "conv-1", session_id: VALID_TOKEN_HASH, blocked_at: null }, error: null },
+    });
+    const deps = makeDeps({ createSupabaseClient: () => supabase });
+    const handler = createChatHandler(deps);
+
+    const response = await handler(makeRequest({ conversationId: "e64afb80-6dc7-4e4b-b00e-484dfd557794", message: "hello", sessionToken: VALID_TOKEN }), context);
+
+    expect(response.status).toBe(200);
+    expect(deps.answerQuestion).toHaveBeenCalled();
   });
 
   it("[conversation at message cap] rejected with 400 before answerQuestion is called", async () => {
