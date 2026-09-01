@@ -840,6 +840,32 @@ describe("buildHotelInstructions — spa booking guidance (real-time config must
     expect(instructions).toMatch(/cette autre source est OBSOLÈTE/);
   });
 
+  it("[non-resident policy never announced by default] the model is told to surface it only if the visitor asks or states their own status — never systematically, to avoid confusing a visitor who IS already a resident", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/Ne mentionne JAMAIS cette information spontanément ou par défaut/);
+    expect(instructions).toMatch(/UNIQUEMENT si le visiteur pose explicitement la question, ou précise lui-même qu'il n'est pas résident/);
+  });
+
+  it("[non-resident policy — restricted case] same conditional-only instruction when non-residents are NOT allowed", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: { ...ENABLED_AVAILABILITY, allowNonResidents: false },
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/réservée aux clients résidents de l'établissement/);
+    expect(instructions).toMatch(/Ne mentionne JAMAIS cette restriction spontanément ou par défaut/);
+  });
+
   it("[real slots for a resolved date] shows the exact computed numbers, never inventing or adjusting them", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),

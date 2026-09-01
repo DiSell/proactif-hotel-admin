@@ -375,7 +375,44 @@ export async function answerQuestion({
   // isPartnerIntent's own keyword patterns on its own. See
   // features/partnerRequests/queries.ts's own doc comment.
   const activePartnerRequest = await getActivePartnerRequestForConversation(hotelId, conversationId, supabase);
-  const partnerRequestFlowActive = partnerIntentDetected || activePartnerRequest !== null;
+
+  // Spa booking vs. partner-request precedence.
+  //
+  // isPartnerIntent's own keyword patterns (features/rag/partners.ts)
+  // deliberately include "spa"/"bien-être"/"massage" — a "wellness partner"
+  // is a legitimate partner category. That means partnerIntentDetected is
+  // ALWAYS true for a message like "puis-je réserver une séance de spa ?",
+  // which would silently and permanently starve the spa-booking flow below
+  // if a bare "partner intent fired" check were allowed to win by default —
+  // this was a real, hotel-breaking bug (every spa question was routed to
+  // the generic wellness-partner flow, never to this hotel's own configured
+  // spa booking, however it was configured). The fix: for a hotel that has
+  // actually ENABLED spa booking, its own in-house spa always takes
+  // precedence over a merely keyword-overlapping "wellness partner" guess —
+  // the partner flow is reserved for hotels that have NOT configured spa
+  // booking, where "spa" genuinely has nowhere else to go but a registered
+  // wellness partner, if any. A real, already-persisted partner_request in
+  // progress (activePartnerRequest) still always wins outright: abandoning
+  // an in-flight request the guest already started confirming would be far
+  // more confusing than this keyword overlap ever is.
+  const spaBookingCandidateActive = activePartnerRequest === null && (isSpaBookingIntent(message) || lastAssistantMessageContinuesSpaBooking(historyInput));
+  const todayIso = new Date().toISOString().slice(0, 10);
+
+  // Cheap, settings-only lookup — reused as-is below if no date gets
+  // resolved this turn, and never runs the costlier extraction call
+  // (resolveSpaBookingRequestFromHistory) unless spa actually wins the
+  // precedence decision.
+  let spaAvailability: SpaAvailability = { enabled: false, date: todayIso, pricePerPerson: null, allowNonResidents: false, slots: [] };
+  if (spaBookingCandidateActive) {
+    try {
+      spaAvailability = await getSpaAvailability(hotelId, todayIso, supabase);
+    } catch (err) {
+      console.error("answerQuestion: spa availability lookup failed", { hotelId, message: (err as Error).message });
+    }
+  }
+
+  const spaBookingFlowActive = spaBookingCandidateActive && spaAvailability.enabled;
+  const partnerRequestFlowActive = activePartnerRequest !== null || (partnerIntentDetected && !spaBookingFlowActive);
 
   let partnerCandidates: RagPartner[] = [];
   let allPartners: RagPartner[] = [];
@@ -396,27 +433,20 @@ export async function answerQuestion({
   // fails the whole chat turn.
   const events = await loadActiveHotelEvents(supabase, hotelId, new Date().toISOString().slice(0, 10));
 
-  // Spa booking: DB-backed partner state always outranks this heuristic
-  // (see spaBookingFlow.ts's own header comment on why spa bookings carry
-  // no persisted in-progress row) — a fresh message expressing both intents
-  // at once also resolves to the partner flow, a documented, low-stakes
-  // tie-break. lastAssistantMessageContinuesSpaBooking lets a keyword-free
-  // reply ("2 personnes", a bare phone number) still be recognized as
-  // continuing an active spa-booking collection.
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const spaBookingFlowActive = !partnerRequestFlowActive && (isSpaBookingIntent(message) || lastAssistantMessageContinuesSpaBooking(historyInput));
-
-  let spaAvailability: SpaAvailability = { enabled: false, date: todayIso, pricePerPerson: null, allowNonResidents: false, slots: [] };
   let resolvedSpaBookingRequest: SpaBookingRequestState = { bookingDate: null, slotStart: null, partySize: null };
   if (spaBookingFlowActive) {
     try {
       const rawSpaState = await resolveSpaBookingRequestFromHistory([...historyInput, { role: "user", content: message }], todayIso);
       resolvedSpaBookingRequest = validateSpaBookingRequestState(rawSpaState);
-      spaAvailability = await getSpaAvailability(hotelId, resolvedSpaBookingRequest.bookingDate ?? todayIso, supabase);
+      // Only refetch when a specific date was actually resolved — otherwise
+      // the "today" availability already fetched above (still accurate:
+      // hours/price/policy are date-independent) is reused as-is.
+      if (resolvedSpaBookingRequest.bookingDate) {
+        spaAvailability = await getSpaAvailability(hotelId, resolvedSpaBookingRequest.bookingDate, supabase);
+      }
     } catch (err) {
       // Best-effort enrichment — never fails the whole turn, same discipline
-      // as the stay-request resolution block above. Both stay at their safe
-      // fallback ("disabled"/all-null) values on failure.
+      // as the stay-request resolution block above.
       console.error("answerQuestion: spa booking resolution failed", { hotelId, message: (err as Error).message });
     }
   }

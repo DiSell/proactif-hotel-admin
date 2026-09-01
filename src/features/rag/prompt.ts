@@ -506,9 +506,15 @@ function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedReq
   }
 
   const priceLine = availability.pricePerPerson !== null ? `Prix : ${availability.pricePerPerson.toFixed(2)} € par personne.` : "Le prix n'est pas communiqué pour le moment — ne l'invente jamais.";
+  // Deliberately phrased as a CONDITIONAL instruction, never a fact to
+  // announce by default: mentioning "les non-résidents peuvent aussi
+  // réserver" unprompted implies the visitor's own resident status is in
+  // question, which is confusing for the (presumably far more common) case
+  // of a visitor who already IS a resident and never asked. Surfaced only
+  // when the visitor's own message makes it relevant.
   const residentLine = availability.allowNonResidents
-    ? "Les clients extérieurs (non résidents de l'établissement) peuvent également réserver."
-    : "Cette réservation est réservée aux clients résidents de l'établissement — dis-le si le visiteur précise qu'il est extérieur.";
+    ? "Politique clients extérieurs (à utiliser UNIQUEMENT si le visiteur pose explicitement la question, ou précise lui-même qu'il n'est pas résident/client de l'établissement) : les clients extérieurs sont également autorisés à réserver. Ne mentionne JAMAIS cette information spontanément ou par défaut — l'annoncer sans qu'elle ait été demandée laisse penser à tort que le statut du visiteur est en question, ce qui est source de confusion pour un visiteur déjà résident."
+    : "Politique clients extérieurs (à utiliser UNIQUEMENT si le visiteur pose explicitement la question, ou précise lui-même qu'il n'est pas résident/client de l'établissement) : cette réservation est réservée aux clients résidents de l'établissement. Ne mentionne JAMAIS cette restriction spontanément ou par défaut — uniquement si elle est réellement pertinente pour ce que le visiteur demande.";
 
   const hasSlots = availability.slots.length > 0;
   const opensAt = hasSlots ? availability.slots[0].slotStart : null;

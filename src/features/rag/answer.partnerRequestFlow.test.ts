@@ -56,9 +56,21 @@ describe("answerQuestion — active partner_request lookup and gating", () => {
     expect(activeIndex).toBeLessThan(ifGuardIndex);
   });
 
-  it("[broader gate] partnerRequestFlowActive is partnerIntentDetected OR an active request exists", () => {
+  it("[broader gate] partnerRequestFlowActive is (partnerIntentDetected AND spa booking didn't win precedence) OR an active request exists — a persisted in-progress request always wins outright; a merely keyword-detected partner intent yields to the hotel's own spa booking when it's enabled (isPartnerIntent's own patterns include \"spa\"/\"bien-être\", which would otherwise permanently starve the spa flow — see the surrounding comment)", () => {
     const fn = sliceFn("answerQuestion", "type HistoryInputItem");
-    expect(fn).toMatch(/const partnerRequestFlowActive = partnerIntentDetected \|\| activePartnerRequest !== null;/);
+    expect(fn).toMatch(/const partnerRequestFlowActive = activePartnerRequest !== null \|\| \(partnerIntentDetected && !spaBookingFlowActive\);/);
+  });
+
+  it("[real bug regression] a real, persisted, in-progress partner_request always wins outright, regardless of spa's enabled status — computed via activePartnerRequest !== null, never a re-evaluation of spaBookingFlowActive for that case", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    const candidateIndex = fn.indexOf("const spaBookingCandidateActive =");
+    expect(candidateIndex).toBeGreaterThan(-1);
+    expect(fn.slice(candidateIndex, candidateIndex + 200)).toMatch(/activePartnerRequest === null &&/);
+  });
+
+  it("[real bug regression] spaBookingFlowActive depends on the hotel's OWN configured availability (spaAvailability.enabled), never on isPartnerIntent alone — this is what makes a hotel's configured spa booking win over a generic \"spa\"/\"bien-être\" wellness-partner keyword match instead of being permanently starved by it", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    expect(fn).toMatch(/const spaBookingFlowActive = spaBookingCandidateActive && spaAvailability\.enabled;/);
   });
 
   it("[threaded to both branches] both answerGrounded and answerNoContext receive normalizedPhoneE164, activePartnerRequest, partnerRequestFlowActive, allPartners", () => {
