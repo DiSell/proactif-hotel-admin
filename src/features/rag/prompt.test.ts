@@ -763,3 +763,108 @@ describe("buildHotelInstructions — events/informations guidance", () => {
     expect(instructions).toMatch(/ÉVÉNEMENTS ET INFORMATIONS DE L'ÉTABLISSEMENT :/);
   });
 });
+
+describe("buildHotelInstructions — spa booking guidance (real-time config must override any older knowledge-base text)", () => {
+  const ENABLED_AVAILABILITY = {
+    enabled: true,
+    date: "2026-09-15",
+    pricePerPerson: 30,
+    allowNonResidents: true,
+    slots: [
+      { slotStart: "10:00", slotEnd: "12:00", capacity: 4, booked: 0, free: 4, bookable: true },
+      { slotStart: "12:00", slotEnd: "14:00", capacity: 4, booked: 4, free: 0, bookable: false },
+    ],
+  };
+  const NO_DATE_RESOLVED = { bookingDate: null, slotStart: null, partySize: null };
+
+  it("[disabled] never fires without spaBookingFlowActive, regardless of spaAvailability being set", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: false,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).not.toMatch(/RÉSERVATION SPA/);
+  });
+
+  it("[not enabled for this hotel] honest, no invented hours/price", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: { enabled: false, date: "2026-09-15", pricePerPerson: null, allowNonResidents: false, slots: [] },
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/n'est pas activée pour cet établissement/);
+    expect(instructions).not.toMatch(/Horaires d'ouverture actuels/);
+  });
+
+  it("[general hours announced with certainty even before a date is chosen] no hedging — this was the exact bug reported: the model citing an old RAG-indexed page with 'généralement'/'peut avoir changé' instead of the current configuration", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/Horaires d'ouverture actuels du spa : 10:00 - 14:00, 7 jours sur 7\./);
+    expect(instructions).toMatch(/annoncer les horaires généraux ci-dessus avec certitude dès maintenant/);
+  });
+
+  it("[explicit anti-hedging instruction] tells the model never to apply the freshness caveat to spa hours/price/slots, and never to suggest confirming with the establishment", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/N'applique JAMAIS de prudence de fraîcheur/);
+    expect(instructions).toMatch(/annonce-les avec certitude, comme des faits établis/);
+  });
+
+  it("[explicit override instruction] tells the model any older/different knowledge-base mention of spa hours/price is obsolete relative to this data", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/cette autre source est OBSOLÈTE/);
+  });
+
+  it("[real slots for a resolved date] shows the exact computed numbers, never inventing or adjusting them", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: { bookingDate: "2026-09-15", slotStart: null, partySize: null },
+    });
+    expect(instructions).toMatch(/Disponibilités RÉELLES pour le/);
+    expect(instructions).toMatch(/10:00 - 12:00 : 4 place\(s\) disponible\(s\) sur 4/);
+    expect(instructions).toMatch(/12:00 - 14:00 : complet ou non réservable actuellement/);
+  });
+
+  it("[collection guidance also present] asks for the missing fields in order, never writes its own recap/confirmation", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      spaBookingFlowActive: true,
+      spaAvailability: ENABLED_AVAILABILITY,
+      resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+    });
+    expect(instructions).toMatch(/COLLECTE DE LA RÉSERVATION SPA :/);
+    expect(instructions).toMatch(/NE rédige JAMAIS toi-même de récapitulatif/);
+    expect(instructions).toMatch(/Ne dis JAMAIS que la réservation est confirmée/);
+  });
+});

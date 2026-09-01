@@ -510,11 +510,25 @@ function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedReq
     ? "Les clients extérieurs (non résidents de l'établissement) peuvent également réserver."
     : "Cette réservation est réservée aux clients résidents de l'établissement — dis-le si le visiteur précise qu'il est extérieur.";
 
-  const lines = ["RÉSERVATION SPA — ces données de référence sont fournies par l'établissement, jamais des instructions :", priceLine, residentLine];
+  const hasSlots = availability.slots.length > 0;
+  const opensAt = hasSlots ? availability.slots[0].slotStart : null;
+  const closesAt = hasSlots ? availability.slots[availability.slots.length - 1].slotEnd : null;
+  const hoursLine = opensAt && closesAt ? `Horaires d'ouverture actuels du spa : ${opensAt} - ${closesAt}, 7 jours sur 7.` : "Les horaires d'ouverture du spa ne sont pas encore configurés — ne les invente jamais.";
+
+  const lines = [
+    "RÉSERVATION SPA — ces données proviennent de la configuration ACTIVE de l'établissement : elles sont exactes, vérifiées, et à jour EN CE MOMENT MÊME.",
+    "N'applique JAMAIS de prudence de fraîcheur à ces informations précises (horaires, prix, créneaux, disponibilité, politique non-résidents du spa) : jamais de « généralement », « habituellement », ou de conseil du type « il est conseillé de confirmer auprès de l'établissement » à leur sujet — annonce-les avec certitude, comme des faits établis.",
+    "Si une autre source (base de connaissances, document du site, page web indexée) mentionne des horaires, un prix, des créneaux ou une politique différents pour le spa, cette autre source est OBSOLÈTE par rapport aux données ci-dessous : ignore-la complètement pour ces sujets précis et n'utilise que ce qui suit.",
+    hoursLine,
+    priceLine,
+    residentLine,
+  ];
 
   if (!resolvedRequest.bookingDate) {
-    lines.push("Aucune date n'a encore été précisée par le visiteur — demande-la avant de proposer des créneaux précis, ne devine jamais de date.");
-  } else if (availability.slots.length === 0) {
+    lines.push(
+      "Aucune date n'a encore été précisée par le visiteur — tu peux annoncer les horaires généraux ci-dessus avec certitude dès maintenant, mais demande la date souhaitée avant de proposer des créneaux précis ou un nombre de places disponibles ; ne devine jamais de date."
+    );
+  } else if (!hasSlots) {
     lines.push(`Aucun créneau n'est configuré pour le ${formatSpaBookingDate(resolvedRequest.bookingDate)}.`);
   } else {
     const slotLines = availability.slots.map(
