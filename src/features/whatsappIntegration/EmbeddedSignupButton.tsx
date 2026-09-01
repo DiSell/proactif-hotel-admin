@@ -143,7 +143,18 @@ export function EmbeddedSignupButton(props: EmbeddedSignupButtonProps) {
         config_id: META_WHATSAPP_CONFIG_ID,
         response_type: "code",
         override_default_response_type: true,
-        extras: { setup: {} },
+        // featureType hints Meta to steer the flow toward WhatsApp Business
+        // App coexistence, i.e. the FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING
+        // finish event — the ONLY one finalizeEmbeddedSignup() accepts
+        // server-side (metaEmbeddedSignup.ts, "unsupported_finish_event"
+        // otherwise). Without this hint Meta decides the finish event via
+        // its own heuristics, which can plausibly return a different event
+        // even for an eligible hotel — the most likely reason a real
+        // connection attempt has never completed so far (audited, never
+        // exercised against Meta's real network from this codebase — verify
+        // this actually resolves it against a real test-mode signup before
+        // relying on it).
+        extras: { setup: {}, featureType: "whatsapp_business_app_onboarding" },
       }
     );
   }

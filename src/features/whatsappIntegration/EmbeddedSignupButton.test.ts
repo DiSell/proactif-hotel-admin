@@ -58,7 +58,11 @@ describe("EmbeddedSignupButton — FB.login parameters (confirmed against Meta's
     expect(source).toMatch(/config_id: META_WHATSAPP_CONFIG_ID/);
     expect(source).toMatch(/response_type: "code"/);
     expect(source).toMatch(/override_default_response_type: true/);
-    expect(source).toMatch(/extras: \{ setup: \{\} \}/);
+    expect(source).toMatch(/extras: \{ setup: \{\}, featureType: "whatsapp_business_app_onboarding" \}/);
+  });
+
+  it("[featureType steers Meta toward the one finish event the server accepts] finalizeEmbeddedSignup() only ever accepts FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING — without this hint Meta's own heuristics could return a different, server-rejected finish event even for an eligible hotel", () => {
+    expect(source).toMatch(/featureType: "whatsapp_business_app_onboarding"/);
   });
 
   it("[never response_type token] this flow only ever requests an exchangeable code, never a raw access token to the browser", () => {

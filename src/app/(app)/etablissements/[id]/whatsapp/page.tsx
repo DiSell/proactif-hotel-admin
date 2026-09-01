@@ -25,10 +25,14 @@ function formatExpiresAt(value: string): string {
 
 /**
  * WhatsApp Business configuration for ONE establishment, in the admin
- * dashboard — this is the ONLY place this configuration lives (the client
- * portal's own /client/whatsapp screen and its ClientSidebarNav entry have
- * been removed). `hotelId` comes from this admin route's own [id] param,
- * which HotelLayout (one level up) already resolved via getHotel().
+ * dashboard. The client portal has its OWN, separate screen for this
+ * (/client/whatsapp, still live today — see ClientSidebarNav.tsx's own
+ * "/client/whatsapp" entry) which lets a hotel_admin connect directly via
+ * EmbeddedSignupButton; this admin page instead only generates a link for
+ * someone else (the WhatsApp Business owner) to complete that same flow
+ * without a Proactif account — see the next paragraph. `hotelId` comes from
+ * this admin route's own [id] param, which HotelLayout (one level up)
+ * already resolved via getHotel().
  *
  * Never imports/renders EmbeddedSignupButton and never triggers Meta's
  * Embedded Signup itself — this page only generates/copies an activation
