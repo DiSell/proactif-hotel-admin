@@ -170,6 +170,38 @@ describe("processSpaBookingTurn", () => {
     expect(mockCreateSpaBookingForChatbot).not.toHaveBeenCalled();
   });
 
+  it("[real bug regression] no name is ever tolerated even if the model wrongly self-reports needsSpaGuestName: false — a phone given this turn must NOT create a booking without a name, regardless of what the model claims", async () => {
+    const { processSpaBookingTurn } = await import("./spaBookingFlow");
+    const outcome = await processSpaBookingTurn({
+      hotelId: "h1",
+      conversationId: "c1",
+      message: "0612345678",
+      normalizedPhoneE164: "+33612345678",
+      availability: ENABLED_AVAILABILITY,
+      resolvedRequest: FULL_RESOLVED_REQUEST,
+      // The model incorrectly claims it no longer needs a name, despite spaGuestName being null — this used to slip through and create a nameless booking.
+      modelOutput: { ...BASE_MODEL_OUTPUT, spaGuestName: null, needsSpaGuestName: false },
+    });
+    expect(outcome.continuesFlow).toBe(true);
+    expect(outcome.phonePrompt).toBeNull();
+    expect(mockCreateSpaBookingForChatbot).not.toHaveBeenCalled();
+  });
+
+  it("[real bug regression] a blank/whitespace-only name is treated as no name at all", async () => {
+    const { processSpaBookingTurn } = await import("./spaBookingFlow");
+    const outcome = await processSpaBookingTurn({
+      hotelId: "h1",
+      conversationId: "c1",
+      message: "0612345678",
+      normalizedPhoneE164: "+33612345678",
+      availability: ENABLED_AVAILABILITY,
+      resolvedRequest: FULL_RESOLVED_REQUEST,
+      modelOutput: { ...BASE_MODEL_OUTPUT, spaGuestName: "   ", needsSpaGuestName: false },
+    });
+    expect(outcome.continuesFlow).toBe(true);
+    expect(mockCreateSpaBookingForChatbot).not.toHaveBeenCalled();
+  });
+
   it("[everything known except phone] shows the recap and the structured phone prompt — never claims the booking is confirmed", async () => {
     const { processSpaBookingTurn } = await import("./spaBookingFlow");
     const outcome = await processSpaBookingTurn({

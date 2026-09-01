@@ -287,10 +287,22 @@ export async function processSpaBookingTurn(params: ProcessSpaBookingTurnParams)
     return { replySuffix: null, phonePrompt: null, continuesFlow: true };
   }
 
-  if (modelOutput.needsSpaGuestName && !modelOutput.spaGuestName) {
+  // Structural requirement, independent of needsSpaGuestName — that field is
+  // the MODEL's own self-report of whether it still needs a name, and the
+  // model can get it wrong (report false, or omit it, on a later turn even
+  // though no name was ever actually given, e.g. after several turns of
+  // collecting other fields). Trusting that flag alone let a booking be
+  // created with guestName = null despite the visitor never having provided
+  // one — a real, reported gap. The gate here never trusts the model's own
+  // judgment for whether a REQUIRED field is satisfied — only the field's
+  // own value: a name is present if and only if spaGuestName is a real,
+  // non-blank string. needsSpaGuestName still drives the model's own
+  // conversational behavior (see buildSpaBookingGuidance in prompt.ts), but
+  // never gates progression here.
+  const guestName = modelOutput.spaGuestName?.trim() || null;
+  if (!guestName) {
     return { replySuffix: null, phonePrompt: null, continuesFlow: true };
   }
-  const guestName = modelOutput.spaGuestName;
 
   // Free-text path: a phone extracted from THIS turn's message finalizes
   // the booking immediately — checked before the structured-form fallback,
