@@ -47,6 +47,7 @@ function makeDeps(overrides: Partial<ConfigRouteDeps> = {}): ConfigRouteDeps {
   return {
     createSupabaseClient: () => ({}) as never,
     resolveWidgetContext: vi.fn(async () => makeWidgetContext()),
+    loadActiveBanner: vi.fn(async () => null),
     ...overrides,
   };
 }
@@ -70,7 +71,16 @@ describe("GET /api/widget/[widgetKey]/config", () => {
       logoUrl: "https://cdn.example.com/logo.png",
       bookingActionMode: "url",
       hostBookingTrigger: null,
+      activeBanner: null,
     });
+  });
+
+  it("[active banner] a temporary event with show_as_banner=true, currently in its window, is forwarded as-is", async () => {
+    const deps = makeDeps({ loadActiveBanner: vi.fn(async () => ({ title: "Fermeture du spa", content: "Le spa est fermé pour travaux du 12 au 18 septembre." })) });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    const body = await response.json();
+    expect(body.activeBanner).toEqual({ title: "Fermeture du spa", content: "Le spa est fermé pour travaux du 12 au 18 septembre." });
   });
 
   it("[host_widget mode] exposes bookingActionMode and the validated trigger — never a URL", async () => {

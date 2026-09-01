@@ -19,6 +19,7 @@ import {
   toPartnerRecommendation,
   wantsAllPartners,
 } from "./partners";
+import { loadActiveHotelEvents, type ActiveHotelEvents } from "./events";
 import { shouldResolveStayContext, isAvailabilityRequest } from "../availability/gates";
 import { resolveStayRequestFromHistory } from "../availability/extractStayRequest";
 import { validateStayRequestState } from "../availability/stayRequest";
@@ -354,6 +355,14 @@ export async function answerQuestion({
     }
   }
 
+  // Orthogonal to groundingMode and to every intent-detection flag above —
+  // unlike partners, hotel events have no keyword-based intent detector, so
+  // this is loaded on EVERY turn (see prompt.ts's own doc comment on
+  // BuildHotelInstructionsParams.events). loadActiveHotelEvents never
+  // throws — a query failure here degrades to "no events this turn", never
+  // fails the whole chat turn.
+  const events = await loadActiveHotelEvents(supabase, hotelId, new Date().toISOString().slice(0, 10));
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -376,6 +385,7 @@ export async function answerQuestion({
       activePartnerRequest,
       partnerRequestFlowActive,
       allPartners,
+      events,
     });
   }
 
@@ -396,6 +406,7 @@ export async function answerQuestion({
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    events,
   });
 }
 
@@ -551,6 +562,7 @@ async function answerGrounded(
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
+    events: ActiveHotelEvents;
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -574,6 +586,7 @@ async function answerGrounded(
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    events,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -589,6 +602,7 @@ async function answerGrounded(
     partnerRequestFlowActive,
     activePartnerRequest,
     allActivePartnersForRequest: allPartners,
+    events,
   });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
@@ -718,6 +732,7 @@ async function answerNoContext(
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
+    events: ActiveHotelEvents;
   }
 ): Promise<AnswerQuestionResult> {
   const {
@@ -737,6 +752,7 @@ async function answerNoContext(
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    events,
   } = params;
 
   const instructions = buildHotelInstructions({
@@ -750,6 +766,7 @@ async function answerNoContext(
     partnerRequestFlowActive,
     activePartnerRequest,
     allActivePartnersForRequest: allPartners,
+    events,
   });
   const input = [...historyInput, { role: "user" as const, content: message }];
 

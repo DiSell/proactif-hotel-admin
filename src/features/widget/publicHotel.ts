@@ -134,13 +134,26 @@ export const publicWidgetConfigSchema = z
     // anything a visitor or the model supplies.
     bookingActionMode: bookingActionModeSchema,
     hostBookingTrigger: hostBookingTriggerSchema.nullable(),
+    // Populated from features/rag/events.ts::loadActiveBanner — a
+    // 'temporary' hotel_events row with show_as_banner = true, currently
+    // within its [starts_at, ends_at] window (never a future or expired
+    // one — see that function's own doc comment). null whenever no such
+    // event exists right now.
+    activeBanner: z.object({ title: z.string(), content: z.string() }).nullable(),
   })
   .strict();
 
 export type PublicWidgetConfig = z.infer<typeof publicWidgetConfigSchema>;
 
-/** The only place a PublicWidgetConfig is constructed — parsed through publicWidgetConfigSchema before ever leaving this module. */
-export function buildPublicWidgetConfig(context: PublicWidgetContext): PublicWidgetConfig {
+/**
+ * The only place a PublicWidgetConfig is constructed — parsed through
+ * publicWidgetConfigSchema before ever leaving this module. `activeBanner`
+ * is passed in (not queried here) so this function stays a pure shaping
+ * step, same discipline as every other field — the caller
+ * (/api/widget/[widgetKey]/config/route.ts) is responsible for loading it
+ * via loadActiveBanner.
+ */
+export function buildPublicWidgetConfig(context: PublicWidgetContext, activeBanner: { title: string; content: string } | null): PublicWidgetConfig {
   return publicWidgetConfigSchema.parse({
     hotelName: context.hotel.name,
     assistantName: context.hotel.assistant_name || "Assistant",
@@ -157,5 +170,6 @@ export function buildPublicWidgetConfig(context: PublicWidgetContext): PublicWid
     // — a malformed/legacy value silently becomes null, same fail-safe
     // discipline as buildBookingAction.
     hostBookingTrigger: context.hotel.booking_action_mode === "host_widget" ? parseHostBookingTrigger(context.hotel.host_booking_trigger) : null,
+    activeBanner,
   });
 }

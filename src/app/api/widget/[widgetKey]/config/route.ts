@@ -11,15 +11,18 @@ import { NextResponse } from "next/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { buildPublicWidgetConfig, resolvePublicWidgetContext as resolvePublicWidgetContextImpl } from "@/features/widget/publicHotel";
+import { loadActiveBanner as loadActiveBannerImpl } from "@/features/rag/events";
 
 export interface ConfigRouteDeps {
   createSupabaseClient: () => SupabaseClient;
   resolveWidgetContext: typeof resolvePublicWidgetContextImpl;
+  loadActiveBanner: typeof loadActiveBannerImpl;
 }
 
 const defaultDeps: ConfigRouteDeps = {
   createSupabaseClient: createAdminClient,
   resolveWidgetContext: resolvePublicWidgetContextImpl,
+  loadActiveBanner: loadActiveBannerImpl,
 };
 
 export function createConfigHandler(deps: ConfigRouteDeps = defaultDeps) {
@@ -48,7 +51,10 @@ export function createConfigHandler(deps: ConfigRouteDeps = defaultDeps) {
       return NextResponse.json({ error: "Widget introuvable." }, { status: 404 });
     }
 
-    return NextResponse.json(buildPublicWidgetConfig(widgetContext));
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const activeBanner = await deps.loadActiveBanner(supabase, widgetContext.hotelId, todayIso);
+
+    return NextResponse.json(buildPublicWidgetConfig(widgetContext, activeBanner));
   };
 }
 

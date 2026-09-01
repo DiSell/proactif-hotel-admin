@@ -417,6 +417,28 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
         <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: config.secondaryColor }}>{config.assistantName}</p>
       </div>
 
+      {config.activeBanner && (
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            padding: "10px 16px",
+            background: "#FFF4E5",
+            borderBottom: "1px solid #F0DDBB",
+            fontSize: 12,
+            lineHeight: 1.4,
+            color: "#6B4A16",
+            flexShrink: 0,
+          }}
+        >
+          <span aria-hidden="true">⚠️</span>
+          <span>
+            <strong>{config.activeBanner.title}</strong>
+            {config.activeBanner.content ? ` — ${config.activeBanner.content}` : ""}
+          </span>
+        </div>
+      )}
+
       <div style={{ display: "flex", flex: 1, flexDirection: "column", gap: 12, overflowY: "auto", padding: 16 }}>
         {messages.map((message, index) => (
           <div key={index} style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: message.role === "user" ? "flex-end" : "flex-start" }}>

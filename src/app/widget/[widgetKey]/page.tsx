@@ -5,6 +5,7 @@
 // use, never a hotelId from the client.
 import { createAdminClient } from "@/lib/supabase/admin";
 import { resolvePublicWidgetContext, buildPublicWidgetConfig } from "@/features/widget/publicHotel";
+import { loadActiveBanner } from "@/features/rag/events";
 import { parseHostOrigin } from "@/features/widget/hostOrigin";
 import { PublicWidgetChat } from "@/features/widget/PublicWidgetChat";
 
@@ -48,7 +49,13 @@ export default async function PublicWidgetPage({ params, searchParams }: PagePro
     return <UnavailableState />;
   }
 
-  const config = buildPublicWidgetConfig(widgetContext);
+  // A fresh client, not the one captured inside the try block above (out of
+  // scope here) — createAdminClient() only constructs a client, it never
+  // itself performs a network call, so this is not a second real request
+  // beyond the query loadActiveBanner itself makes.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const activeBanner = await loadActiveBanner(createAdminClient(), widgetContext.hotelId, todayIso);
+  const config = buildPublicWidgetConfig(widgetContext, activeBanner);
 
   return <PublicWidgetChat widgetKey={widgetKey} config={config} hostOrigin={hostOrigin} />;
 }

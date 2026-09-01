@@ -147,7 +147,7 @@ function makeContext(overrides: Partial<PublicWidgetContext> = {}): PublicWidget
 
 describe("buildPublicWidgetConfig", () => {
   it("returns exactly the public-safe fields — real unit test, no Supabase involved", () => {
-    const config = buildPublicWidgetConfig(makeContext());
+    const config = buildPublicWidgetConfig(makeContext(), null);
     expect(config).toEqual({
       hotelName: "Le 1837",
       assistantName: "Camille",
@@ -159,13 +159,20 @@ describe("buildPublicWidgetConfig", () => {
       logoUrl: null,
       bookingActionMode: "url",
       hostBookingTrigger: null,
+      activeBanner: null,
     });
   });
 
+  it("[active banner] forwarded as-is when provided", () => {
+    const config = buildPublicWidgetConfig(makeContext(), { title: "Fermeture du spa", content: "Le spa est fermé pour travaux." });
+    expect(config.activeBanner).toEqual({ title: "Fermeture du spa", content: "Le spa est fermé pour travaux." });
+  });
+
   it("[no internal leakage] never includes hotelId/booking_url/widget_key/status", () => {
-    const config = buildPublicWidgetConfig(makeContext());
+    const config = buildPublicWidgetConfig(makeContext(), null);
     expect(Object.keys(config).sort()).toEqual(
       [
+        "activeBanner",
         "assistantName",
         "bookingActionMode",
         "hostBookingTrigger",
@@ -188,7 +195,8 @@ describe("buildPublicWidgetConfig", () => {
     const config = buildPublicWidgetConfig(
       makeContext({
         hotel: makeHotel({ booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#resa-toggle-menu" } }),
-      })
+      }),
+      null
     );
     expect(config.bookingActionMode).toBe("host_widget");
     expect(config.hostBookingTrigger).toEqual({ strategy: "click", selector: "#resa-toggle-menu" });
@@ -198,7 +206,8 @@ describe("buildPublicWidgetConfig", () => {
     const config = buildPublicWidgetConfig(
       makeContext({
         hotel: makeHotel({ booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "javascript", code: "alert(1)" } }),
-      })
+      }),
+      null
     );
     expect(config.bookingActionMode).toBe("host_widget");
     expect(config.hostBookingTrigger).toBeNull();
@@ -208,7 +217,8 @@ describe("buildPublicWidgetConfig", () => {
     const config = buildPublicWidgetConfig(
       makeContext({
         hotel: makeHotel({ booking_action_mode: "url", booking_url: "https://booking.example.com", host_booking_trigger: { strategy: "click", selector: "#old-selector" } }),
-      })
+      }),
+      null
     );
     expect(config.bookingActionMode).toBe("url");
     expect(config.hostBookingTrigger).toBeNull();
@@ -219,32 +229,34 @@ describe("buildPublicWidgetConfig", () => {
       makeContext({
         hotelId: "hotel-a",
         hotel: makeHotel({ id: "hotel-a", booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#a" } }),
-      })
+      }),
+      null
     );
     const configB = buildPublicWidgetConfig(
       makeContext({
         hotelId: "hotel-b",
         hotel: makeHotel({ id: "hotel-b", booking_action_mode: "host_widget", booking_url: null, host_booking_trigger: { strategy: "click", selector: "#b" } }),
-      })
+      }),
+      null
     );
     expect(configA.hostBookingTrigger).toEqual({ strategy: "click", selector: "#a" });
     expect(configB.hostBookingTrigger).toEqual({ strategy: "click", selector: "#b" });
   });
 
   it("[.strict() really throws] the schema buildPublicWidgetConfig uses rejects an object with an excess key, at runtime — not silently stripped", () => {
-    const valid = buildPublicWidgetConfig(makeContext());
+    const valid = buildPublicWidgetConfig(makeContext(), null);
     expect(() => publicWidgetConfigSchema.parse({ ...valid, hotelId: "hotel-1" })).toThrow();
     expect(() => publicWidgetConfigSchema.parse({ ...valid, credential_reference: "leak" })).toThrow();
     expect(() => publicWidgetConfigSchema.parse(valid)).not.toThrow();
   });
 
   it("falls back to 'Assistant' when assistant_name is null", () => {
-    const config = buildPublicWidgetConfig(makeContext({ hotel: makeHotel({ assistant_name: null }) }));
+    const config = buildPublicWidgetConfig(makeContext({ hotel: makeHotel({ assistant_name: null }) }), null);
     expect(config.assistantName).toBe("Assistant");
   });
 
   it("falls back to default brand colors when the hotel hasn't configured any", () => {
-    const config = buildPublicWidgetConfig(makeContext({ hotel: makeHotel({ primary_color: null, secondary_color: null }) }));
+    const config = buildPublicWidgetConfig(makeContext({ hotel: makeHotel({ primary_color: null, secondary_color: null }) }), null);
     expect(config.primaryColor).toBe("#1A1D1A");
     expect(config.secondaryColor).toBe("#8A6A3E");
   });

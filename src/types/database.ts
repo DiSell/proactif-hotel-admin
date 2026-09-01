@@ -490,6 +490,45 @@ export interface HotelPartner {
   updated_at: string;
 }
 
+export type HotelEventType = "permanent" | "temporary";
+
+/**
+ * A per-hotel fact the chatbot should know and use in its answers —
+ * curated entirely by the hotel, never invented by the chatbot itself (same
+ * "hotel is the source of truth" discipline as HotelPartner above). Two
+ * kinds, distinguished by `type`:
+ *   - "permanent": no expiry concept at all — starts_at/ends_at are always
+ *     null (0032_hotel_events.sql's own CHECK constraint enforces this),
+ *     stays relevant until the hotel deactivates/edits/deletes it.
+ *   - "temporary": starts_at/ends_at are both required, ends_at >= starts_at.
+ *     Deliberately available to the chatbot's PROMPT CONTEXT even before
+ *     starts_at (a visitor can ask about a future date) — only excluded
+ *     once ends_at is in the past. See features/rag/events.ts::loadActiveHotelEvents
+ *     for the exact selection query this backs, and
+ *     features/rag/prompt.ts::buildEventsGuidance for how it's presented to
+ *     the model as DATA, never as an instruction.
+ *
+ * show_as_banner is a SEPARATE, narrower gate than "available to the
+ * prompt" — see features/rag/events.ts::loadActiveBanner: only true while
+ * the current date falls strictly within [starts_at, ends_at], never before
+ * starts_at (0032's own CHECK constraint additionally forbids
+ * show_as_banner on a "permanent" row — a banner needs a period to disappear
+ * after).
+ */
+export interface HotelEvent {
+  id: string;
+  hotel_id: string;
+  type: HotelEventType;
+  title: string;
+  content: string;
+  starts_at: string | null;
+  ends_at: string | null;
+  is_active: boolean;
+  show_as_banner: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 /** Row shape returned by the match_knowledge_chunks() RPC. */
 export interface MatchedChunk {
   chunk_id: string;
