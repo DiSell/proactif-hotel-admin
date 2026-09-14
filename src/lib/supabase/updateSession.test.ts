@@ -41,6 +41,14 @@ describe("isPublicPath", () => {
     expect(isPublicPath("/api/webhookssomething")).toBe(false);
   });
 
+  it("[loyalty cron] /api/cron/loyalty is public — an external scheduler calls it with no Supabase session, authorization is the route's own bearer-secret check", () => {
+    expect(isPublicPath("/api/cron/loyalty")).toBe(true);
+  });
+
+  it("[not a real prefix match] /api/cronsomething is NOT public", () => {
+    expect(isPublicPath("/api/cronsomething")).toBe(false);
+  });
+
   it("[embed script] /widget.js is public", () => {
     expect(isPublicPath("/widget.js")).toBe(true);
   });
@@ -71,6 +79,10 @@ describe("isPublicPath", () => {
 
   it("[no accidental prefix collision on /legal/] a path that merely starts with 'legal' but isn't under /legal/ is NOT public", () => {
     expect(isPublicPath("/legalsomething")).toBe(false);
+  });
+
+  it("[marketing-email unsubscribe link] /desinscription is public — the recipient has no account, the ?token= is the sole authorization", () => {
+    expect(isPublicPath("/desinscription")).toBe(true);
   });
 
   it("[WhatsApp activation link] /whatsapp/connect/[token] is public — the hotel's own WhatsApp Business owner has no Proactif account, the token in the URL is the sole authorization", () => {

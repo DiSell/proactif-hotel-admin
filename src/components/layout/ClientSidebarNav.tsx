@@ -33,6 +33,16 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: "/client/customers",
+    label: "Clients",
+    icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="9" cy="8" r="4"/><path d="M2 21v-2a6 6 0 0112 0v2M17 11a4 4 0 010-8M16 15a6 6 0 016 6"/></svg>,
+  },
+  {
+    href: "/client/loyalty",
+    label: "Fidélisation",
+    icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 00-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 00-.1-7.8z"/></svg>,
+  },
+  {
     href: "/client/chatbot",
     label: "Chatbot",
     icon: (

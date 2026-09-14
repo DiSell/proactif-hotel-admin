@@ -18,6 +18,10 @@ import { CLIENT_PORTAL_COOKIE_NAME, isClientScopedPath } from "./cookieScope";
 // Instructions fields — same content as /legal/privacy, /legal/terms,
 // /legal/data-deletion (re-exported, not duplicated), same
 // unauthenticated-by-design posture as those.
+// /desinscription: the marketing-email unsubscribe link
+// (features/loyalty/worker.ts) — the recipient has no account in this app
+// at all, same posture as /partenaires/consentement: the token in its own
+// ?token= query param is the sole authorization.
 const PUBLIC_PATHS = [
   "/login",
   "/client/login",
@@ -26,6 +30,7 @@ const PUBLIC_PATHS = [
   "/politique-de-confidentialite",
   "/conditions-utilisation",
   "/suppression-donnees",
+  "/desinscription",
 ];
 // The public widget — embed script, its config/chat API, and the standalone
 // chat page rendered inside the embed iframe — must be reachable by an
@@ -37,12 +42,19 @@ const PUBLIC_PATHS = [
 // /api/webhooks/whatsapp: called directly by Meta, with no Supabase session
 // at all — authorization is the webhook's own signature/verify-token check
 // (see lib/notifications/whatsapp/webhook.ts), never this middleware.
+// /api/cron/: called directly by an external scheduler (no Supabase session
+// either) — authorization is the route's own bearer-secret check (see
+// isAuthorizedCronRequest in src/app/api/cron/loyalty/route.ts). Without
+// this, the middleware would redirect every cron request to /login BEFORE
+// the route handler's own check ever ran, silently breaking the cron job in
+// production — confirmed by hand against a running dev server (a POST to
+// /api/cron/loyalty came back 307 to /login instead of the route's own 401).
 // /legal/*: the privacy policy, terms of use, and data-deletion pages must
 // be reachable by anyone (including Meta's own app-review process and
 // Meta's "Data Deletion Instructions URL" requirement) with no
 // session/cookie at all — same unauthenticated-by-design shape as
 // /widget/, never gated behind login.
-const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/", "/api/webhooks/", "/legal/"];
+const PUBLIC_PATH_PREFIXES = ["/widget/", "/api/widget/", "/api/webhooks/", "/api/cron/", "/legal/"];
 const PUBLIC_EXACT_PATHS = ["/widget.js"];
 
 export function isPublicPath(pathname: string) {

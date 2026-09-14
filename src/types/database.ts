@@ -392,6 +392,41 @@ export interface Message {
   created_at: string;
 }
 
+export type CustomerSource = "manual" | "csv" | "pms";
+export interface HotelCustomer {
+  id: string; hotel_id: string; first_name: string | null; last_name: string | null;
+  email: string | null; phone: string | null; source: CustomerSource; external_reference: string | null;
+  marketing_allowed: boolean; hotel_excluded: boolean; customer_unsubscribed: boolean;
+  exclusion_reason: string | null; marketing_status_updated_at: string; created_at: string; updated_at: string;
+}
+export type CustomerStayStatus = "planned" | "checked_in" | "completed" | "cancelled";
+export interface CustomerStay {
+  id: string; hotel_id: string; customer_id: string; check_in: string | null; check_out: string;
+  status: CustomerStayStatus; source: CustomerSource; external_reference: string | null;
+  /** Set once a post-stay follow-up was ever reserved for this stay (0038_customer_loyalty_stay_tracking.sql) — see features/loyalty/worker.ts. */
+  loyalty_delivery_queued_at: string | null;
+  created_at: string; updated_at: string;
+}
+export interface LoyaltySettings {
+  id: string; hotel_id: string; enabled: boolean; delay_days: number; subject: string; content: string;
+  channel: "email"; created_at: string; updated_at: string;
+}
+export type LoyaltyCampaignAudience = "general" | "targeted";
+export type LoyaltyCampaignStatus = "draft" | "scheduled" | "sending" | "sent" | "cancelled";
+export interface LoyaltyCampaign {
+  id: string; hotel_id: string; internal_name: string; subject: string; content: string; offer_text: string | null;
+  audience_type: LoyaltyCampaignAudience; channel: "email"; scheduled_at: string | null; status: LoyaltyCampaignStatus;
+  created_at: string; updated_at: string;
+}
+export type LoyaltyDeliveryType = "post_stay" | "marketing";
+export type LoyaltyDeliveryStatus = "queued" | "sending" | "sent" | "failed" | "skipped";
+export interface LoyaltyDelivery {
+  id: string; hotel_id: string; customer_id: string; campaign_id: string | null; stay_id: string | null;
+  delivery_type: LoyaltyDeliveryType; channel: "email"; status: LoyaltyDeliveryStatus; attempted_at: string | null;
+  sent_at: string | null; safe_error: string | null; provider_reference: string | null; idempotency_key: string;
+  created_at: string; updated_at: string;
+}
+
 // ---------------------------------------------------------------------
 // Jalon 2 — RAG engine
 // ---------------------------------------------------------------------
