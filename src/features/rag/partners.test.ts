@@ -140,10 +140,22 @@ describe("rankPartnerCandidates", () => {
     expect(ranked.map((p) => p.id)).toEqual(["1"]);
   });
 
-  it("[category miss falls back to all] a detected category with zero matching active partners falls back to the full active pool, never an empty result", () => {
+  it("[category miss never falls back cross-category] a detected category with zero matching active partners returns EMPTY — a partner in a different category (e.g. a restaurant for a spa request) must never be substituted just because it's active", () => {
     const partners = [partner({ id: "1", name: "Taxi B", category: "transport" })];
     const ranked = rankPartnerCandidates(partners, { category: "restaurant", limit: DEFAULT_PARTNER_LIMIT });
+    expect(ranked).toHaveLength(0);
+  });
+
+  it("[no category detected -> any active partner is a fair guess] category: null still returns the full active pool — this fallback is legitimate ONLY when the message itself was category-agnostic", () => {
+    const partners = [partner({ id: "1", name: "Taxi B", category: "transport" })];
+    const ranked = rankPartnerCandidates(partners, { category: null, limit: DEFAULT_PARTNER_LIMIT });
     expect(ranked.map((p) => p.id)).toEqual(["1"]);
+  });
+
+  it("[CASE C reproduction — restaurant request, restaurant active] the fix must not disturb the pre-existing, correct restaurant flow: same active-partner shape as the spa bug report (a restaurant, no wellness partner), but the category actually asked about now genuinely matches", () => {
+    const partners = [partner({ id: "r1", name: "Le Bon Plat", category: "restaurant" })];
+    const ranked = rankPartnerCandidates(partners, { category: "restaurant", limit: DEFAULT_PARTNER_LIMIT });
+    expect(ranked.map((p) => p.id)).toEqual(["r1"]);
   });
 
   it("[no matching partner at all -> empty] zero active partners produces zero candidates, never a fabricated one", () => {

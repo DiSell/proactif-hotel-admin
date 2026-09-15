@@ -65,6 +65,67 @@ describe("answerQuestion — partner intent orthogonal to groundingMode", () => 
   });
 });
 
+/**
+ * Regression guards for the "spa disabled + no matching-category partner"
+ * bug: a message like "je voudrais réserver un soin au spa demain" used to
+ * make the model offer/collect a request against a totally unrelated
+ * partner (e.g. a restaurant) just because it happened to be the only
+ * active one — see rankPartnerCandidates's own fix (partners.ts) and
+ * buildPartnerRequestGuidance's own fix (prompt.ts). This describe block
+ * covers the answer.ts WIRING that feeds those two fixed functions: a
+ * category-scoped, never-cross-category-fallback list for a BRAND NEW
+ * request, kept entirely separate from the broad, unfiltered list still
+ * used to validate an id once the model returns one.
+ */
+describe("answerQuestion — partnerRequestEligiblePartners (what a NEW request may target)", () => {
+  it("[separate variable from allPartners] never reuses the same identifier for both the id-validation list and the offer-eligible list", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    expect(fn).toMatch(/let partnerRequestEligiblePartners: RagPartner\[\] = \[\];/);
+    expect(fn).toMatch(/partnerRequestEligiblePartners = allPartners;/); // default: unfiltered, same as today for a category-agnostic message
+  });
+
+  it("[CASE A — category detected, zero matches] narrowed to the detected category, with NO cross-category fallback — a restaurant must never become eligible for a spa/wellness request", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    const narrowIndex = fn.indexOf("if (category && activePartnerRequest === null) {");
+    expect(narrowIndex).toBeGreaterThan(-1);
+    const narrowBlock = fn.slice(narrowIndex, fn.indexOf("}", narrowIndex) + 1);
+    expect(narrowBlock).toMatch(/allPartners\.filter\(\(partner\) => partner\.category === category\)/);
+    expect(narrowBlock).not.toMatch(/active\b/); // never falls back to "every active partner" — that logic was the bug
+  });
+
+  it("[CASE A — uncapped] the category-scoped list is never sliced by DEFAULT_PARTNER_LIMIT/ALL_PARTNERS_LIMIT — every real match must remain offerable, not just the first few", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    const narrowIndex = fn.indexOf("if (category && activePartnerRequest === null) {");
+    const narrowBlock = fn.slice(narrowIndex, fn.indexOf("}", narrowIndex) + 1);
+    expect(narrowBlock).not.toMatch(/DEFAULT_PARTNER_LIMIT|ALL_PARTNERS_LIMIT|rankPartnerCandidates/);
+  });
+
+  it("[CASE B — an active in-progress request is never narrowed] activePartnerRequest !== null skips the category narrowing entirely, preserving an already-valid target regardless of this turn's own category guess", () => {
+    const fn = sliceFn("answerQuestion", "type HistoryInputItem");
+    expect(fn).toMatch(/if \(category && activePartnerRequest === null\) \{/);
+  });
+
+  it("[validation list untouched] allPartners — not partnerRequestEligiblePartners — is still what's passed to applyPartnerRequestFlow (id validation in processPartnerRequestTurn), in both branches", () => {
+    const groundedFn = sliceFn("answerGrounded", "async function answerNoContext");
+    const noContextFn = sliceFn("answerNoContext", "async function loadHistory");
+    for (const fn of [groundedFn, noContextFn]) {
+      const flowCallStart = fn.indexOf("await applyPartnerRequestFlow(reply, {");
+      const flowCallEnd = fn.indexOf("});", flowCallStart);
+      const flowCall = fn.slice(flowCallStart, flowCallEnd);
+      expect(flowCall).toMatch(/\ballPartners,/);
+      expect(flowCall).not.toMatch(/partnerRequestEligiblePartners/);
+    }
+  });
+
+  it("[display/offer list uses the narrowed variable] both branches pass partnerRequestEligiblePartners — never allPartners — as allActivePartnersForRequest to buildHotelInstructions", () => {
+    const groundedFn = sliceFn("answerGrounded", "async function answerNoContext");
+    const noContextFn = sliceFn("answerNoContext", "async function loadHistory");
+    for (const fn of [groundedFn, noContextFn]) {
+      expect(fn).toMatch(/allActivePartnersForRequest: partnerRequestEligiblePartners,/);
+    }
+  });
+});
+
 describe("buildPartnerRecommendations — never trusts a raw model id", () => {
   it("[validated against the exact candidate list] filters recommendedPartnerIds against partnerCandidates by id, mirroring buildRoomRecommendation's discipline", () => {
     const fn = sliceFn("buildPartnerRecommendations", "async function answerGrounded");

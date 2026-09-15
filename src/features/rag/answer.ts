@@ -449,12 +449,33 @@ export async function answerQuestion({
 
   let partnerCandidates: RagPartner[] = [];
   let allPartners: RagPartner[] = [];
+  // What buildPartnerRequestGuidance is actually allowed to OFFER for a
+  // BRAND NEW request this turn — defaults to allPartners (unfiltered,
+  // matches today's behavior for a category-agnostic message). Narrowed to
+  // the detected category below, but ONLY when there's no already-in-progress
+  // request to preserve (activePartnerRequest !== null keeps its own
+  // continuity untouched — see prompt.ts's own early-return branch for that
+  // case, which never even reads this list). Deliberately a SEPARATE
+  // variable from allPartners: the id-VALIDATION list passed to
+  // processPartnerRequestTurn (see applyPartnerRequestFlow below) must stay
+  // the full, unfiltered allPartners regardless — narrowing what's merely
+  // OFFERED in the prompt can never shrink what's still a valid target.
+  let partnerRequestEligiblePartners: RagPartner[] = [];
   if (partnerRequestFlowActive) {
     allPartners = await loadActiveHotelPartners(supabase, hotelId);
+    partnerRequestEligiblePartners = allPartners;
     if (partnerIntentDetected) {
       const category = detectRelevantPartnerCategory(message);
       const limit = wantsAllPartners(message) ? ALL_PARTNERS_LIMIT : DEFAULT_PARTNER_LIMIT;
       partnerCandidates = rankPartnerCandidates(allPartners, { category, limit });
+      // A specific category was detected for THIS message — never offer a
+      // NEW request against a partner outside it (same "no cross-category
+      // fallback" fix as rankPartnerCandidates above). Uncapped on purpose:
+      // unlike partnerCandidates (a display cap), every real match in this
+      // category must remain offerable, not just the first DEFAULT_PARTNER_LIMIT.
+      if (category && activePartnerRequest === null) {
+        partnerRequestEligiblePartners = allPartners.filter((partner) => partner.category === category);
+      }
     }
   }
 
@@ -506,6 +527,7 @@ export async function answerQuestion({
       activePartnerRequest,
       partnerRequestFlowActive,
       allPartners,
+      partnerRequestEligiblePartners,
       events,
       spaBookingFlowActive,
       spaAvailability,
@@ -530,6 +552,7 @@ export async function answerQuestion({
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    partnerRequestEligiblePartners,
     events,
     spaBookingFlowActive,
     spaAvailability,
@@ -730,6 +753,8 @@ async function answerGrounded(
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
+    /** What may be OFFERED for a brand new request this turn — see answer.ts's own computation (answerQuestion). Never used for id validation, that's still allPartners (via applyPartnerRequestFlow below). */
+    partnerRequestEligiblePartners: RagPartner[];
     events: ActiveHotelEvents;
     spaBookingFlowActive: boolean;
     spaAvailability: SpaAvailability;
@@ -757,6 +782,7 @@ async function answerGrounded(
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    partnerRequestEligiblePartners,
     events,
     spaBookingFlowActive,
     spaAvailability,
@@ -775,7 +801,7 @@ async function answerGrounded(
     partnerCandidates,
     partnerRequestFlowActive,
     activePartnerRequest,
-    allActivePartnersForRequest: allPartners,
+    allActivePartnersForRequest: partnerRequestEligiblePartners,
     events,
     spaBookingFlowActive,
     spaAvailability,
@@ -929,6 +955,8 @@ async function answerNoContext(
     activePartnerRequest: PartnerRequest | null;
     partnerRequestFlowActive: boolean;
     allPartners: RagPartner[];
+    /** What may be OFFERED for a brand new request this turn — see answer.ts's own computation (answerQuestion). Never used for id validation, that's still allPartners (via applyPartnerRequestFlow below). */
+    partnerRequestEligiblePartners: RagPartner[];
     events: ActiveHotelEvents;
     spaBookingFlowActive: boolean;
     spaAvailability: SpaAvailability;
@@ -952,6 +980,7 @@ async function answerNoContext(
     activePartnerRequest,
     partnerRequestFlowActive,
     allPartners,
+    partnerRequestEligiblePartners,
     events,
     spaBookingFlowActive,
     spaAvailability,
@@ -968,7 +997,7 @@ async function answerNoContext(
     partnerCandidates,
     partnerRequestFlowActive,
     activePartnerRequest,
-    allActivePartnersForRequest: allPartners,
+    allActivePartnersForRequest: partnerRequestEligiblePartners,
     events,
     spaBookingFlowActive,
     spaAvailability,

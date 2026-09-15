@@ -663,7 +663,7 @@ describe("buildHotelInstructions — partner REQUEST guidance (distinct from par
     expect(instructions).not.toMatch(/DEMANDE PARTENAIRE EN ATTENTE DE CONFIRMATION/);
   });
 
-  it("[no matching partner available] told honestly, never invents a partner/id", () => {
+  it("[no matching partner available] told honestly, never invents a partner/id, and never instructed to collect any information for a request that cannot be sent to anyone", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),
       settings: makeSettings(),
@@ -672,7 +672,44 @@ describe("buildHotelInstructions — partner REQUEST guidance (distinct from par
       activePartnerRequest: null,
       allActivePartnersForRequest: [],
     });
-    expect(instructions).toMatch(/Aucun partenaire ne peut actuellement faire l'objet d'une demande/);
+    expect(instructions).toMatch(/aucun partenaire ne peut actuellement faire l'objet d'une demande/i);
+    expect(instructions).toMatch(/Renseigne partnerRequestIntent à false et laisse partnerId à null/);
+    expect(instructions).toMatch(/Ne collecte AUCUNE information \(date, heure, nombre de personnes, nom, téléphone\)/);
+    // The unconditional collection instructions from the "partner available" branch must never leak into this one.
+    expect(instructions).not.toMatch(/Renseigne needsGuestName/);
+    expect(instructions).not.toMatch(/Renseigne needsGuestPhone/);
+    expect(instructions).not.toMatch(/demande le numéro de téléphone EN DERNIER/i);
+  });
+
+  it("[CASE A reproduction — spa disabled, 0 wellness partner, 1 unrelated restaurant active] the guidance shown to the model must be built from the CATEGORY-SCOPED list (empty here — see answer.ts's partnerRequestEligiblePartners), never the hotel's full active-partner list, so the restaurant is never named or offered as a target for a spa request", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      // Simulates answer.ts's own fix: category "wellness" detected, zero
+      // matches, so partnerRequestEligiblePartners is [] — NOT allPartners
+      // (which would still contain the restaurant).
+      allActivePartnersForRequest: [],
+    });
+    expect(instructions).not.toMatch(/restaurant/i);
+    expect(instructions).toMatch(/aucun partenaire ne peut actuellement faire l'objet d'une demande/i);
+    expect(instructions).not.toMatch(/Renseigne needsGuestPhone/);
+  });
+
+  it("[CASE B — spa disabled but a real wellness partner exists] normal collection flow is preserved once a genuine category match is offered", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      partnerRequestFlowActive: true,
+      activePartnerRequest: null,
+      allActivePartnersForRequest: [{ id: "w1", name: "Spa Sérénité" }],
+    });
+    expect(instructions).toMatch(/id="w1" — Spa Sérénité/);
+    expect(instructions).toMatch(/demande le numéro de téléphone EN DERNIER/i);
+    expect(instructions).not.toMatch(/aucun partenaire ne peut actuellement faire l'objet d'une demande/i);
   });
 
   it("[active request pending_confirmation] switches to the confirmation-only variant: never re-collects info, requires an explicit unambiguous yes, forbids claiming transmission/acceptance", () => {

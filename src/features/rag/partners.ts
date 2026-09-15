@@ -101,11 +101,19 @@ export interface RankPartnerCandidatesOptions {
  * already filters at the DB level, but this pure function must never
  * present an inactive partner even if handed one directly (e.g. a test
  * fixture, or a future caller that forgets the DB-level filter).
+ *
+ * When a SPECIFIC category was detected (options.category non-null), a zero
+ * match in that category returns an EMPTY list — it must NEVER fall back to
+ * a different category's partners just because they happen to be active
+ * (a real bug: "réserver un soin au spa" with zero wellness partners but an
+ * active restaurant partner was recommending/offering the restaurant for a
+ * spa request). Falling back to every active partner only ever applies when
+ * options.category itself is null — a genuinely category-agnostic message
+ * (e.g. "que peut-on faire ?"), where any active partner is a fair guess.
  */
 export function rankPartnerCandidates(partners: RagPartner[], options: RankPartnerCandidatesOptions): RagPartner[] {
   const active = partners.filter((partner) => partner.is_active);
-  const byCategory = options.category ? active.filter((partner) => partner.category === options.category) : active;
-  const pool = byCategory.length > 0 ? byCategory : active;
+  const pool = options.category ? active.filter((partner) => partner.category === options.category) : active;
 
   return [...pool].sort((a, b) => b.priority - a.priority || a.name.localeCompare(b.name)).slice(0, options.limit);
 }

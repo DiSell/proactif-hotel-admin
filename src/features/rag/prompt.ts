@@ -466,14 +466,31 @@ function buildPartnerRequestGuidance(
     ].join("\n");
   }
 
+  // No partner at all can be the target of a NEW request this turn (either
+  // none is registered for this hotel, or none matches the specific
+  // category the visitor's message was actually about — see answer.ts's own
+  // category-scoped filtering before this function is ever called). Stop
+  // here, before the collection instructions below: a visitor must never be
+  // walked through giving their name/date/time/phone for a request that
+  // structurally cannot be sent to anyone. This was a real bug — the
+  // collection instructions used to be unconditional, so the model kept
+  // collecting personal information (and inventing plausible-sounding
+  // hours/slots) for a service with zero matching partner.
+  if (availablePartners.length === 0) {
+    return [
+      "DEMANDE PARTENAIRE :",
+      "Le visiteur exprime peut-être le souhait qu'une demande soit faite en son nom auprès d'un partenaire précis, mais aucun partenaire ne peut actuellement faire l'objet d'une demande pour ce type de service à cet établissement.",
+      "Dis-le honnêtement et invite le visiteur à contacter directement l'établissement si c'est pertinent. N'invente jamais de partenaire, d'identifiant, d'horaire, de créneau, de tarif ou de disponibilité pour compenser cette absence.",
+      "Renseigne partnerRequestIntent à false et laisse partnerId à null. Ne collecte AUCUNE information (date, heure, nombre de personnes, nom, téléphone) pour cette demande : il n'y a personne à qui la transmettre.",
+    ].join("\n");
+  }
+
   const availableList = availablePartners.map((p) => `- id="${p.id}" — ${p.name}`).join("\n");
 
   return [
     "DEMANDE PARTENAIRE :",
     "Le visiteur exprime peut-être le souhait qu'une demande soit faite en son nom auprès d'un partenaire précis (réserver une table, un taxi, une activité…) — distinct d'une simple question d'information sur ce partenaire.",
-    availableList
-      ? `Partenaires pouvant faire l'objet d'une demande (id — nom) :\n${availableList}`
-      : "Aucun partenaire ne peut actuellement faire l'objet d'une demande — dis-le honnêtement, n'invente jamais de partenaire ni d'identifiant.",
+    `Partenaires pouvant faire l'objet d'une demande (id — nom) :\n${availableList}`,
     "Renseigne partnerRequestIntent à true dès que le visiteur exprime clairement ce souhait pour un partenaire précis, jamais pour une simple question générale.",
     "Renseigne partnerId UNIQUEMENT avec un id EXACT de la liste ci-dessus ; laisse-le à null tant que le partenaire visé n'est pas clairement identifié — n'invente jamais un id absent de cette liste.",
     "Collecte progressivement et sans répétition inutile : la date souhaitée, l'heure, le nombre de personnes, et tout détail utile déjà mentionné dans la conversation.",
