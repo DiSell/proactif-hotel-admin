@@ -9,6 +9,7 @@ import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import { extractPartySize, type PartySize } from "./partySize";
 import { filterAndRankAccommodations, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
 import { bookingCtaKind } from "./bookingCta";
+import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
 import {
   ALL_PARTNERS_LIMIT,
   DEFAULT_PARTNER_LIMIT,
@@ -423,11 +424,25 @@ export async function answerQuestion({
   // confirmed-available recommendation. A no-op when no check ran.
   rankedCandidates = applyAvailabilityToCandidates(rankedCandidates, availabilityCheckState);
 
-  // Computed once, independent of groundingMode and of
-  // shouldResolveStayContext — a pure regex check on the raw message, cheap
-  // enough to always run. Drives the generic booking CTA (see
-  // buildBookingAction) in both branches below.
-  const bookingIntentDetected = isBookingIntent(message);
+  // Computed once, independent of groundingMode — drives the generic
+  // booking CTA (see buildBookingAction) in both branches below. Two
+  // independent signals, deliberately combined with OR: isBookingIntent
+  // (a pure, cheap regex check on THIS message alone) catches a fresh "je
+  // veux réserver" the first time it's said; lastAssistantMessageIndicatesBookingIntent
+  // (bookingIntentContinuation.ts — the exact same invisible-marker
+  // technique as spaBookingFlow.ts's own continuation marker, applied to
+  // this different domain) catches every turn AFTER that, once the visitor
+  // is already mid-conversation supplying the dates/party size the
+  // assistant itself just asked for — text that never contains a booking
+  // keyword at all ("20/09 au 22/09 2 personnes"). This was a real,
+  // reported bug: the CTA silently vanished on exactly that second turn,
+  // right when it was most useful. The marker is only ever set following a
+  // genuine isBookingIntent match (see the reply-finalization block below in
+  // both answerGrounded/answerNoContext), so a purely documentary
+  // conversation ("la Suite Deluxe a la clim ?" -> "et pour 2 personnes ?")
+  // never sets it in the first place and therefore never shows the CTA
+  // either — continuation is never inferred from keywords alone.
+  const bookingIntentDetected = isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput);
 
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
@@ -906,6 +921,15 @@ async function answerGrounded(
       reply = flowResult.reply;
       spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
     }
+
+    // See bookingIntentContinuation.ts's own doc comment: marks THIS reply so
+    // a later turn with no booking keyword at all (dates, "oui", a bare
+    // name) still keeps the Réserver CTA — never gated on which flow branch
+    // ran above, since a booking-relevant turn can equally arrive alongside
+    // a partner/spa exchange or on its own.
+    if (bookingIntentDetected) {
+      reply = withBookingIntentMarker(reply);
+    }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -1093,6 +1117,12 @@ async function answerNoContext(
       });
       reply = flowResult.reply;
       spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
+    }
+
+    // See bookingIntentContinuation.ts's own doc comment and answerGrounded's
+    // identical call — independent of groundingMode, same reasoning.
+    if (bookingIntentDetected) {
+      reply = withBookingIntentMarker(reply);
     }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });

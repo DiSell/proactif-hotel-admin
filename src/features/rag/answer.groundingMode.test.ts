@@ -145,7 +145,7 @@ describe("answer.ts — generic booking CTA (action)", () => {
 
   it("[computed once] bookingIntentDetected is computed in answerQuestion itself, before branching — not re-derived separately in each branch", () => {
     const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
-    expect(answerQuestionFn).toMatch(/const bookingIntentDetected = isBookingIntent\(message\);/);
+    expect(answerQuestionFn).toMatch(/const bookingIntentDetected = isBookingIntent\(message\) \|\| lastAssistantMessageIndicatesBookingIntent\(historyInput\);/);
 
     // Scoped precisely to each call's own argument object (not a greedy
     // match that could straddle both calls and pass even if
