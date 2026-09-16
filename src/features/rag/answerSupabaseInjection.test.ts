@@ -30,7 +30,7 @@ describe("answerQuestion / retrieveKnowledgeHybrid — injectable Supabase clien
   });
 
   it("[answer.ts] the resolved client (injected or default) is the one passed to retrieveKnowledgeHybrid — never a second, independently-constructed client", () => {
-    expect(answerSource).toMatch(/retrieveKnowledgeHybrid\(\{\s*hotelId,\s*query:\s*message,\s*limit:\s*RETRIEVAL_LIMIT,\s*supabase\s*\}\)/);
+    expect(answerSource).toMatch(/retrieveKnowledgeHybrid\(\{\s*hotelId,\s*query:\s*message,\s*limit:\s*stayContextRelevant \? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,\s*supabase,\s*\}\)/);
   });
 
   it("[retrieve.ts] accepts an optional supabase param, defaulting to createClient() — every existing caller keeps working unchanged", () => {

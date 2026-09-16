@@ -70,6 +70,29 @@ const availabilityProviderResolver = new NoopAvailabilityProviderResolver();
 /** How much prior conversation gets replayed to the model — never the full history. */
 const MAX_HISTORY_MESSAGES = 12;
 const RETRIEVAL_LIMIT = 6;
+/**
+ * A hotel's rooms are a closed, enumerable set (rarely more than a handful
+ * of distinct types) — unlike an open-ended factual question, "which rooms
+ * do you have?" has a WRONG answer the moment even one real room type is
+ * left out. For a hotel with no structured accommodation_types data (see
+ * answer.ts's own accommodationTypes query below — several real hotels ship
+ * with this table empty), room descriptions live ONLY as scraped knowledge
+ * chunks, often split by the crawler into several overlapping/redundant
+ * fragments per room (observed directly: one real hotel's site produced 4-7
+ * chunks for a single room type across its 54 total chunks). The default
+ * RETRIEVAL_LIMIT (6) was silently dropping some room types from the answer
+ * — confirmed live: "Deluxe" and "Standard" both had full descriptions in
+ * knowledge_chunks, neither made the cut for a stay/party-size question that
+ * mentioned six OTHER room-relevant fragments instead. Raised specifically
+ * (not globally) for any turn shouldResolveStayContext already flags as
+ * about rooms/stay/party size (gates.ts) — the same broad, cheap-false-
+ * positive-tolerant signal already computed for stay-context resolution
+ * below, reused here instead of adding a second detector. selectHybridRelevantChunks'
+ * own relevance thresholds still apply afterward — this only widens the
+ * CANDIDATE pool considered before that filter, it never forces in an
+ * actually-irrelevant chunk.
+ */
+const ACCOMMODATION_RETRIEVAL_LIMIT = 24;
 
 const GENERIC_ERROR_REPLY = "Une erreur est survenue. Veuillez réessayer dans un instant.";
 
@@ -318,9 +341,21 @@ export async function answerQuestion({
   const history = await loadHistory(supabase, conversationId);
   const startedAt = Date.now();
 
+  // Computed once, up front, and reused both to widen retrieval just below
+  // and to gate the stay-request resolution block further down — a single
+  // source of truth, never two independent calls that could silently drift
+  // apart. Pure/synchronous (a handful of regexes + extractPartySize, see
+  // gates.ts) — safe to call this early, before anything it depends on.
+  const stayContextRelevant = shouldResolveStayContext(message);
+
   let relevantChunks: RetrievedChunk[];
   try {
-    const chunks = await retrieveKnowledgeHybrid({ hotelId, query: message, limit: RETRIEVAL_LIMIT, supabase });
+    const chunks = await retrieveKnowledgeHybrid({
+      hotelId,
+      query: message,
+      limit: stayContextRelevant ? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,
+      supabase,
+    });
     relevantChunks = selectHybridRelevantChunks(chunks);
   } catch (err) {
     console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
@@ -357,7 +392,7 @@ export async function answerQuestion({
   let party: PartySize = extractPartySize(message);
   let availabilityCheckState: AvailabilityCheckState = { kind: "not_requested" };
 
-  if (shouldResolveStayContext(message)) {
+  if (stayContextRelevant) {
     try {
       const rawState = await resolveStayRequestFromHistory([...historyInput, { role: "user", content: message }], {
         referenceDate: new Date().toISOString().slice(0, 10),
