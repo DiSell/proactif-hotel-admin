@@ -136,3 +136,58 @@ describe("GET /api/widget/[widgetKey]/config", () => {
     expect(body.error).not.toMatch(/SUPABASE_SERVICE_ROLE_KEY/);
   });
 });
+
+/**
+ * public/widget.js fetches this endpoint from the HOST page's own origin
+ * (e.g. le1837.com) — genuinely cross-origin, unlike /chat (only ever
+ * fetched from inside the Proactif-origin iframe). Without
+ * Access-Control-Allow-Origin, a browser rejects the fetch before widget.js
+ * ever sees a status code at all — confirmed empirically against the real
+ * deployment before this fix. Checked on EVERY response path (200/404/503):
+ * the header must be present regardless of outcome, since a browser blocks
+ * access to an error status just as readily as to a successful one.
+ */
+describe("GET /api/widget/[widgetKey]/config — CORS (public/widget.js is a cross-origin caller)", () => {
+  it("[200] Access-Control-Allow-Origin: * on the success response", async () => {
+    const handler = createConfigHandler(makeDeps());
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("[404, unknown widget] same header present — an error response is just as blocked by the browser without it", async () => {
+    const deps = makeDeps({ resolveWidgetContext: vi.fn(async () => null) });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_unknown/config"), context);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("[503, resolver throws] same header present on the service-error path too", async () => {
+    const deps = makeDeps({ resolveWidgetContext: vi.fn(async () => Promise.reject(new Error("connection reset"))) });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("[503, client creation throws] same header present on this service-error path too", async () => {
+    const deps = makeDeps({
+      createSupabaseClient: () => {
+        throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set");
+      },
+    });
+    const handler = createConfigHandler(deps);
+    const response = await handler(new Request("http://widget.test/api/widget/ps_live_test/config"), context);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+
+  it("[never an echoed/specific origin] the header is a static wildcard, never derived from the request's own Origin header — this endpoint carries no per-origin secret to protect", async () => {
+    const handler = createConfigHandler(makeDeps());
+    const response = await handler(
+      new Request("http://widget.test/api/widget/ps_live_test/config", { headers: { Origin: "https://www.le1837.com" } }),
+      context
+    );
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+});
