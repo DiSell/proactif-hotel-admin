@@ -187,11 +187,39 @@ export function isRoomDiscoveryIntent(message: string): boolean {
  * case-insensitive match — never a fuzzy/partial one, and never a hardcoded
  * name for any specific hotel.
  */
+function accommodationNameMatchesMessage(name: string, message: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  const escaped = trimmed.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`, "i").test(message.toLowerCase());
+}
+
 export function mentionsKnownAccommodationName(message: string, accommodationNames: string[]): boolean {
-  return accommodationNames.some((name) => {
-    const trimmed = name.trim();
-    if (!trimmed) return false;
-    const escaped = trimmed.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`\\b${escaped}\\b`, "i").test(message.toLowerCase());
-  });
+  return accommodationNames.some((name) => accommodationNameMatchesMessage(name, message));
+}
+
+export interface AccommodationNameLookup {
+  id: string;
+  name: string;
+  sourceUrl: string | null;
+}
+
+/**
+ * Same matching rule as mentionsKnownAccommodationName above (reused, not
+ * duplicated — accommodationNameMatchesMessage is the single source of
+ * truth for "does this real name appear in this message") — but returns
+ * WHICH accommodation matched, needed to resolve its source_url for scoped
+ * retrieval (see retrieve.ts:fetchAccommodationSourceChunks and answer.ts's
+ * own call site).
+ *
+ * Collision handling: when several real names match the same message (e.g.
+ * "Deluxe" is a substring-word of "Deluxe PMR" — "la Deluxe PMR a la clim ?"
+ * matches BOTH), the MOST SPECIFIC one wins — simply the longest matching
+ * name. A generic, hotel-agnostic tie-break: never a hardcoded pair like
+ * "Deluxe"/"Deluxe PMR", works for any hotel's own category names.
+ */
+export function findMentionedAccommodation<T extends AccommodationNameLookup>(message: string, accommodations: T[]): T | null {
+  const matches = accommodations.filter((a) => accommodationNameMatchesMessage(a.name, message));
+  if (matches.length === 0) return null;
+  return matches.reduce((best, current) => (current.name.length > best.name.length ? current : best));
 }

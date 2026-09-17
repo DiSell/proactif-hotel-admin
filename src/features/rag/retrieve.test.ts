@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_SIMILARITY_THRESHOLD,
+  fetchAccommodationSourceChunks,
   HYBRID_LEXICAL_HIGH,
   HYBRID_VECTOR_FLOOR,
+  MAX_DEDICATED_SOURCE_CHUNKS,
+  mergeGuaranteedChunks,
   retrieveKnowledge,
   retrieveKnowledgeHybrid,
   selectHybridRelevantChunks,
@@ -231,5 +234,121 @@ describe("retrieveKnowledge / retrieveKnowledgeHybrid — source_url/last_synced
         lastSyncedAt: "2026-08-22T17:25:43.886Z",
       },
     ]);
+  });
+});
+
+/**
+ * fetchAccommodationSourceChunks — the OPTION 2 mechanism: additive, bounded
+ * retrieval scoped to a single already-identified accommodation's own
+ * dedicated knowledge_source. Real-invocation style with a hand-built fake
+ * Supabase client, same discipline as this file's own retrieveKnowledge*
+ * tests above and every route test in this codebase — the chain shape
+ * (.select().eq().eq().eq().maybeSingle() then .select().eq().eq().order().limit())
+ * mirrors the real implementation exactly.
+ */
+function makeFakeSupabase(config: { source: Record<string, unknown> | null; chunks: Record<string, unknown>[] | null }) {
+  const knowledgeSourcesBuilder = {
+    select: vi.fn(() => knowledgeSourcesBuilder),
+    eq: vi.fn(() => knowledgeSourcesBuilder),
+    maybeSingle: vi.fn(async () => ({ data: config.source, error: null })),
+  };
+  const knowledgeChunksBuilder = {
+    select: vi.fn(() => knowledgeChunksBuilder),
+    eq: vi.fn(() => knowledgeChunksBuilder),
+    order: vi.fn(() => knowledgeChunksBuilder),
+    limit: vi.fn(async () => ({ data: config.chunks, error: null })),
+  };
+  const from = vi.fn((table: string) => {
+    if (table === "knowledge_sources") return knowledgeSourcesBuilder;
+    if (table === "knowledge_chunks") return knowledgeChunksBuilder;
+    throw new Error(`unexpected table: ${table}`);
+  });
+  return { from, knowledgeSourcesBuilder, knowledgeChunksBuilder } as const;
+}
+
+describe("fetchAccommodationSourceChunks", () => {
+  it("[happy path] resolves the dedicated source by EXACT source_url match, returns its chunks mapped to RetrievedChunk, ordered by chunk_index", async () => {
+    const fake = makeFakeSupabase({
+      source: { id: "src-deluxe", title: "Deluxe — EN", source_url: "https://www.le1837.com/en/deluxe", last_synced_at: "2026-08-22T17:25:45.154Z" },
+      chunks: [
+        { id: "chunk-0", content: "Return\n\n1 - 4 persons\n45 m²..." },
+        { id: "chunk-1", content: "Deluxe\nThe Deluxe Suite can accommodate up to 4 people... reversible air conditioning..." },
+      ],
+    });
+
+    const result = await fetchAccommodationSourceChunks({
+      hotelId: "hotel-1",
+      sourceUrl: "https://www.le1837.com/en/deluxe",
+      supabase: fake as never,
+    });
+
+    expect(result).toEqual([
+      {
+        chunkId: "chunk-0",
+        sourceId: "src-deluxe",
+        sourceTitle: "Deluxe — EN",
+        content: "Return\n\n1 - 4 persons\n45 m²...",
+        similarity: 1,
+        lexicalScore: undefined,
+        sourceUrl: "https://www.le1837.com/en/deluxe",
+        lastSyncedAt: "2026-08-22T17:25:45.154Z",
+      },
+      {
+        chunkId: "chunk-1",
+        sourceId: "src-deluxe",
+        sourceTitle: "Deluxe — EN",
+        content: "Deluxe\nThe Deluxe Suite can accommodate up to 4 people... reversible air conditioning...",
+        similarity: 1,
+        lexicalScore: undefined,
+        sourceUrl: "https://www.le1837.com/en/deluxe",
+        lastSyncedAt: "2026-08-22T17:25:45.154Z",
+      },
+    ]);
+  });
+
+  it("[bounded] the chunk query is capped at MAX_DEDICATED_SOURCE_CHUNKS — a single dedicated page can never inject unbounded content", async () => {
+    const fake = makeFakeSupabase({ source: { id: "s1", title: "T", source_url: "u", last_synced_at: null }, chunks: [] });
+    await fetchAccommodationSourceChunks({ hotelId: "hotel-1", sourceUrl: "u", supabase: fake as never });
+    expect(fake.knowledgeChunksBuilder.limit).toHaveBeenCalledWith(MAX_DEDICATED_SOURCE_CHUNKS);
+  });
+
+  it("[no dedicated source found] returns [] — never an error, a category can have a source_url before it's ever been crawled/indexed", async () => {
+    const fake = makeFakeSupabase({ source: null, chunks: null });
+    const result = await fetchAccommodationSourceChunks({ hotelId: "hotel-1", sourceUrl: "https://unindexed.example.com", supabase: fake as never });
+    expect(result).toEqual([]);
+  });
+
+  it("[source found but no chunks yet] returns []", async () => {
+    const fake = makeFakeSupabase({ source: { id: "s1", title: "T", source_url: "u", last_synced_at: null }, chunks: [] });
+    const result = await fetchAccommodationSourceChunks({ hotelId: "hotel-1", sourceUrl: "u", supabase: fake as never });
+    expect(result).toEqual([]);
+  });
+});
+
+describe("mergeGuaranteedChunks", () => {
+  function chunk(id: string): RetrievedChunk {
+    return { chunkId: id, sourceId: "s", sourceTitle: "T", content: "…", similarity: 0.9, sourceUrl: null, lastSyncedAt: null };
+  }
+
+  it("[additive] guaranteed chunks are placed FIRST, ahead of the normally-selected ones", () => {
+    const selected = [chunk("a"), chunk("b")];
+    const guaranteed = [chunk("g1")];
+    expect(mergeGuaranteedChunks(selected, guaranteed).map((c) => c.chunkId)).toEqual(["g1", "a", "b"]);
+  });
+
+  it("[dedup] a guaranteed chunk already present in the normally-selected list is never duplicated", () => {
+    const selected = [chunk("a"), chunk("shared")];
+    const guaranteed = [chunk("shared"), chunk("g1")];
+    expect(mergeGuaranteedChunks(selected, guaranteed).map((c) => c.chunkId)).toEqual(["g1", "a", "shared"]);
+  });
+
+  it("[never removes anything] every chunk selectHybridRelevantChunks already accepted survives the merge", () => {
+    const selected = [chunk("a"), chunk("b"), chunk("c")];
+    expect(mergeGuaranteedChunks(selected, [])).toEqual(selected);
+  });
+
+  it("[empty guaranteed, identity] returns the exact same selected array reference when there's nothing to add", () => {
+    const selected = [chunk("a")];
+    expect(mergeGuaranteedChunks(selected, [])).toBe(selected);
   });
 });

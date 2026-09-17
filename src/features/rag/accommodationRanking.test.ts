@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { filterAndRankAccommodations, isCapacityCompatible, isPartyKnown, isRoomDiscoveryIntent, mentionsKnownAccommodationName, type AccommodationCandidate } from "./accommodationRanking";
+import {
+  filterAndRankAccommodations,
+  findMentionedAccommodation,
+  isCapacityCompatible,
+  isPartyKnown,
+  isRoomDiscoveryIntent,
+  mentionsKnownAccommodationName,
+  type AccommodationCandidate,
+  type AccommodationNameLookup,
+} from "./accommodationRanking";
 import type { PartySize } from "./partySize";
 
 function candidate(id: string, name: string, maxGuests: number | null, maxAdults: number | null = null, maxChildren: number | null = null): AccommodationCandidate {
@@ -201,5 +210,66 @@ describe("mentionsKnownAccommodationName", () => {
 
   it("empty list never matches anything (e.g. a hotel with no accommodation_types yet)", () => {
     expect(mentionsKnownAccommodationName("je veux voir la Deluxe", [])).toBe(false);
+  });
+});
+
+/**
+ * Le 1837's real 7 categories — including the two genuine collision-prone
+ * pairs (Deluxe/Deluxe PMR, Junior Suite/Junior PMR) — used across this
+ * describe block instead of synthetic names, since the collision behavior
+ * is exactly what needs proving against real, shipped data.
+ */
+function le1837Lookups(): AccommodationNameLookup[] {
+  return [
+    { id: "deluxe", name: "Deluxe", sourceUrl: "https://www.le1837.com/en/deluxe" },
+    { id: "deluxe-pmr", name: "Deluxe PMR", sourceUrl: null },
+    { id: "junior-suite", name: "Junior Suite", sourceUrl: "https://www.le1837.com/en/junior-suite" },
+    { id: "junior-pmr", name: "Junior PMR", sourceUrl: "https://www.le1837.com/en/junior-pmr" },
+    { id: "mini-suite", name: "Mini-suite", sourceUrl: "https://www.le1837.com/en/mini-suite" },
+    { id: "standard", name: "Standard", sourceUrl: "https://www.le1837.com/en/standard" },
+    { id: "superior", name: "Superior", sourceUrl: null },
+  ];
+}
+
+describe("findMentionedAccommodation", () => {
+  it("[direct match] resolves 'la Deluxe' to Deluxe, with its real source_url", () => {
+    const result = findMentionedAccommodation("la Deluxe a la climatisation ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe");
+    expect(result?.sourceUrl).toBe("https://www.le1837.com/en/deluxe");
+  });
+
+  it("[collision] 'Deluxe' is a substring-word of 'Deluxe PMR' — the MORE SPECIFIC (longer) name wins, never the shorter one", () => {
+    const result = findMentionedAccommodation("la Deluxe PMR est-elle adaptée ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe-pmr");
+    expect(result?.name).toBe("Deluxe PMR");
+  });
+
+  it("[collision, sourceUrl null] Deluxe PMR resolves correctly but carries sourceUrl: null — callers must fall back to unscoped RAG for it, never confuse it with Deluxe's own page", () => {
+    const result = findMentionedAccommodation("je veux la Deluxe PMR", le1837Lookups());
+    expect(result?.id).toBe("deluxe-pmr");
+    expect(result?.sourceUrl).toBeNull();
+  });
+
+  it("[no false cross-match] 'Junior PMR' never resolves to 'Junior Suite' — they share a prefix word but never the same phrase", () => {
+    const result = findMentionedAccommodation("je veux voir la Junior PMR", le1837Lookups());
+    expect(result?.id).toBe("junior-pmr");
+  });
+
+  it("[no false cross-match, other direction] 'Junior Suite' never resolves to 'Junior PMR'", () => {
+    const result = findMentionedAccommodation("je veux voir la Junior Suite", le1837Lookups());
+    expect(result?.id).toBe("junior-suite");
+  });
+
+  it("[plain Deluxe, no PMR present] resolves to Deluxe alone when 'PMR' isn't in the message at all", () => {
+    const result = findMentionedAccommodation("combien coûte la Deluxe ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe");
+  });
+
+  it("[no match] a message naming no real category returns null", () => {
+    expect(findMentionedAccommodation("avez-vous un parking ?", le1837Lookups())).toBeNull();
+  });
+
+  it("[empty list] never matches anything", () => {
+    expect(findMentionedAccommodation("la Deluxe", [])).toBeNull();
   });
 });

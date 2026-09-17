@@ -248,8 +248,9 @@ describe("answer.ts wiring — roomDiscoveryIntentDetected/continuation/party-me
     expect(gateIndex).toBeLessThan(llmCallIndex);
   });
 
-  it("[precise-mention override wired in] mentionsKnownAccommodationName feeds mentionsPreciseAccommodation, passed to both branches", () => {
-    expect(source).toMatch(/const mentionsPreciseAccommodation = mentionsKnownAccommodationName\(/);
+  it("[precise-mention override wired in] findMentionedAccommodation feeds mentionsPreciseAccommodation, passed to both branches", () => {
+    expect(source).toMatch(/const mentionedAccommodation = findMentionedAccommodation\(/);
+    expect(source).toMatch(/const mentionsPreciseAccommodation = mentionedAccommodation !== null;/);
     const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
     expect(answerQuestionFn.slice(answerQuestionFn.indexOf("return answerGrounded"))).toMatch(/mentionsPreciseAccommodation,/);
     expect(answerQuestionFn.slice(answerQuestionFn.indexOf("return answerNoContext"))).toMatch(/mentionsPreciseAccommodation,/);

@@ -4,10 +4,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
-import { retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
+import { fetchAccommodationSourceChunks, mergeGuaranteedChunks, retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValidatedStayRequestIntoParty, type PartySize } from "./partySize";
-import { filterAndRankAccommodations, isRoomDiscoveryIntent, mentionsKnownAccommodationName, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
+import { filterAndRankAccommodations, findMentionedAccommodation, isRoomDiscoveryIntent, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
 import { bookingCtaKind } from "./bookingCta";
 import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
 import { lastAssistantMessageIndicatesRoomDiscoveryContinuation, withRoomDiscoveryMarker } from "./roomDiscoveryContinuation";
@@ -374,27 +374,11 @@ export async function answerQuestion({
   const roomDiscoveryIntentDetected =
     isRoomDiscoveryIntent(message) || (roomDiscoveryContinuationSignal && !isBookingIntent(message));
 
-  let relevantChunks: RetrievedChunk[];
-  try {
-    const chunks = await retrieveKnowledgeHybrid({
-      hotelId,
-      query: message,
-      limit: stayContextRelevant || roomDiscoveryIntentDetected ? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,
-      supabase,
-    });
-    relevantChunks = selectHybridRelevantChunks(chunks);
-  } catch (err) {
-    console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
-    return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
-  }
-
-  const groundingMode: GroundingMode = relevantChunks.length > 0 ? "grounded" : "no_context";
-  const model = openaiChatModel();
-
-  // Independent of groundingMode, deliberately (see prompt.ts's
-  // buildAvailabilityGuidance and the plan): a stay/availability question
-  // must be resolvable even when RAG finds no relevant chunk at all — RAG
-  // and availability are orthogonal concerns, never gating one another.
+  // Moved up from just after retrieval (still depends only on hotelId/
+  // supabase, nothing computed in between) so mentionedAccommodation below
+  // can be resolved BEFORE relevantChunks is finalized — the scoped
+  // retrieval augmentation just below needs to know the target source_url
+  // ahead of time.
   const { data: accommodationTypes } = await supabase
     .from("accommodation_types")
     .select("*")
@@ -409,16 +393,59 @@ export async function answerQuestion({
     maxAdults: a.max_adults,
     maxChildren: a.max_children,
   }));
-  // Real category names, when this hotel has curated any — the authoritative
-  // way to recognize "the visitor already named a precise category" (see
-  // accommodationRanking.ts:mentionsKnownAccommodationName's own doc
-  // comment). Always [] for a hotel with no accommodation_types rows yet
-  // (Le 1837 today), in which case isRoomDiscoveryIntent's own generic/named
-  // distinction (accommodationRanking.ts) is the only signal available.
-  const mentionsPreciseAccommodation = mentionsKnownAccommodationName(
+  // The single detection call for "did this message name a real,
+  // already-curated accommodation category" — feeds BOTH
+  // mentionsPreciseAccommodation (ROOM_DISCOVERY's own askPartySizeOnly
+  // override, unchanged behavior) AND the scoped-retrieval augmentation
+  // below (new this chantier) — one detection, two consumers, never two
+  // competing recognition mechanisms. Always null for a hotel with no
+  // accommodation_types rows yet, in which case isRoomDiscoveryIntent's own
+  // generic/named distinction (accommodationRanking.ts) is the only signal
+  // available for ROOM_DISCOVERY, and no scoped retrieval ever runs.
+  const mentionedAccommodation = findMentionedAccommodation(
     message,
-    (accommodationTypes ?? []).map((a) => a.name)
+    (accommodationTypes ?? []).map((a) => ({ id: a.id, name: a.name, sourceUrl: a.source_url }))
   );
+  const mentionsPreciseAccommodation = mentionedAccommodation !== null;
+
+  let relevantChunks: RetrievedChunk[];
+  try {
+    const chunks = await retrieveKnowledgeHybrid({
+      hotelId,
+      query: message,
+      limit: stayContextRelevant || roomDiscoveryIntentDetected ? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,
+      supabase,
+    });
+    relevantChunks = selectHybridRelevantChunks(chunks);
+
+    // Additive, bounded augmentation — see retrieve.ts:fetchAccommodationSourceChunks's
+    // own doc comment for why this exists (a confirmed category match is a
+    // stronger relevance signal than the embedding threshold above can
+    // reliably capture on its own — see this chantier's own diagnostic).
+    // Never replaces relevantChunks, never applies when the identified
+    // category has no source_url (Superior/Deluxe PMR today) — falls
+    // through to today's exact RAG behavior in that case. Best-effort: a
+    // failure here never fails the whole turn, same discipline as every
+    // other enrichment step in this function.
+    if (mentionedAccommodation?.sourceUrl) {
+      try {
+        const scopedChunks = await fetchAccommodationSourceChunks({
+          hotelId,
+          sourceUrl: mentionedAccommodation.sourceUrl,
+          supabase,
+        });
+        relevantChunks = mergeGuaranteedChunks(relevantChunks, scopedChunks);
+      } catch (err) {
+        console.error("answerQuestion: scoped accommodation retrieval failed", { hotelId, message: (err as Error).message });
+      }
+    }
+  } catch (err) {
+    console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
+    return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
+  }
+
+  const groundingMode: GroundingMode = relevantChunks.length > 0 ? "grounded" : "no_context";
+  const model = openaiChatModel();
 
   // Cheap fallback, always available: a single-message regex extraction.
   let party: PartySize = extractPartySize(message);

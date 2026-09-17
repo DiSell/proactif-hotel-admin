@@ -220,3 +220,111 @@ export function selectHybridRelevantChunks(
     return chunk.similarity >= vectorFloor && lexicalScore >= lexicalHigh; // Rule 2
   });
 }
+
+/**
+ * Bounds how many chunks a single dedicated accommodation page can inject
+ * (see fetchAccommodationSourceChunks below) — a real, human-curated
+ * "detail page" for one room/suite is naturally small (Le 1837's own
+ * dedicated pages are 3 chunks each), but nothing stops a future source
+ * from being large; this caps the worst case instead of assuming it away.
+ */
+export const MAX_DEDICATED_SOURCE_CHUNKS = 8;
+
+export interface FetchAccommodationSourceChunksParams {
+  hotelId: string;
+  /** accommodation_types.source_url for the accommodation identified this turn — matched EXACTLY (never fuzzy) against knowledge_sources.source_url. */
+  sourceUrl: string;
+  supabase?: SupabaseClient;
+}
+
+/**
+ * Guaranteed, bounded retrieval for a message that already names a KNOWN
+ * accommodation (see accommodationRanking.ts:findMentionedAccommodation) —
+ * additive to, never a replacement for, the normal hybrid retrieval above.
+ * Exists because the normal path's own similarity threshold can reject a
+ * chunk that is topically certain to be relevant simply because a query
+ * like "la Deluxe a la climatisation ?" doesn't embed as closely to the
+ * chunk's prose as its vector score would need — see this chantier's own
+ * diagnostic (the two chunks containing "reversible air conditioning"
+ * scored 0.44/0.45, both below the 0.5 threshold, while a near-empty
+ * "Deluxe"-only fragment scored 0.54 and won by default). Bypassing
+ * selectHybridRelevantChunks entirely for THIS specific, already-identified
+ * source is deliberate: the accommodation match itself (a real name,
+ * confirmed present in the message) is a stronger relevance signal than
+ * any embedding score could add on top of it.
+ *
+ * accommodation_types.source_url and knowledge_sources.source_url are
+ * guaranteed equal, by construction, for any row created through the
+ * normal crawl-then-confirm flow (importCrawledPages + saveAccommodationTypes,
+ * both in features/knowledge/actions.ts, write the SAME crawled page URL
+ * into both tables) — an exact string match here is never a fuzzy guess.
+ *
+ * Returns [] (never throws to the caller — see answer.ts's own try/catch)
+ * whenever: no source_url is known, no knowledge_source matches it exactly,
+ * that source isn't active, or it has no chunks yet — every one of these is
+ * a normal, expected state (a category can have a source_url before it's
+ * ever been crawled/indexed), not an error condition on its own.
+ */
+export async function fetchAccommodationSourceChunks({
+  hotelId,
+  sourceUrl,
+  supabase: injectedSupabase,
+}: FetchAccommodationSourceChunksParams): Promise<RetrievedChunk[]> {
+  const supabase = injectedSupabase ?? (await createClient());
+
+  const { data: source } = await supabase
+    .from("knowledge_sources")
+    .select("id, title, source_url, last_synced_at")
+    .eq("hotel_id", hotelId)
+    .eq("source_url", sourceUrl)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (!source) return [];
+
+  const { data: chunks } = await supabase
+    .from("knowledge_chunks")
+    .select("id, content")
+    .eq("hotel_id", hotelId)
+    .eq("source_id", source.id)
+    .order("chunk_index", { ascending: true })
+    .limit(MAX_DEDICATED_SOURCE_CHUNKS);
+
+  if (!chunks || chunks.length === 0) return [];
+
+  return chunks.map((chunk) => ({
+    chunkId: chunk.id,
+    sourceId: source.id,
+    sourceTitle: source.title,
+    content: chunk.content,
+    // Guaranteed-relevant by scoping (a confirmed name match), not by
+    // vector ranking — 1 reflects that confidence honestly for
+    // message_sources.similarity_score (the only other reader of this
+    // field), rather than a fabricated/misleading low score.
+    similarity: 1,
+    // Genuinely not computed for this path (no hybrid RPC call was made) —
+    // undefined, not 0, matching RetrievedChunk's own documented meaning
+    // for "not computed" vs. "computed as zero overlap". Unused downstream
+    // anyway: these chunks never pass through selectHybridRelevantChunks.
+    lexicalScore: undefined,
+    sourceUrl: source.source_url,
+    lastSyncedAt: source.last_synced_at,
+  }));
+}
+
+/**
+ * Merges chunks GUARANTEED relevant (fetchAccommodationSourceChunks) into
+ * an already-selected/thresholded list — additive only: never removes
+ * anything selectHybridRelevantChunks already accepted, deduplicates by
+ * chunkId (a chunk that already cleared the normal threshold is never
+ * listed twice), and places the guaranteed chunks FIRST — the most salient
+ * position in the numbered reference block (see buildKnowledgeReferenceBlock),
+ * so the model reads the confirmed-relevant, on-topic content before the
+ * broader/noisier general retrieval results.
+ */
+export function mergeGuaranteedChunks(selected: RetrievedChunk[], guaranteed: RetrievedChunk[]): RetrievedChunk[] {
+  if (guaranteed.length === 0) return selected;
+  const seen = new Set(selected.map((c) => c.chunkId));
+  const additional = guaranteed.filter((c) => !seen.has(c.chunkId));
+  return [...additional, ...selected];
+}
