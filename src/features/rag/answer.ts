@@ -6,10 +6,11 @@ import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
 import { retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
-import { extractPartySize, type PartySize } from "./partySize";
-import { filterAndRankAccommodations, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
+import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValidatedStayRequestIntoParty, type PartySize } from "./partySize";
+import { filterAndRankAccommodations, isRoomDiscoveryIntent, mentionsKnownAccommodationName, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
 import { bookingCtaKind } from "./bookingCta";
 import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
+import { lastAssistantMessageIndicatesRoomDiscoveryContinuation, withRoomDiscoveryMarker } from "./roomDiscoveryContinuation";
 import {
   ALL_PARTNERS_LIMIT,
   DEFAULT_PARTNER_LIMIT,
@@ -341,6 +342,11 @@ export async function answerQuestion({
 
   const history = await loadHistory(supabase, conversationId);
   const startedAt = Date.now();
+  // Moved up from just before groundingMode is decided (still computed only
+  // from `history`, nothing later) so roomDiscoveryContinuationSignal below
+  // can read it — the continuation check needs the SAME historyInput
+  // instance answerGrounded/answerNoContext use, never a second derivation.
+  const historyInput = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
   // Computed once, up front, and reused both to widen retrieval just below
   // and to gate the stay-request resolution block further down — a single
@@ -348,13 +354,32 @@ export async function answerQuestion({
   // apart. Pure/synchronous (a handful of regexes + extractPartySize, see
   // gates.ts) — safe to call this early, before anything it depends on.
   const stayContextRelevant = shouldResolveStayContext(message);
+  // A bare "montre-moi les chambres" never matches shouldResolveStayContext
+  // (no date/party/keyword of its own — see gates.ts) yet is exactly the kind
+  // of question retrieval needs to widen for: reused below for the same
+  // retrieval-limit and stay-context-resolution decisions, never a second,
+  // independent gate.
+  //
+  // roomDiscoveryContinuationSignal mirrors bookingIntentContinuation.ts's
+  // own marker exactly (see roomDiscoveryContinuation.ts) — fixes a real,
+  // stress-tested bug: a bare "2" answering "combien de personnes ?" carries
+  // no discovery verb or room noun of its own, so isRoomDiscoveryIntent alone
+  // can never recognize it. A FRESH, explicit isBookingIntent match on THIS
+  // message always overrides a stale continuation signal (same
+  // precedence-by-short-circuit principle as spaBookingCandidateActive/
+  // partnerRequestFlowActive further down, not a new state machine) — so
+  // "je veux réserver" still reactivates booking normally even after a
+  // discovery detour.
+  const roomDiscoveryContinuationSignal = lastAssistantMessageIndicatesRoomDiscoveryContinuation(historyInput);
+  const roomDiscoveryIntentDetected =
+    isRoomDiscoveryIntent(message) || (roomDiscoveryContinuationSignal && !isBookingIntent(message));
 
   let relevantChunks: RetrievedChunk[];
   try {
     const chunks = await retrieveKnowledgeHybrid({
       hotelId,
       query: message,
-      limit: stayContextRelevant ? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,
+      limit: stayContextRelevant || roomDiscoveryIntentDetected ? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,
       supabase,
     });
     relevantChunks = selectHybridRelevantChunks(chunks);
@@ -365,7 +390,6 @@ export async function answerQuestion({
 
   const groundingMode: GroundingMode = relevantChunks.length > 0 ? "grounded" : "no_context";
   const model = openaiChatModel();
-  const historyInput = history.map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
 
   // Independent of groundingMode, deliberately (see prompt.ts's
   // buildAvailabilityGuidance and the plan): a stay/availability question
@@ -385,25 +409,43 @@ export async function answerQuestion({
     maxAdults: a.max_adults,
     maxChildren: a.max_children,
   }));
+  // Real category names, when this hotel has curated any — the authoritative
+  // way to recognize "the visitor already named a precise category" (see
+  // accommodationRanking.ts:mentionsKnownAccommodationName's own doc
+  // comment). Always [] for a hotel with no accommodation_types rows yet
+  // (Le 1837 today), in which case isRoomDiscoveryIntent's own generic/named
+  // distinction (accommodationRanking.ts) is the only signal available.
+  const mentionsPreciseAccommodation = mentionsKnownAccommodationName(
+    message,
+    (accommodationTypes ?? []).map((a) => a.name)
+  );
 
-  // Cheap fallback, always available: a single-message regex extraction —
-  // unchanged from before this chantier. Only upgraded to the richer
-  // multi-turn state below when the broad gate judges it worth the cost of
-  // an extra model call.
+  // Cheap fallback, always available: a single-message regex extraction.
   let party: PartySize = extractPartySize(message);
+  // Deterministic, LLM-free multi-turn upgrade — tried BEFORE the costlier,
+  // measurably unreliable OpenAI-based resolution below (see
+  // partySize.ts:extractPartySizeFromHistory's own doc comment: a real,
+  // repeated measurement showed resolveStayRequestFromHistory resolving a
+  // plain "nous sommes 2" said one turn ago only about half the time).
+  // Unconditional (not gated behind stayContextRelevant/roomDiscoveryIntentDetected)
+  // — it's pure regex work over already-loaded history, never a network call,
+  // and benefits BOOKING identically since both read the same `party`.
+  if (!isPartyKnown(party)) {
+    party = extractPartySizeFromHistory(historyInput) ?? party;
+  }
   let availabilityCheckState: AvailabilityCheckState = { kind: "not_requested" };
 
-  if (stayContextRelevant) {
+  if (stayContextRelevant || roomDiscoveryIntentDetected) {
     try {
       const rawState = await resolveStayRequestFromHistory([...historyInput, { role: "user", content: message }], {
         referenceDate: new Date().toISOString().slice(0, 10),
         timeZone: FALLBACK_TIME_ZONE,
       });
       const validatedState: StayRequestState = validateStayRequestState(rawState);
-
-      if (validatedState.adults !== null && validatedState.childrenCount !== null) {
-        party = { adults: validatedState.adults, children: validatedState.childrenCount, total: validatedState.adults + validatedState.childrenCount };
-      }
+      // See partySize.ts:mergeValidatedStayRequestIntoParty's own doc comment
+      // for the exact rule (and the real bug it fixes: an adults-only
+      // resolution like "nous sommes 2" used to be silently discarded).
+      party = mergeValidatedStayRequestIntoParty(party, validatedState);
 
       // isAvailabilityRequest, not shouldResolveStayContext, gates the
       // actual provider call — see gates.ts: a business-only capacity
@@ -442,7 +484,20 @@ export async function answerQuestion({
   // conversation ("la Suite Deluxe a la clim ?" -> "et pour 2 personnes ?")
   // never sets it in the first place and therefore never shows the CTA
   // either — continuation is never inferred from keywords alone.
-  const bookingIntentDetected = isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput);
+  //
+  // roomDiscoveryIntentDetected takes precedence for THIS turn only — reuses
+  // the same precedence-by-short-circuit principle already used below for
+  // partnerRequestFlowActive/spaBookingCandidateActive, not a new state
+  // machine: a fresh "montre-moi les chambres" right after "je veux
+  // réserver" must suppress the Réserver CTA this turn (see the ROOM_DISCOVERY
+  // report), without ever writing a "clear the marker" operation — the
+  // marker simply isn't re-applied to this turn's reply (see the
+  // withBookingIntentMarker calls in answerGrounded/answerNoContext below),
+  // so it naturally stops propagating, and a later, fresh "je veux réserver"
+  // still reactivates booking normally since isBookingIntent fires
+  // independently of any of this.
+  const bookingIntentDetected =
+    !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput));
 
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
@@ -571,6 +626,8 @@ export async function answerQuestion({
       accommodationTypesById,
       availabilityCheckState,
       bookingIntentDetected,
+      roomDiscoveryIntentDetected,
+      mentionsPreciseAccommodation,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -594,8 +651,11 @@ export async function answerQuestion({
     model,
     historyInput,
     startedAt,
+    party,
     availabilityCheckState,
     bookingIntentDetected,
+    roomDiscoveryIntentDetected,
+    mentionsPreciseAccommodation,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -797,6 +857,8 @@ async function answerGrounded(
     accommodationTypesById: Map<string, AccommodationType>;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    roomDiscoveryIntentDetected: boolean;
+    mentionsPreciseAccommodation: boolean;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -826,6 +888,8 @@ async function answerGrounded(
     accommodationTypesById,
     availabilityCheckState,
     bookingIntentDetected,
+    roomDiscoveryIntentDetected,
+    mentionsPreciseAccommodation,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -847,6 +911,8 @@ async function answerGrounded(
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    roomDiscoveryIntentDetected,
+    mentionsPreciseAccommodation,
     partnerIntentDetected,
     partnerCandidates,
     partnerRequestFlowActive,
@@ -930,6 +996,15 @@ async function answerGrounded(
     if (bookingIntentDetected) {
       reply = withBookingIntentMarker(reply);
     }
+    // See roomDiscoveryContinuation.ts's own doc comment: marks THIS reply so
+    // a later turn with no discovery verb/room noun of its own (a bare "2"
+    // answering "combien de personnes ?") is still recognized as continuing
+    // the flow. Independent of bookingIntentDetected above — mutually
+    // exclusive in practice (see answer.ts's own roomDiscoveryIntentDetected
+    // computation), never both at once.
+    if (roomDiscoveryIntentDetected) {
+      reply = withRoomDiscoveryMarker(reply);
+    }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -1006,8 +1081,11 @@ async function answerNoContext(
     model: string;
     historyInput: HistoryInputItem[];
     startedAt: number;
+    party: PartySize;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    roomDiscoveryIntentDetected: boolean;
+    mentionsPreciseAccommodation: boolean;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1031,8 +1109,11 @@ async function answerNoContext(
     model,
     historyInput,
     startedAt,
+    party,
     availabilityCheckState,
     bookingIntentDetected,
+    roomDiscoveryIntentDetected,
+    mentionsPreciseAccommodation,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1050,8 +1131,11 @@ async function answerNoContext(
     hotel,
     settings,
     groundingMode: "no_context",
+    party,
     availabilityCheckState,
     bookingIntentDetected,
+    roomDiscoveryIntentDetected,
+    mentionsPreciseAccommodation,
     partnerIntentDetected,
     partnerCandidates,
     partnerRequestFlowActive,
@@ -1123,6 +1207,11 @@ async function answerNoContext(
     // identical call — independent of groundingMode, same reasoning.
     if (bookingIntentDetected) {
       reply = withBookingIntentMarker(reply);
+    }
+    // See roomDiscoveryContinuation.ts's own doc comment and answerGrounded's
+    // identical call — independent of groundingMode, same reasoning.
+    if (roomDiscoveryIntentDetected) {
+      reply = withRoomDiscoveryMarker(reply);
     }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });

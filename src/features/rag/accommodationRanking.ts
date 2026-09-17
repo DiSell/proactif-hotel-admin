@@ -106,3 +106,92 @@ export function filterAndRankAccommodations(candidates: AccommodationCandidate[]
 
   return candidates.map((candidate) => ({ ...candidate, fit: "unknown" as const }));
 }
+
+// isPartyKnown moved to partySize.ts (it's a pure PartySize-domain concept,
+// used by more than just accommodation ranking now — see
+// extractPartySizeFromHistory there) — re-exported here so every existing
+// import site (prompt.ts, tests) keeps working unchanged.
+export { isPartyKnown } from "./partySize";
+
+/**
+ * Discovery-VERB + GENERIC room-type-NOUN, required together — deliberately
+ * narrower than every other intent detector in this codebase (isPartnerIntent,
+ * isSpaBookingIntent, isBookingIntent), which all err wide because a false
+ * positive there is invisible/harmless. Here a false positive has a visible
+ * side effect: it makes the assistant interrupt with "combien de personnes
+ * ?" — so a bare mention of "chambre/suite/hébergement/appartement" alone
+ * (e.g. "Suite Deluxe a la climatisation ?", a purely documentary question)
+ * must never be enough on its own.
+ *
+ * "GENERIC" is the load-bearing word (stress test finding): a named,
+ * already-precise category ("la Junior Suite", "la Mini-suite") must never
+ * be treated the same as a catalogue-level request ("les chambres", "une
+ * chambre") just because it happens to contain the same root word. The
+ * distinguishing, hotel-agnostic signal (never a hardcoded category name)
+ * is structural: in every real example seen, a generic mention has the
+ * determiner/quantifier sitting DIRECTLY next to the noun ("les chambres",
+ * "une chambre", "quelles chambres"), while a named category always inserts
+ * at least one extra qualifying word — or a hyphen — between them ("la
+ * JUNIOR suite", "la MINI-suite"). GENERIC_ROOM_MENTION_PATTERNS encodes
+ * exactly that adjacency, nothing else. When real accommodation_types data
+ * exists for a hotel, answer.ts additionally checks the message against the
+ * hotel's own real category names (see mentionsKnownAccommodationName) —
+ * this generic pattern is the fallback for when it doesn't (Le 1837 today).
+ */
+const DISCOVERY_VERB_PATTERNS: RegExp[] = [
+  /\bmontre[rz]?(-moi)?\b/i,
+  /\bvoir\b/i,
+  /\bd[ée]couvrir\b/i,
+  /\bcherch(?:e|es|ons|ez|er)\b/i,
+  /\brecherch(?:e|es|ons|ez|er)\b/i,
+  /\bproposez[- ]vous\b/i,
+  /\bavez[- ]vous\b/i,
+  /\bvous\s+avez\b/i,
+];
+
+const QUEL_ROOM_TYPE_PATTERN =
+  /\bquel(?:le)?s?\s+(?:types?\s+d[e'’]\s*)?(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
+
+/** Determiner/quantifier DIRECTLY touching the noun — see the doc comment above for why this is what "generic" means here. */
+const GENERIC_DETERMINER_ROOM_MENTION_PATTERN =
+  /\b(?:les?|la|des|une?|vos|nos|ces?|comme)\s+(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
+
+function hasGenericRoomMention(message: string): boolean {
+  return QUEL_ROOM_TYPE_PATTERN.test(message) || GENERIC_DETERMINER_ROOM_MENTION_PATTERN.test(message);
+}
+
+/**
+ * A short, standalone catalogue mention with no verb at all ("les chambres
+ * ?", "les suites ?") — a real, common, minimal way to ask "what rooms do
+ * you have". Deliberately anchored to the WHOLE message (only optional
+ * surrounding punctuation tolerated), never a substring match: this is what
+ * keeps it from also swallowing a longer, documentary sentence that merely
+ * mentions a room in passing ("la Junior Suite fait combien de mètres
+ * carrés ?" is nowhere close to this shape).
+ */
+const ELLIPTICAL_CATALOGUE_PATTERN =
+  /^\s*(?:les?|la|des|une?|vos|nos|ces?|quel(?:le)?s?)\s+(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\s*[?!.]*\s*$/i;
+
+export function isRoomDiscoveryIntent(message: string): boolean {
+  if (QUEL_ROOM_TYPE_PATTERN.test(message)) return true;
+  if (ELLIPTICAL_CATALOGUE_PATTERN.test(message)) return true;
+  return hasGenericRoomMention(message) && DISCOVERY_VERB_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * When a hotel HAS real accommodation_types data, this is the authoritative
+ * way to recognize a precise category mention — real names beat the
+ * structural GENERIC_DETERMINER_ROOM_MENTION_PATTERN heuristic above, which
+ * only exists as a fallback for when no such data exists yet (Le 1837
+ * today, see answer.ts's own call site). Whole-name, word-boundary-safe,
+ * case-insensitive match — never a fuzzy/partial one, and never a hardcoded
+ * name for any specific hotel.
+ */
+export function mentionsKnownAccommodationName(message: string, accommodationNames: string[]): boolean {
+  return accommodationNames.some((name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const escaped = trimmed.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`, "i").test(message.toLowerCase());
+  });
+}

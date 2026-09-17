@@ -2,7 +2,7 @@ import type { ChatbotSettings, Hotel } from "@/types/database";
 import { bookingCtaKind, type BookingCtaKind } from "./bookingCta";
 import type { GroundingMode, RagPartner, RetrievedChunk } from "./types";
 import type { PartySize } from "./partySize";
-import type { RankedCandidate } from "./accommodationRanking";
+import { isPartyKnown, type RankedCandidate } from "./accommodationRanking";
 import type { AvailabilityCheckState } from "../availability/types";
 import { HOTEL_PARTNER_CATEGORY_LABEL } from "../partners/schema";
 import { VOLATILE_STALENESS_DAYS } from "./staleness";
@@ -135,6 +135,29 @@ export interface BuildHotelInstructionsParams {
   spaAvailability?: SpaAvailability;
   /** The conversation's own currently-resolved date/slot/party size (features/rag/spaBookingFlow.ts:resolveSpaBookingRequestFromHistory + validateSpaBookingRequestState) — never the model's own structured output, see that module's own doc comment on why. */
   resolvedSpaBookingRequest?: SpaBookingRequestState;
+  /**
+   * Orthogonal to groundingMode, same shape as bookingIntentDetected/
+   * partnerIntentDetected above — true whenever the message expresses a
+   * room-discovery intent (see answer.ts's isRoomDiscoveryIntent from
+   * accommodationRanking.ts). When true and `party` is not yet known, this
+   * takes precedence over accommodationGuidance for THIS turn (see
+   * buildHotelInstructions below): asking for the group size first, never
+   * presenting a list before it's known. Once `party` is known, this adds
+   * nothing — buildAccommodationGuidance (fed by the same existing
+   * rankedCandidates/party pipeline) takes over entirely, never duplicated
+   * here.
+   */
+  roomDiscoveryIntentDetected?: boolean;
+  /**
+   * True when the CURRENT message already names one of the hotel's real
+   * accommodation_types by name (see answer.ts's own
+   * mentionsKnownAccommodationName call, fed by the actual DB rows for this
+   * hotel) — overrides askPartySizeOnly below even while
+   * roomDiscoveryIntentDetected is true via a stale continuation signal: a
+   * visitor who already named a precise category must never be asked
+   * "combien de personnes ?" before getting an answer about it.
+   */
+  mentionsPreciseAccommodation?: boolean;
 }
 
 /**
@@ -217,6 +240,8 @@ export function buildHotelInstructions({
   spaBookingFlowActive,
   spaAvailability,
   resolvedSpaBookingRequest,
+  roomDiscoveryIntentDetected,
+  mentionsPreciseAccommodation,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -267,10 +292,33 @@ export function buildHotelInstructions({
     : "";
 
   const noContextGuidance = groundingMode === "no_context" ? buildNoContextGuidance(settings) : "";
+  // A fresh room-discovery intent this turn with a still-unknown party takes
+  // priority over accommodationGuidance below, for THIS turn only: showing
+  // both at once would tell the model to both "ask for the group size first"
+  // and "here's a list, party size unclear" in the same breath. Never
+  // touches accommodationGuidance's own gating logic (used by other flows
+  // too, e.g. a direct "avez-vous une chambre pour 4 ?" question) — this only
+  // decides, at the call site, whether to invoke it this turn.
+  //
+  // mentionsPreciseAccommodation overrides this even while
+  // roomDiscoveryIntentDetected is only true via a stale continuation signal
+  // (see roomDiscoveryContinuation.ts): a visitor who already named one of
+  // the hotel's real categories by name must get an answer about it, never
+  // "combien de personnes ?" first.
+  const askPartySizeOnly =
+    Boolean(roomDiscoveryIntentDetected) &&
+    !mentionsPreciseAccommodation &&
+    !isPartyKnown(party ?? { adults: null, children: null, total: null });
   const accommodationGuidance =
-    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0
+    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly
       ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })
       : "";
+  // Orthogonal to groundingMode — a no_context turn (e.g. a hotel with no
+  // accommodation_types data at all) must still be able to ask for the group
+  // size before claiming it has nothing to show. Once party is known, this
+  // adds nothing: buildAccommodationGuidance (grounded mode only, see above)
+  // is the sole source of truth for which categories actually get presented.
+  const roomDiscoveryGuidance = askPartySizeOnly ? buildRoomDiscoveryGuidance() : "";
   // Orthogonal to groundingMode, deliberately — see BuildHotelInstructionsParams.
   const availabilityGuidance =
     availabilityCheckState && availabilityCheckState.kind !== "not_requested" ? buildAvailabilityGuidance(availabilityCheckState) : "";
@@ -302,6 +350,7 @@ export function buildHotelInstructions({
     customInstructions,
     eventsGuidance,
     noContextGuidance,
+    roomDiscoveryGuidance,
     accommodationGuidance,
     availabilityGuidance,
     bookingIntentGuidance,
@@ -653,6 +702,24 @@ function buildNoContextGuidance(settings: ChatbotSettings | null): string {
  * answer.ts's post-call validation, which rejects any id not in this exact
  * list as a second, structural line of defense).
  */
+/**
+ * Only ever built when roomDiscoveryIntentDetected fired AND the group size
+ * is still unknown (see buildHotelInstructions's askPartySizeOnly) — a party
+ * already known defers entirely to buildAccommodationGuidance instead, so
+ * this function never lists, describes or names a single accommodation.
+ * Deliberately asks for nothing else (dates, budget, preferences) on this
+ * turn — a room-discovery visitor who hasn't stated a group size gets
+ * exactly one question, not several at once.
+ */
+function buildRoomDiscoveryGuidance(): string {
+  return [
+    "DÉCOUVERTE DES HÉBERGEMENTS :",
+    "Le visiteur souhaite découvrir les hébergements proposés, mais la taille de son groupe n'a pas encore été déterminée.",
+    "Demande UNIQUEMENT le nombre de personnes avant de présenter quoi que ce soit — ne liste, ne décris et ne recommande AUCUN hébergement tant que cette information n'est pas connue.",
+    "Ne pose pas d'autre question à ce stade (dates, budget, préférences) : uniquement le nombre de personnes.",
+  ].join("\n");
+}
+
 function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: PartySize): string {
   const lines = rankedCandidates.map((c) => {
     const capacity = c.fit === "known" ? `capacité confirmée : ${c.maxGuests} personnes` : "capacité non vérifiée";

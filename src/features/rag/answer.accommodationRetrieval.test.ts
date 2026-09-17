@@ -24,8 +24,8 @@ describe("answerQuestion — widened retrieval for stay/accommodation-relevant t
     expect(source).toMatch(/const stayContextRelevant = shouldResolveStayContext\(message\);/);
   });
 
-  it("[reused, not recomputed, for the stay-request block below] the later gate is `if (stayContextRelevant)`, not a second shouldResolveStayContext(message) call", () => {
-    expect(source).toMatch(/if \(stayContextRelevant\) \{/);
+  it("[reused, not recomputed, for the stay-request block below] the later gate is `if (stayContextRelevant || roomDiscoveryIntentDetected)`, not a second shouldResolveStayContext(message) call", () => {
+    expect(source).toMatch(/if \(stayContextRelevant \|\| roomDiscoveryIntentDetected\) \{/);
   });
 
   it("[computed before retrieval, not after] stayContextRelevant must exist before retrieveKnowledgeHybrid is ever called — a limit decided from it can't apply otherwise", () => {
@@ -35,9 +35,9 @@ describe("answerQuestion — widened retrieval for stay/accommodation-relevant t
     expect(retrieveIndex).toBeGreaterThan(gateIndex);
   });
 
-  it("[widened limit wired into the actual call] retrieveKnowledgeHybrid's limit is a ternary on stayContextRelevant, never the flat RETRIEVAL_LIMIT alone", () => {
+  it("[widened limit wired into the actual call] retrieveKnowledgeHybrid's limit is a ternary on stayContextRelevant OR roomDiscoveryIntentDetected, never the flat RETRIEVAL_LIMIT alone", () => {
     const fn = source.slice(source.indexOf("await retrieveKnowledgeHybrid({"), source.indexOf("});", source.indexOf("await retrieveKnowledgeHybrid({")));
-    expect(fn).toMatch(/limit: stayContextRelevant \? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,/);
+    expect(fn).toMatch(/limit: stayContextRelevant \|\| roomDiscoveryIntentDetected \? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,/);
   });
 
   it("[the widened limit is strictly larger] ACCOMMODATION_RETRIEVAL_LIMIT > RETRIEVAL_LIMIT — this must actually widen the candidate pool, never narrow or match it", () => {

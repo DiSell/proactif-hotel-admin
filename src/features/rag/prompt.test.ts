@@ -390,6 +390,63 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
   });
 });
 
+describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
+  function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
+    return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
+  }
+
+  it("[CAS 1] intent detected + party unknown -> asks for the party size only, lists nothing, even in grounded mode with real candidates", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      roomDiscoveryIntentDetected: true,
+      rankedCandidates: candidates([{ id: "a", name: "Deluxe", maxGuests: 4, fit: "known" }]),
+      party: { adults: null, children: null, total: null },
+    });
+    expect(instructions).toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+    expect(instructions).toMatch(/Demande UNIQUEMENT le nombre de personnes/);
+    expect(instructions).not.toMatch(/HÉBERGEMENTS — candidats/); // buildAccommodationGuidance's own header never fires this turn
+    expect(instructions).not.toContain('id="a"'); // never lists a candidate before the party size is known
+  });
+
+  it("[CAS 1, no_context] still asks for the party size even when no RAG chunk was found for this hotel (e.g. no accommodation_types data at all)", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "no_context",
+      roomDiscoveryIntentDetected: true,
+      party: { adults: null, children: null, total: null },
+    });
+    expect(instructions).toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+  });
+
+  it("[CAS 2/3] intent detected + party already known -> defers entirely to buildAccommodationGuidance, never duplicates it", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      roomDiscoveryIntentDetected: true,
+      rankedCandidates: candidates([{ id: "a", name: "Deluxe", maxGuests: 4, fit: "known" }]),
+      party: { adults: 2, children: 0, total: 2 },
+    });
+    expect(instructions).not.toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+    expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
+    expect(instructions).toContain('id="a"');
+  });
+
+  it("no room-discovery guidance at all when the intent wasn't detected this turn, regardless of party", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      roomDiscoveryIntentDetected: false,
+      party: { adults: null, children: null, total: null },
+    });
+    expect(instructions).not.toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+  });
+});
+
 describe("buildHotelInstructions — availability guidance (orthogonal to groundingMode)", () => {
   it("adds nothing when availabilityCheckState is absent or not_requested, in either mode", () => {
     for (const groundingMode of ["grounded", "no_context"] as const) {

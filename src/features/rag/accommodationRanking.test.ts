@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterAndRankAccommodations, isCapacityCompatible, type AccommodationCandidate } from "./accommodationRanking";
+import { filterAndRankAccommodations, isCapacityCompatible, isPartyKnown, isRoomDiscoveryIntent, mentionsKnownAccommodationName, type AccommodationCandidate } from "./accommodationRanking";
 import type { PartySize } from "./partySize";
 
 function candidate(id: string, name: string, maxGuests: number | null, maxAdults: number | null = null, maxChildren: number | null = null): AccommodationCandidate {
@@ -108,5 +108,98 @@ describe("filterAndRankAccommodations — granular adults/childrenCount request"
     const candidates = [candidate("big", "Big", 8, 8, 8), candidate("close", "Close", 3, 3, 3)];
     const result = filterAndRankAccommodations(candidates, partyOf(2, 1));
     expect(result.map((r) => r.id)).toEqual(["close", "big"]);
+  });
+});
+
+describe("isPartyKnown", () => {
+  it("known via total", () => {
+    expect(isPartyKnown(party(2))).toBe(true);
+  });
+
+  it("known via adults+children", () => {
+    expect(isPartyKnown(partyOf(2, 0))).toBe(true);
+  });
+
+  it("unknown — nothing determined at all", () => {
+    expect(isPartyKnown(party(null))).toBe(false);
+  });
+
+  it("unknown — only adults known, children still null", () => {
+    expect(isPartyKnown({ adults: 2, children: null, total: null })).toBe(false);
+  });
+});
+
+/**
+ * ROOM_DISCOVERY intent — deliberately narrower than every other detector in
+ * this codebase (isPartnerIntent/isSpaBookingIntent/isBookingIntent all err
+ * wide): requires a discovery-verb + room-noun combination together, never a
+ * bare room-word alone, so a purely documentary question about a named room
+ * ("Suite Deluxe a la climatisation ?") never mis-fires and interrupts with
+ * "combien de personnes ?".
+ */
+describe("isRoomDiscoveryIntent", () => {
+  it.each([
+    "montre-moi les chambres",
+    "je peux voir les chambres ?",
+    "quelles chambres avez-vous ?",
+    "je voudrais découvrir les suites",
+    "montrez-moi vos hébergements",
+    "quels appartements proposez-vous ?",
+    "tu peus me montrer les chambres ??",
+    "montre-moi les chambres pour 2 personnes",
+    // Stress-test round 2 — catalogue-level requests that must now pass too.
+    "montre moi les chambres",
+    "tu peux me montrer les chambres ?",
+    "quelles chambres avez vous ?",
+    "les chambres ?", // elliptical, no verb at all
+    "je peux voir les appartements ?",
+    "vous avez quoi comme chambre ?", // declarative "vous avez", not the inverted "avez-vous"
+    "je cherche une chambre pour 2", // "chercher" was entirely absent from the verb list
+    "fais moi voir les suites",
+    "les suites ?", // elliptical
+  ])("[positive] %s", (message) => {
+    expect(isRoomDiscoveryIntent(message)).toBe(true);
+  });
+
+  it.each([
+    "Suite Deluxe a la climatisation ?",
+    "Est-ce que la Suite Deluxe a la climatisation ?",
+    "Et pour 2 personnes ?",
+    "quel est le prix de la chambre ?",
+    "ok une chambre pour 2 ?",
+    "avez-vous une piscine ?",
+    // Stress-test round 2 — a NAMED, precise category must never be treated
+    // as a generic catalogue request just because it contains a generic
+    // root word ("suite" inside "Junior Suite").
+    "je veux voir la junior suite",
+    "montre moi la deluxe",
+    "parle moi de la Mini-suite",
+    "la Junior Suite fait combien de mètres carrés ?",
+    "vous avez un parking ?",
+    "combien coûte la Deluxe ?",
+    "le spa est ouvert ?",
+  ])("[negative] %s", (message) => {
+    expect(isRoomDiscoveryIntent(message)).toBe(false);
+  });
+});
+
+describe("mentionsKnownAccommodationName", () => {
+  const names = ["Deluxe", "Junior Suite", "Mini-suite"];
+
+  it("matches a real category name regardless of case", () => {
+    expect(mentionsKnownAccommodationName("je veux voir la JUNIOR SUITE", names)).toBe(true);
+    expect(mentionsKnownAccommodationName("montre moi la deluxe", names)).toBe(true);
+  });
+
+  it("never matches a name that isn't in the real list", () => {
+    expect(mentionsKnownAccommodationName("je veux voir la Suite Royale", names)).toBe(false);
+  });
+
+  it("word-boundary safe — never a partial/fuzzy match", () => {
+    expect(mentionsKnownAccommodationName("Deluxexxx", names)).toBe(false);
+  });
+
+  it("empty list never matches anything (e.g. a hotel with no accommodation_types yet)", () => {
+    expect(mentionsKnownAccommodationName("je veux voir la Deluxe", [])).toBe(false);
   });
 });
