@@ -112,6 +112,20 @@ export function filterAndRankAccommodations(candidates: AccommodationCandidate[]
 // extractPartySizeFromHistory there) — re-exported here so every existing
 // import site (prompt.ts, tests) keeps working unchanged.
 export { isPartyKnown } from "./partySize";
+import { isPartyKnown as isPartyKnownInternal } from "./partySize";
+
+/**
+ * Single source of truth for "should this turn ask for the group size
+ * before presenting anything, instead of showing the catalogue" — used by
+ * BOTH buildHotelInstructions (prompt.ts, the model's own instruction) AND
+ * answerQuestion (answer.ts, the deterministic roomCatalogue field it
+ * computes independently — see that field's own doc comment in types.ts),
+ * so the two can never drift out of sync with each other. Previously
+ * computed inline, separately, only in prompt.ts.
+ */
+export function shouldAskPartySizeOnly(roomDiscoveryIntentDetected: boolean, mentionsPreciseAccommodation: boolean, party: PartySize): boolean {
+  return roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !isPartyKnownInternal(party);
+}
 
 /**
  * Discovery-VERB + GENERIC room-type-NOUN, required together — deliberately

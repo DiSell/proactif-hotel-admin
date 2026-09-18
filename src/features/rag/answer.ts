@@ -7,7 +7,14 @@ import { openaiChatModel } from "@/lib/openai/env";
 import { fetchAccommodationSourceChunks, mergeGuaranteedChunks, retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
 import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValidatedStayRequestIntoParty, type PartySize } from "./partySize";
-import { filterAndRankAccommodations, findMentionedAccommodation, isRoomDiscoveryIntent, type AccommodationCandidate, type RankedCandidate } from "./accommodationRanking";
+import {
+  filterAndRankAccommodations,
+  findMentionedAccommodation,
+  isRoomDiscoveryIntent,
+  shouldAskPartySizeOnly,
+  type AccommodationCandidate,
+  type RankedCandidate,
+} from "./accommodationRanking";
 import { bookingCtaKind } from "./bookingCta";
 import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
 import { lastAssistantMessageIndicatesRoomDiscoveryContinuation, withRoomDiscoveryMarker } from "./roomDiscoveryContinuation";
@@ -50,6 +57,7 @@ import type {
   PartnerRequestPhonePrompt,
   RagPartner,
   RetrievedChunk,
+  RoomCatalogueEntry,
   RoomRecommendation,
   SpaBookingPhonePrompt,
 } from "./types";
@@ -514,6 +522,31 @@ export async function answerQuestion({
   // confirmed-available recommendation. A no-op when no check ran.
   rankedCandidates = applyAvailabilityToCandidates(rankedCandidates, availabilityCheckState);
 
+  // ROOM DISCOVERY CATALOGUE — deterministic, see RoomCatalogueEntry's own
+  // doc comment for the exact bug this fixes (a confirmed, reproduced case:
+  // for a bare "2" reply continuing a room-discovery flow, retrieveKnowledgeHybrid's
+  // own chunk coverage for that low-signal query happened to be thin/absent
+  // for 2 of 7 compatible categories, and the model's free-text reply
+  // dropped exactly those 2 — even though buildAccommodationGuidance's own
+  // prompt instructions already named all 7). Built directly from
+  // rankedCandidates right here — independent of groundingMode, independent
+  // of whatever RAG chunks happened to be retrieved this turn, independent
+  // of the model's own generation — so it can never silently narrow.
+  // shouldAskPartySizeOnly is the exact same gate buildHotelInstructions
+  // uses to decide whether to show its own prose guidance at all (single
+  // source of truth, accommodationRanking.ts) — the two can never disagree
+  // about whether a catalogue should exist this turn.
+  const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
+  const roomCatalogue: RoomCatalogueEntry[] =
+    roomDiscoveryIntentDetected && !askPartySizeOnly
+      ? rankedCandidates.map((c) => ({
+          accommodationTypeId: c.id,
+          name: c.name,
+          pageUrl: accommodationTypesById.get(c.id)?.source_url ?? null,
+          maxGuests: c.maxGuests,
+        }))
+      : [];
+
   // Computed once, independent of groundingMode — drives the generic
   // booking CTA (see buildBookingAction) in both branches below. Two
   // independent signals, deliberately combined with OR: isBookingIntent
@@ -693,6 +726,7 @@ export async function answerQuestion({
       mentionedAccommodationId: mentionedAccommodation?.id ?? null,
       allowPriceCommunication,
       authorizedPriceAmounts,
+      roomCatalogue,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -723,6 +757,7 @@ export async function answerQuestion({
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
+    roomCatalogue,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -966,6 +1001,8 @@ async function answerGrounded(
     allowPriceCommunication: boolean;
     /** The exact, server-computed amounts certified for this turn — see answer.ts's own authorizedPriceAmounts and pricePolicy.ts:containsUnauthorizedMonetaryAmount. */
     authorizedPriceAmounts: number[];
+    /** Deterministic, server-computed — see RoomCatalogueEntry's own doc comment (types.ts) and answer.ts's own roomCatalogue computation. */
+    roomCatalogue: RoomCatalogueEntry[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1000,6 +1037,7 @@ async function answerGrounded(
     mentionedAccommodationId,
     allowPriceCommunication,
     authorizedPriceAmounts,
+    roomCatalogue,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1190,7 +1228,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue };
 }
 
 /**
@@ -1221,6 +1259,8 @@ async function answerNoContext(
     allowPriceCommunication: boolean;
     /** See answerGrounded's identical field for the full doc comment — answerNoContext never builds a roomRecommendation at all, but still needs this for the output-side lock's authorizedPriceAmounts, threaded alongside. */
     authorizedPriceAmounts: number[];
+    /** See answerGrounded's identical field — roomCatalogue is independent of groundingMode, so a no_context turn still needs it threaded through. */
+    roomCatalogue: RoomCatalogueEntry[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1251,6 +1291,7 @@ async function answerNoContext(
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
+    roomCatalogue,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1381,7 +1422,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -1442,5 +1483,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [] };
 }

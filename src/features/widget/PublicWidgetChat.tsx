@@ -14,6 +14,21 @@ interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
+/**
+ * Mirrors features/rag/types.ts's RoomCatalogueEntry — see that type's own
+ * doc comment for the bug this fixes (a confirmed, reproduced case: the
+ * model's own free-text catalogue reply can silently drop compatible
+ * categories, even though the server already computed the full,
+ * deterministic list). Deliberately carries no price field — this
+ * structure can never leak a tariff, by construction.
+ */
+interface RoomCatalogueEntry {
+  accommodationTypeId: string;
+  name: string;
+  pageUrl: string | null;
+  maxGuests: number | null;
+}
+
 type ChatAction = { type: "booking"; label: string; url: string } | { type: "host_booking"; label: string };
 
 type PartnerAction = { type: "partner_booking"; label: string; url: string } | { type: "partner_website"; label: string; url: string };
@@ -39,6 +54,7 @@ interface ChatMessage {
   roomRecommendation?: RoomRecommendation | null;
   action?: ChatAction | null;
   partnerRecommendations?: PartnerRecommendation[];
+  roomCatalogue?: RoomCatalogueEntry[];
 }
 
 /** Mirrors features/rag/types.ts's PendingPartnerRequestFields/PartnerRequestPhonePrompt — see those types' own doc comments. */
@@ -89,6 +105,7 @@ interface ChatApiResponse {
   partnerRecommendations: PartnerRecommendation[];
   partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
   spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
+  roomCatalogue: RoomCatalogueEntry[];
 }
 
 interface PublicWidgetChatProps {
@@ -355,6 +372,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           roomRecommendation: data.roomRecommendation,
           action: data.action,
           partnerRecommendations: data.partnerRecommendations,
+          roomCatalogue: data.roomCatalogue,
         },
       ]);
       if (data.partnerRequestPhonePrompt) {
@@ -507,6 +525,44 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
               >
                 Voir la chambre — {message.roomRecommendation.name}
               </button>
+            )}
+            {/*
+             * Deterministic room-discovery catalogue — see
+             * features/rag/types.ts:RoomCatalogueEntry's own doc comment for
+             * the bug this fixes: the model's own prose reply can silently
+             * drop compatible categories (uneven RAG chunk coverage per
+             * category), even when the server already computed the full,
+             * capacity-filtered list. This is that guaranteed list, rendered
+             * directly — never derived from parsing `message.content`. Kept
+             * deliberately minimal (name, capacity, an optional link) so it
+             * complements the model's own prose rather than duplicating it —
+             * no description, no photos, no price (the type has no price
+             * field to render even if one wanted to).
+             */}
+            {message.role === "assistant" && message.roomCatalogue && message.roomCatalogue.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: "82%" }}>
+                {message.roomCatalogue.map((entry) => (
+                  <div
+                    key={entry.accommodationTypeId}
+                    style={{ borderRadius: 8, border: "1px solid #E5E1D8", background: "#fff", padding: "8px 12px", fontSize: 12 }}
+                  >
+                    <p style={{ margin: 0, fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</p>
+                    {entry.maxGuests !== null && (
+                      <p style={{ margin: "2px 0 0", color: "#6b6b6b" }}>Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}</p>
+                    )}
+                    {entry.pageUrl && (
+                      <a
+                        href={entry.pageUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ display: "inline-block", marginTop: 6, fontSize: 11, fontWeight: 500, color: "#1A1D1A", textDecoration: "underline" }}
+                      >
+                        Voir la page
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
             {/* Server guarantees roomRecommendation and a "booking" action are never both present for the same turn (a duplicate link would result) — but "host_booking" CAN coexist with a roomRecommendation, precisely when the hotel is in host_widget mode and RoomPhotoModal has no button of its own to offer (see answer.ts's answerGrounded). */}
             {message.role === "assistant" && message.action?.type === "booking" && (

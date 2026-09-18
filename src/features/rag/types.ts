@@ -261,4 +261,43 @@ export interface AnswerQuestionResult {
   partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
   /** Additive field, always present, null on every turn that doesn't need it — see SpaBookingPhonePrompt's own doc comment. */
   spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
+  /**
+   * The deterministic list of capacity-(and availability-)compatible
+   * accommodation categories for a room-discovery turn — see
+   * RoomCatalogueEntry's own doc comment. Always an array, never null;
+   * empty on every turn that isn't a room-discovery turn with a known party
+   * (same gating accommodationRanking.ts:shouldAskPartySizeOnly already
+   * uses for the model's own prose guidance, so the two can never disagree
+   * about when a catalogue should exist at all). The widget should render
+   * this directly rather than parsing `reply` for room names: `reply` is
+   * free-text commentary the model writes around it and may summarize,
+   * reorder, or omit entries in prose — this field is the one guaranteed-
+   * complete source of truth.
+   */
+  roomCatalogue: RoomCatalogueEntry[];
+}
+
+/**
+ * ONE entry in the deterministic room-discovery catalogue above — computed
+ * directly from rankedCandidates (accommodationRanking.ts:filterAndRankAccommodations,
+ * already capacity- and availability-filtered), never from the model's own
+ * output. Fixes a real, confirmed bug: for a bare "2" reply continuing a
+ * room-discovery flow, the model's free-text catalogue reply silently
+ * dropped 2 of 7 compatible categories — traced to uneven RAG chunk
+ * coverage per category (rich descriptive chunks for some, none for
+ * others) biasing which ones the model chose to narrate, even though the
+ * deterministic candidate list handed to it already named all 7. Moving
+ * the actual guaranteed listing into a structured field (mirroring
+ * RoomRecommendation's own "server computes truth, model narrates around
+ * it" precedent) fixes this architecturally rather than by asking the
+ * model harder to remember every entry.
+ *
+ * Deliberately carries no price field at all — this structure can never
+ * leak a tariff, by construction, regardless of allow_price_communication.
+ */
+export interface RoomCatalogueEntry {
+  accommodationTypeId: string;
+  name: string;
+  pageUrl: string | null;
+  maxGuests: number | null;
 }

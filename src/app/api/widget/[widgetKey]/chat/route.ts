@@ -240,6 +240,10 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         partnerRequestPhonePrompt: result.partnerRequestPhonePrompt,
         // Same discipline, for a spa booking — see features/rag/types.ts:SpaBookingPhonePrompt. Never both non-null the same turn.
         spaBookingPhonePrompt: result.spaBookingPhonePrompt,
+        // Deterministic room-discovery catalogue — always an array, empty
+        // when not applicable. Render this directly rather than parsing
+        // `reply` for room names: see features/rag/types.ts:RoomCatalogueEntry.
+        roomCatalogue: result.roomCatalogue,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

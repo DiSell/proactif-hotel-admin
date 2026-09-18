@@ -2,7 +2,7 @@ import type { ChatbotSettings, Hotel } from "@/types/database";
 import { bookingCtaKind, type BookingCtaKind } from "./bookingCta";
 import type { GroundingMode, RagPartner, RetrievedChunk } from "./types";
 import type { PartySize } from "./partySize";
-import { isPartyKnown, type RankedCandidate } from "./accommodationRanking";
+import { shouldAskPartySizeOnly, type RankedCandidate } from "./accommodationRanking";
 import type { AvailabilityCheckState } from "../availability/types";
 import { HOTEL_PARTNER_CATEGORY_LABEL } from "../partners/schema";
 import { VOLATILE_STALENESS_DAYS } from "./staleness";
@@ -318,10 +318,11 @@ export function buildHotelInstructions({
   // (see roomDiscoveryContinuation.ts): a visitor who already named one of
   // the hotel's real categories by name must get an answer about it, never
   // "combien de personnes ?" first.
-  const askPartySizeOnly =
-    Boolean(roomDiscoveryIntentDetected) &&
-    !mentionsPreciseAccommodation &&
-    !isPartyKnown(party ?? { adults: null, children: null, total: null });
+  const askPartySizeOnly = shouldAskPartySizeOnly(
+    Boolean(roomDiscoveryIntentDetected),
+    Boolean(mentionsPreciseAccommodation),
+    party ?? { adults: null, children: null, total: null }
+  );
   const accommodationGuidance =
     groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly
       ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })

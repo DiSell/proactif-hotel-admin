@@ -87,6 +87,8 @@ export async function handleHotelChatRequest(request: Request, hotelId: string):
       // answerQuestion() itself (see buildPartnerAction in
       // features/rag/partners.ts) — nothing to add or override here.
       partnerRecommendations: result.partnerRecommendations,
+      // Deterministic room-discovery catalogue — see features/rag/types.ts:RoomCatalogueEntry.
+      roomCatalogue: result.roomCatalogue,
     });
   } catch (err) {
     console.error("handleHotelChatRequest: answerQuestion failed", { hotelId, message: (err as Error).message });
