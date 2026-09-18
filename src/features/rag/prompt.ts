@@ -158,6 +158,18 @@ export interface BuildHotelInstructionsParams {
    * "combien de personnes ?" before getting an answer about it.
    */
   mentionsPreciseAccommodation?: boolean;
+  /**
+   * chatbot_settings.allow_price_communication, resolved via
+   * features/rag/pricePolicy.ts:isPriceCommunicationAllowed — NEVER read
+   * directly from `settings` here, so this stays the single place the
+   * policy is decided. Defaults closed (false) when omitted, same as the
+   * resolver's own default. Gates buildPriceCommunicationGuidance below AND
+   * buildSpaAvailabilityGuidance's own price line — see each function's own
+   * doc comment. This is only ONE layer of the defense-in-depth policy
+   * (see answer.ts for the context-redaction and output-lock layers, which
+   * do the actual enforcing) — never rely on this prompt instruction alone.
+   */
+  allowPriceCommunication?: boolean;
 }
 
 /**
@@ -242,6 +254,7 @@ export function buildHotelInstructions({
   resolvedSpaBookingRequest,
   roomDiscoveryIntentDetected,
   mentionsPreciseAccommodation,
+  allowPriceCommunication,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -337,8 +350,14 @@ export function buildHotelInstructions({
   // Orthogonal to groundingMode and to every other guidance block — fires
   // whenever the spa-booking flow is live this turn (see
   // BuildHotelInstructionsParams.spaBookingFlowActive's own doc comment).
-  const spaAvailabilityGuidance = spaBookingFlowActive && spaAvailability ? buildSpaAvailabilityGuidance(spaAvailability, resolvedSpaBookingRequest ?? { bookingDate: null, slotStart: null, partySize: null }) : "";
+  const spaAvailabilityGuidance = spaBookingFlowActive && spaAvailability ? buildSpaAvailabilityGuidance(spaAvailability, resolvedSpaBookingRequest ?? { bookingDate: null, slotStart: null, partySize: null }, Boolean(allowPriceCommunication)) : "";
   const spaBookingGuidance = spaBookingFlowActive && spaAvailability ? buildSpaBookingGuidance(spaAvailability) : "";
+  // Layer D of the price-communication policy (see pricePolicy.ts's own doc
+  // comment) — a small, PURELY ADDITIVE instruction, only present at all
+  // when the setting is OFF. Never the only protection: answer.ts's context
+  // redaction and output-side lock are what actually enforce this
+  // regardless of what the model does with this text.
+  const priceCommunicationGuidance = buildPriceCommunicationGuidance(Boolean(allowPriceCommunication));
 
   return [
     identity,
@@ -358,6 +377,7 @@ export function buildHotelInstructions({
     partnerRequestGuidance,
     spaAvailabilityGuidance,
     spaBookingGuidance,
+    priceCommunicationGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -427,6 +447,42 @@ function buildBookingIntentGuidance(ctaKind: BookingCtaKind): string {
     "INTENTION RÉSERVATION / DISPONIBILITÉ / PRIX :",
     "Le visiteur exprime une intention de réservation, de disponibilité ou de prix. Rappel : tu ne peux vérifier aucune disponibilité réelle, donner aucun prix réel, ni effectuer de réservation — ne prétends jamais le contraire et n'invente jamais de montant, de date disponible, de lien ou de coordonnée.",
     modeSpecific,
+  ].join("\n");
+}
+
+/**
+ * Layer D of the price-communication policy (see
+ * features/rag/pricePolicy.ts's own doc comment for the certified-source
+ * model this instruction reflects). Only ever a COMPLEMENT to the
+ * context-redaction (always-on, see answer.ts) and output-lock layers —
+ * never relied on alone: a model that ignores this instruction is still
+ * caught by containsUnauthorizedMonetaryAmount before its reply ever
+ * reaches the visitor.
+ *
+ * OFF: an unconditional "never a monetary amount" instruction, as before.
+ *
+ * ON: deliberately NOT empty anymore — allow_price_communication=true does
+ * NOT mean "cite any price you find"; it means "the hotel permits
+ * communicating amounts the SERVER has certified" (today: only the spa's
+ * own structured price, stated elsewhere in these instructions when
+ * relevant — see buildSpaAvailabilityGuidance). This tells the model to
+ * never treat a number it merely reads in a reference chunk or the
+ * conversation history as such a certified figure — reducing how often the
+ * output-side lock actually needs to trigger, never a substitute for it.
+ */
+function buildPriceCommunicationGuidance(allowPriceCommunication: boolean): string {
+  if (!allowPriceCommunication) {
+    return [
+      "COMMUNICATION DES TARIFS — désactivée pour cet établissement :",
+      "Ne communique AUCUN montant, tarif ou prix au visiteur, même si un prix apparaît dans les données de référence fournies ci-dessus ou dans l'historique de la conversation.",
+      "Si le visiteur demande un prix, dis-le honnêtement : tu n'es pas autorisé à communiquer les tarifs pour cet établissement, et invite-le à contacter directement l'établissement ou à consulter son site.",
+      "Cette règle porte uniquement sur les MONTANTS D'ARGENT — continue de répondre normalement aux questions non tarifaires (surface, capacité, équipements, description, etc.).",
+    ].join("\n");
+  }
+  return [
+    "COMMUNICATION DES TARIFS — activée, mais uniquement pour des montants EXPLICITEMENT fournis ailleurs dans ces instructions comme des tarifs vérifiés (par exemple le prix du spa, s'il est indiqué comme tel) :",
+    "Ne communique JAMAIS un montant que tu lirais uniquement dans une donnée de référence, un chunk de connaissance ou l'historique de la conversation — le fait que la communication des tarifs soit activée ne rend pas fiable un prix trouvé de cette façon.",
+    "Si le visiteur demande un prix pour lequel aucun tarif vérifié ne t'a été fourni explicitement ailleurs dans ces instructions, dis-le honnêtement plutôt que de citer un montant trouvé par ailleurs.",
   ].join("\n");
 }
 
@@ -567,7 +623,7 @@ function formatSpaBookingDate(value: string): string {
  * by features/spa/booking.ts:getSpaAvailability — this function never
  * assumes or hardcodes a duration itself.
  */
-function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedRequest: SpaBookingRequestState): string {
+function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedRequest: SpaBookingRequestState, allowPriceCommunication: boolean): string {
   if (!availability.enabled) {
     return [
       "RÉSERVATION SPA :",
@@ -576,7 +632,16 @@ function buildSpaAvailabilityGuidance(availability: SpaAvailability, resolvedReq
     ].join("\n");
   }
 
-  const priceLine = availability.pricePerPerson !== null ? `Prix : ${availability.pricePerPerson.toFixed(2)} € par personne.` : "Le prix n'est pas communiqué pour le moment — ne l'invente jamais.";
+  // Layer A of the price-communication policy (pricePolicy.ts) — the ONLY
+  // genuinely structured, pre-existing price source in the product. Gated
+  // BEFORE the line is ever built, not filtered afterward: when the setting
+  // is OFF, the model is never even told a price exists to relay, exactly
+  // like the "not configured" case below (same honest, non-inventing tone).
+  const priceLine = !allowPriceCommunication
+    ? "Le prix n'est pas communiqué pour le moment (fonctionnalité tarifaire désactivée pour cet établissement) — ne mentionne aucun tarif pour le spa, même si tu le connais par ailleurs."
+    : availability.pricePerPerson !== null
+      ? `Prix : ${availability.pricePerPerson.toFixed(2)} € par personne.`
+      : "Le prix n'est pas communiqué pour le moment — ne l'invente jamais.";
   // Deliberately phrased as a CONDITIONAL instruction, never a fact to
   // announce by default: mentioning "les non-résidents peuvent aussi
   // réserver" unprompted implies the visitor's own resident status is in

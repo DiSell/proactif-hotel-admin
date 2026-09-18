@@ -1,0 +1,54 @@
+-- =========================================================================
+-- Proactif System — fixes a real gap surfaced by live testing of 0039.
+--
+-- 0009_widget_service_role_permissions.sql granted service_role only
+-- SELECT on chatbot_settings (the widget's own read path). UPDATE was
+-- never granted to service_role on this table by any migration — 0001's
+-- `grant select, insert, update, delete on public.chatbot_settings to
+-- authenticated;` only covers the `authenticated` role (the back-office
+-- dashboard's own session-bound client), which chatbot_settings' only
+-- write RLS policy ("superadmin full access") in turn restricts to
+-- superadmins.
+--
+-- setAllowPriceCommunication() (features/client/actions.ts) calls
+-- createAdminClient() (service_role) AFTER requireClientAccess() has
+-- already authorized the caller — the exact same discipline already used
+-- by every other client-portal write in this codebase for a superadmin-
+-- owned table (see updateChatbotPersonalization/setPhotoManagementMode and
+-- 0014_chatbot_personalization.sql's own header: "RLS is not the gate for
+-- those writes, the prior server-side authorization check is"). But unlike
+-- those actions' target tables (hotels, widget_settings, room_photos —
+-- all granted table-level UPDATE for service_role in 0014), chatbot_settings
+-- never received an equivalent grant for this new field, so the real write
+-- fails with "permission denied for table chatbot_settings" — confirmed by
+-- exercising the real database during this chantier's own PRICE ON
+-- validation, never caught by actions.test.ts (source-level assertions
+-- only, no live Postgres connection — see that file's own doc comment).
+--
+-- Column-scoped, not a bare `grant update` — same discipline as
+-- 0017_hotel_partner_consent.sql / 0018_hotel_partner_opening_hours.sql /
+-- 0019_hotel_partner_consent_address_grant.sql /
+-- 0022_partner_transactional_consent.sql, all of which grant service_role
+-- UPDATE on exactly the column(s) a given Server Action actually writes on
+-- an otherwise superadmin-owned table, never the whole row. chatbot_settings'
+-- other fields (tone, formality, response_length, commercial_proactivity,
+-- custom_instructions, welcome_message, fallback_message, handoff_email,
+-- handoff_phone) stay exclusively superadmin-writable — still gated by the
+-- existing "superadmin full access" RLS policy for `authenticated`, and now
+-- additionally unreachable for `service_role` at the GRANT level too,
+-- regardless of what any future bug in application code might attempt to
+-- send. This is a database-enforced guarantee, not just an
+-- application-level one — the row-level RLS policy alone could never
+-- provide this, since RLS restricts which ROWS a role can touch, never
+-- which COLUMNS.
+--
+-- No RLS policy change, none needed: service_role bypasses RLS entirely
+-- (see src/lib/supabase/admin.ts's own doc comment) — GRANT is the only
+-- control surface that matters for this client, exactly as already true
+-- for every other service_role write path in this schema.
+--
+-- PROPOSED, NOT YET APPLIED — same discipline as 0039. Apply through your
+-- own Supabase workflow when ready.
+-- =========================================================================
+
+grant update (allow_price_communication) on public.chatbot_settings to service_role;

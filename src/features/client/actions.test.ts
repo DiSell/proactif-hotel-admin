@@ -5,6 +5,10 @@ import { dirname, join } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "actions.ts"), "utf8");
+const grantMigration = readFileSync(
+  join(here, "..", "..", "..", "supabase", "migrations", "0040_chatbot_settings_price_communication_service_role_grant.sql"),
+  "utf8"
+);
 
 /**
  * Regression guards for the client-only chatbot personalization actions —
@@ -105,5 +109,77 @@ describe("blockConversationClient / unblockConversationClient", () => {
 
     const unblockFn = sliceFunction("unblockConversationClient");
     expect(unblockFn).toMatch(/\.rpc\("unblock_conversation", \{ p_hotel_id: hotelId, p_conversation_id: conversationId \}\)/);
+  });
+});
+
+/**
+ * The ONE chatbot_settings field a hotel_admin may write themselves — see
+ * this function's own doc comment for why it's a dedicated, narrow action
+ * rather than a reuse of the superadmin-only saveAssistantSettings.
+ */
+describe("setAllowPriceCommunication", () => {
+  it("[hotelId never accepted as input] the exported function takes only `allow`, never a hotelId parameter", () => {
+    const signatureStart = source.indexOf("export async function setAllowPriceCommunication(");
+    const signatureEnd = source.indexOf(")", signatureStart);
+    const signature = source.slice(signatureStart, signatureEnd);
+    expect(signature).not.toMatch(/hotelId/);
+    expect(signature).toMatch(/allow: boolean/);
+  });
+
+  it("[client-only, resolved from the caller's own session]", () => {
+    const fn = sliceFunction("setAllowPriceCommunication");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    expect(fn).not.toMatch(/requireHotelAccess/);
+    expect(fn).not.toMatch(/requireSuperadmin/);
+  });
+
+  it("[service-role client — chatbot_settings has no hotel_admin WRITE policy, only a read one]", () => {
+    const fn = sliceFunction("setAllowPriceCommunication");
+    expect(fn).toMatch(/const supabase = createAdminClient\(\);/);
+  });
+
+  it("[writes ONLY allow_price_communication, scoped by hotel_id via UPDATE — never an upsert/insert]", () => {
+    const fn = sliceFunction("setAllowPriceCommunication");
+    expect(fn).toMatch(/\.from\("chatbot_settings"\)\s*\n\s*\.update\(\{ allow_price_communication: parsed\.data \}\)\s*\n\s*\.eq\("hotel_id", hotelId\)/);
+    expect(fn).not.toMatch(/\.upsert\(/);
+    expect(fn).not.toMatch(/\.insert\(/);
+    // Never touches any other chatbot_settings column (tone, formality, etc.) — the narrow-scope guarantee.
+    expect(fn).not.toMatch(/tone:|formality:|response_length:|commercial_proactivity:|custom_instructions:/);
+  });
+
+  it("[tenant isolation] hotelId comes from requireClientAccess(), never from any other input — hotel A can only ever affect its own row (requireClientAccess's own cross-hotel guarantees are exhaustively covered in src/lib/auth/session.test.ts, not re-proven here, same convention as every other action in this file)", () => {
+    const fn = sliceFunction("setAllowPriceCommunication");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    expect(fn).toMatch(/\.eq\("hotel_id", hotelId\)/);
+  });
+
+  it("[validated through the dedicated boolean schema, not the broader superadmin one]", () => {
+    const fn = sliceFunction("setAllowPriceCommunication");
+    expect(fn).toMatch(/allowPriceCommunicationSchema\.safeParse\(allow\)/);
+    expect(fn).not.toMatch(/chatbotSettingsSchema/);
+  });
+});
+
+/**
+ * The migration fixing the real "permission denied for table
+ * chatbot_settings" gap found by exercising the real database — see the
+ * migration file's own header for the full incident. service_role needs
+ * this GRANT for setAllowPriceCommunication's UPDATE above to ever succeed
+ * against production; this file only proves the grant is column-scoped and
+ * additive, never a broad table-wide UPDATE for service_role on an
+ * otherwise superadmin-owned table.
+ */
+describe("0040_chatbot_settings_price_communication_service_role_grant.sql", () => {
+  it("[column-scoped, not a bare table-wide grant] grants UPDATE on allow_price_communication only", () => {
+    expect(grantMigration).toMatch(/grant update \(allow_price_communication\) on public\.chatbot_settings to service_role;/);
+    expect(grantMigration).not.toMatch(/grant update on public\.chatbot_settings/);
+  });
+
+  it("[additive only] no other GRANT, no RLS policy change, no table/column DDL", () => {
+    const grantStatements = grantMigration.match(/^grant .*/gm) ?? [];
+    expect(grantStatements).toEqual(["grant update (allow_price_communication) on public.chatbot_settings to service_role;"]);
+    expect(grantMigration).not.toMatch(/create policy|alter policy|drop policy/);
+    expect(grantMigration).not.toMatch(/alter table|create table|drop table/);
+    expect(grantMigration).not.toMatch(/revoke/);
   });
 });

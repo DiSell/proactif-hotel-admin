@@ -10,6 +10,7 @@ export const chatbotSettingsSchema = z.object({
   response_length: z.enum(["short", "normal", "detailed"]),
   commercial_proactivity: z.enum(["disabled", "discreet", "proactive"]),
   custom_instructions: z.string().trim().optional().or(z.literal("")),
+  allow_price_communication: z.boolean(),
 });
 
 export type ChatbotSettingsInput = z.infer<typeof chatbotSettingsSchema>;

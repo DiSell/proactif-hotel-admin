@@ -63,10 +63,14 @@ describe("answerGrounded — accommodation recommendation", () => {
     expect(groundedFn).not.toMatch(/response\.output_text/);
   });
 
-  it("recommendedAccommodationTypeId is validated against rankedCandidates (the exact offered list), not just looked up by hotel_id", () => {
+  it("recommendedAccommodationTypeId (via resolveAuthoritativeAccommodationId) is validated against rankedCandidates (the exact offered list), not just looked up by hotel_id", () => {
     const fn = source.slice(source.indexOf("async function buildRoomRecommendation"), source.indexOf("async function answerGrounded"));
-    // Matched against the already-filtered candidate list first...
-    expect(fn).toMatch(/rankedCandidates\.find\(\(c\) => c\.id === recommendedAccommodationTypeId\)/);
+    // A deterministic mention of the CURRENT message outranks the model's own
+    // recommendedAccommodationTypeId (see resolveAuthoritativeAccommodationId
+    // and answer.roomRecommendationAuthority.test.ts), but the resolved id
+    // still goes through the exact same candidate-list validation either way...
+    expect(fn).toMatch(/const effectiveAccommodationTypeId = resolveAuthoritativeAccommodationId\(mentionedAccommodationId, recommendedAccommodationTypeId\);/);
+    expect(fn).toMatch(/rankedCandidates\.find\(\(c\) => c\.id === effectiveAccommodationTypeId\)/);
     // ...and hotel_id is still cross-checked as a second, independent guard.
     expect(fn).toMatch(/accommodationType\.hotel_id !== hotelId/);
   });

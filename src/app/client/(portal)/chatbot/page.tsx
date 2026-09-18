@@ -2,6 +2,7 @@ import { createClientPortalClient } from "@/lib/supabase/server";
 import { getClientChatbotInfo, getClientWidgetInfo } from "@/features/client/queries";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ChatbotPersonalizationForm } from "@/features/client/ChatbotPersonalizationForm";
+import { PriceCommunicationToggle } from "@/features/client/PriceCommunicationToggle";
 import { DEFAULT_ASSISTANT_NAME } from "@/features/client/schema";
 import { DEFAULT_WELCOME_MESSAGE } from "@/features/widget/publicHotel";
 import { listHotelEvents } from "@/features/events/queries";
@@ -64,6 +65,8 @@ export default async function ClientChatbotPage() {
         initialAssistantName={assistantName}
         initialWelcomeMessage={welcomeMessage}
       />
+
+      <PriceCommunicationToggle allowPriceCommunication={chatbotData.chatbotSettings?.allow_price_communication ?? false} />
 
       <div className="flex flex-col gap-3">
         <div>

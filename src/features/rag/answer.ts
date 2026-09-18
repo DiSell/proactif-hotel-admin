@@ -11,6 +11,7 @@ import { filterAndRankAccommodations, findMentionedAccommodation, isRoomDiscover
 import { bookingCtaKind } from "./bookingCta";
 import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
 import { lastAssistantMessageIndicatesRoomDiscoveryContinuation, withRoomDiscoveryMarker } from "./roomDiscoveryContinuation";
+import { containsUnauthorizedMonetaryAmount, isPriceCommunicationAllowed, redactMonetaryAmounts, PRICE_LOCKED_FALLBACK_REPLY } from "./pricePolicy";
 import {
   ALL_PARTNERS_LIMIT,
   DEFAULT_PARTNER_LIMIT,
@@ -327,6 +328,12 @@ export async function answerQuestion({
     .eq("hotel_id", hotelId)
     .maybeSingle<ChatbotSettings>();
 
+  // Resolved once, reused by every layer of the price-communication policy
+  // below (context redaction, spa's own price line via buildHotelInstructions,
+  // and the output-side lock) — see pricePolicy.ts's own doc comment for why
+  // this is never re-derived independently at each call site.
+  const allowPriceCommunication = isPriceCommunicationAllowed(settings);
+
   const { error: userMessageError } = await supabase
     .from("messages")
     .insert({ hotel_id: hotelId, conversation_id: conversationId, role: "user", content: message });
@@ -439,6 +446,20 @@ export async function answerQuestion({
         console.error("answerQuestion: scoped accommodation retrieval failed", { hotelId, message: (err as Error).message });
       }
     }
+
+    // Layer B of the price-communication policy (see pricePolicy.ts) — a
+    // best-effort mitigation, not the guarantee itself (that's the
+    // output-side lock below, in answerGrounded/answerNoContext).
+    // UNCONDITIONAL — never gated on allowPriceCommunication: free RAG text
+    // (general retrieval AND the accommodation-specific scoped retrieval
+    // alike) is NEVER a certified price source, regardless of the hotel's
+    // own toggle — see pricePolicy.ts:redactMonetaryAmounts' own doc
+    // comment. Redacts ONLY the detected monetary substrings from each
+    // chunk's own content, never drops a whole chunk: "45 m², climatisation,
+    // 288 €" keeps "45 m²" and "climatisation" fully intact, only "288 €" is
+    // neutralized. Applied to the FINAL merged set (general + scoped chunks
+    // alike), after everything above.
+    relevantChunks = relevantChunks.map((chunk) => ({ ...chunk, content: redactMonetaryAmounts(chunk.content) }));
   } catch (err) {
     console.error("answerQuestion: retrieval failed", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -637,6 +658,20 @@ export async function answerQuestion({
     }
   }
 
+  // The SUFFICIENT half of canCommunicatePrice = hotelAllowsPriceCommunication
+  // && priceIsCertified (see pricePolicy.ts's own doc comment) — the exact,
+  // server-computed amounts the output-side lock (in answerGrounded/
+  // answerNoContext below) will accept regardless of what the model itself
+  // produces. Mirrors, field for field, the same three conditions
+  // buildSpaAvailabilityGuidance itself uses to decide whether to show a
+  // real priceLine at all (see prompt.ts) — never a second, independently
+  // derived check that could silently drift from what the model was
+  // actually told. Empty today for anything except the spa's own
+  // structured price: no accommodation price is certified yet (see this
+  // chantier's own report).
+  const authorizedPriceAmounts: number[] =
+    allowPriceCommunication && spaBookingFlowActive && spaAvailability.pricePerPerson !== null ? [spaAvailability.pricePerPerson] : [];
+
   if (groundingMode === "grounded") {
     return answerGrounded(supabase, {
       hotelId,
@@ -655,6 +690,9 @@ export async function answerQuestion({
       bookingIntentDetected,
       roomDiscoveryIntentDetected,
       mentionsPreciseAccommodation,
+      mentionedAccommodationId: mentionedAccommodation?.id ?? null,
+      allowPriceCommunication,
+      authorizedPriceAmounts,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -683,6 +721,8 @@ export async function answerQuestion({
     bookingIntentDetected,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
+    allowPriceCommunication,
+    authorizedPriceAmounts,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -814,21 +854,49 @@ type HistoryInputItem = { role: "user" | "assistant"; content: string };
  * the capacity filter already excluded must never come back through this
  * path). Any mismatch, including a stale/foreign id, resolves to null.
  */
+/**
+ * Authority order for WHICH accommodation this turn's recommendation is
+ * about — a real, confirmed bug fix: a deterministic, name-based match on
+ * the CURRENT message ("la Deluxe fait quelle surface ?" ->
+ * findMentionedAccommodation resolves Deluxe with certainty) was being
+ * silently overridden by the model's own free choice of
+ * recommendedAccommodationTypeId, which once picked "Deluxe PMR" instead —
+ * two unrelated mechanisms that happened to disagree, with the WEAKER one
+ * (an unconstrained model choice) winning by construction (it was simply
+ * the only one ever consulted here).
+ *
+ * mentionedAccommodationId — never the model's own output — now takes
+ * priority whenever it's non-null. It still goes through the EXACT same
+ * validation as the model's own choice would (must be present in
+ * rankedCandidates, i.e. not excluded by the capacity filter, and must
+ * belong to this hotel) — a precise mention of a capacity-incompatible
+ * category (rare, e.g. naming a 6-person room for an already-known party of
+ * 8) yields no recommendation at all rather than silently falling back to
+ * whatever the model separately proposed, which would reopen exactly the
+ * class of bug this fixes.
+ */
+export function resolveAuthoritativeAccommodationId(mentionedAccommodationId: string | null, recommendedAccommodationTypeId: string | null): string | null {
+  return mentionedAccommodationId ?? recommendedAccommodationTypeId;
+}
+
 async function buildRoomRecommendation(
   supabase: SupabaseClient,
   params: {
     hotelId: string;
     recommendedAccommodationTypeId: string | null;
+    /** See resolveAuthoritativeAccommodationId's own doc comment — a deterministic match on the CURRENT message always wins over the model's own free choice. */
+    mentionedAccommodationId: string | null;
     rankedCandidates: RankedCandidate[];
     accommodationTypesById: Map<string, AccommodationType>;
     /** hotels.booking_url, passed straight through from the already-loaded hotel row — see answerGrounded's call site. Never sourced from the model or the visitor's message. */
     bookingUrl: string | null;
   }
 ): Promise<RoomRecommendation | null> {
-  const { hotelId, recommendedAccommodationTypeId, rankedCandidates, accommodationTypesById, bookingUrl } = params;
-  if (!recommendedAccommodationTypeId) return null;
+  const { hotelId, recommendedAccommodationTypeId, mentionedAccommodationId, rankedCandidates, accommodationTypesById, bookingUrl } = params;
+  const effectiveAccommodationTypeId = resolveAuthoritativeAccommodationId(mentionedAccommodationId, recommendedAccommodationTypeId);
+  if (!effectiveAccommodationTypeId) return null;
 
-  const matched = rankedCandidates.find((c) => c.id === recommendedAccommodationTypeId);
+  const matched = rankedCandidates.find((c) => c.id === effectiveAccommodationTypeId);
   if (!matched) return null;
 
   const accommodationType = accommodationTypesById.get(matched.id);
@@ -886,6 +954,18 @@ async function answerGrounded(
     bookingIntentDetected: boolean;
     roomDiscoveryIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
+    /**
+     * A precise accommodation already resolved DETERMINISTICALLY from the
+     * CURRENT message (see accommodationRanking.ts:findMentionedAccommodation)
+     * — the authority for roomRecommendation below whenever non-null, ahead
+     * of whatever recommendedAccommodationTypeId the model itself proposes.
+     * See buildRoomRecommendation's own doc comment for the exact rule and
+     * the bug this fixes (a real, confirmed Deluxe -> Deluxe PMR mix-up).
+     */
+    mentionedAccommodationId: string | null;
+    allowPriceCommunication: boolean;
+    /** The exact, server-computed amounts certified for this turn — see answer.ts's own authorizedPriceAmounts and pricePolicy.ts:containsUnauthorizedMonetaryAmount. */
+    authorizedPriceAmounts: number[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -917,6 +997,9 @@ async function answerGrounded(
     bookingIntentDetected,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
+    mentionedAccommodationId,
+    allowPriceCommunication,
+    authorizedPriceAmounts,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -940,6 +1023,7 @@ async function answerGrounded(
     bookingIntentDetected,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
+    allowPriceCommunication,
     partnerIntentDetected,
     partnerCandidates,
     partnerRequestFlowActive,
@@ -1015,6 +1099,26 @@ async function answerGrounded(
       spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
     }
 
+    // Layer C of the price-communication policy (see pricePolicy.ts) — the
+    // AUTHORITATIVE, deterministic guarantee: applied to the FINAL composed
+    // reply (after partner/spa flow suffixes, still before persistence),
+    // catching a monetary amount from ANY source (model generation, a
+    // partner/event description, hallucination) regardless of whether the
+    // context-redaction layer above already ran. Compares against
+    // authorizedPriceAmounts — the server's own certified list for this
+    // turn — never a blanket "any amount at all", so a legitimately
+    // certified spa price can coexist with this same lock rejecting an
+    // uncertified one in the same reply (see pricePolicy.ts:
+    // containsUnauthorizedMonetaryAmount's own doc comment). Never a
+    // partial in-place redaction — see PRICE_LOCKED_FALLBACK_REPLY's own
+    // doc comment for why a full replacement is deliberate. Placed BEFORE
+    // the booking/room-discovery markers below so those continuation
+    // mechanisms are entirely unaffected: whichever reply ends up here
+    // (original or the fallback) still gets marked normally.
+    if (containsUnauthorizedMonetaryAmount(reply, authorizedPriceAmounts)) {
+      reply = PRICE_LOCKED_FALLBACK_REPLY;
+    }
+
     // See bookingIntentContinuation.ts's own doc comment: marks THIS reply so
     // a later turn with no booking keyword at all (dates, "oui", a bare
     // name) still keeps the Réserver CTA — never gated on which flow branch
@@ -1067,6 +1171,7 @@ async function answerGrounded(
   const roomRecommendation = await buildRoomRecommendation(supabase, {
     hotelId,
     recommendedAccommodationTypeId,
+    mentionedAccommodationId,
     rankedCandidates,
     accommodationTypesById,
     bookingUrl: hotel.booking_url,
@@ -1113,6 +1218,9 @@ async function answerNoContext(
     bookingIntentDetected: boolean;
     roomDiscoveryIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
+    allowPriceCommunication: boolean;
+    /** See answerGrounded's identical field for the full doc comment — answerNoContext never builds a roomRecommendation at all, but still needs this for the output-side lock's authorizedPriceAmounts, threaded alongside. */
+    authorizedPriceAmounts: number[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1141,6 +1249,8 @@ async function answerNoContext(
     bookingIntentDetected,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
+    allowPriceCommunication,
+    authorizedPriceAmounts,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1163,6 +1273,7 @@ async function answerNoContext(
     bookingIntentDetected,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
+    allowPriceCommunication,
     partnerIntentDetected,
     partnerCandidates,
     partnerRequestFlowActive,
@@ -1228,6 +1339,13 @@ async function answerNoContext(
       });
       reply = flowResult.reply;
       spaBookingPhonePrompt = flowResult.spaBookingPhonePrompt;
+    }
+
+    // See pricePolicy.ts and answerGrounded's identical call — independent
+    // of groundingMode, same reasoning: the authoritative guarantee must
+    // apply whether or not any RAG context was even retrieved this turn.
+    if (containsUnauthorizedMonetaryAmount(reply, authorizedPriceAmounts)) {
+      reply = PRICE_LOCKED_FALLBACK_REPLY;
     }
 
     // See bookingIntentContinuation.ts's own doc comment and answerGrounded's

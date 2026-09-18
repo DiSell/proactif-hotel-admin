@@ -1,0 +1,40 @@
+-- =========================================================================
+-- Proactif System — per-hotel toggle: is Camille allowed to communicate
+-- prices to visitors at all.
+--
+-- Additive only — no change to any existing column, function, or policy.
+-- PROPOSED, NOT YET APPLIED. Apply through your own Supabase workflow
+-- (dashboard SQL editor / `supabase db push`) when ready — nothing in this
+-- codebase executes migrations automatically.
+--
+-- Default FALSE, deliberately: for a safe migration of an EXISTING product,
+-- no hotel should start having its chatbot communicate prices just because
+-- this column was added — every hotel starts opted OUT, and turning it ON
+-- is always an explicit, later action (by the hotel itself, from its own
+-- portal — see src/features/client/actions.ts:setAllowPriceCommunication —
+-- or by a superadmin, from src/features/assistant/actions.ts:saveAssistantSettings).
+--
+-- IMPORTANT — this column alone does not certify any price as reliable. It
+-- only gates WHETHER Camille may ever state a monetary amount at all. Which
+-- prices are reliable enough to state when this is true is a separate,
+-- still-open question (see this chantier's own architecture report) — today
+-- the only price source treated as fully reliable is the pre-existing
+-- hotel_spa_settings.price_per_person, unaffected by this column either way.
+--
+-- RLS: no new policy needed. chatbot_settings already has:
+--   - "superadmin full access" (0001_init.sql) — read/write for Proactif.
+--   - "hotel_admin can read own chatbot_settings" (0011_hotel_client_portal.sql)
+--     — read-only for the hotel's own admin session.
+-- Both already cover this new column automatically (RLS policies are
+-- row-level, not column-level) — a hotel admin can already SEE this value
+-- through the existing read policy. WRITING it from the client portal goes
+-- through setAllowPriceCommunication(), which uses the service-role client
+-- AFTER requireClientAccess() has already authorized the caller and scoped
+-- the update to their own hotel_id — the exact same discipline already
+-- used by setPhotoManagementMode()/updateChatbotPersonalization() for
+-- other client-portal-editable fields that also have no hotel_admin WRITE
+-- policy of their own. No RLS change is being made here.
+-- =========================================================================
+
+alter table public.chatbot_settings
+  add column allow_price_communication boolean not null default false;

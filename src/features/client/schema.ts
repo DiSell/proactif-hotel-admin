@@ -24,3 +24,12 @@ export const DEFAULT_ASSISTANT_NAME = "Camille";
 
 export const photoManagementModeSchema = z.enum(["client", "proactif"]);
 export type PhotoManagementMode = z.infer<typeof photoManagementModeSchema>;
+
+/**
+ * The ONE chatbot_settings field a hotel_admin may write themselves — see
+ * features/client/actions.ts:setAllowPriceCommunication. Deliberately not
+ * reusing/extending chatbotSettingsSchema (features/assistant/schema.ts,
+ * superadmin-only): this is a single boolean, never a gateway to the rest
+ * of that broader, superadmin-reserved settings surface.
+ */
+export const allowPriceCommunicationSchema = z.boolean();

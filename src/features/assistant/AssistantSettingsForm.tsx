@@ -27,6 +27,7 @@ export function AssistantSettingsForm({ hotel, settings }: AssistantSettingsForm
     response_length: settings?.response_length ?? "normal",
     commercial_proactivity: settings?.commercial_proactivity ?? "discreet",
     custom_instructions: settings?.custom_instructions ?? "",
+    allow_price_communication: settings?.allow_price_communication ?? false,
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showAdvanced, setShowAdvanced] = useState(Boolean(settings?.custom_instructions));
@@ -121,6 +122,23 @@ export function AssistantSettingsForm({ hotel, settings }: AssistantSettingsForm
             </select>
           </FormField>
         </div>
+
+        <label className="flex items-center gap-2 text-xs text-ink">
+          <input
+            type="checkbox"
+            checked={state.allow_price_communication}
+            onChange={(event) => patch({ allow_price_communication: event.target.checked })}
+          />
+          <span>
+            Autoriser Camille à communiquer les tarifs
+            <span className="ml-1 block text-2xs font-normal text-body/60">
+              {state.allow_price_communication
+                ? "Camille peut communiquer les tarifs provenant de sources tarifaires autorisées par Proactif Hospitality."
+                : "Camille ne communique aucun tarif."}
+              {" "}Ce réglage peut aussi être modifié par l’hôtel lui-même depuis son portail.
+            </span>
+          </span>
+        </label>
       </div>
 
       <div className="flex flex-col gap-4 border-t border-border pt-6">

@@ -3,7 +3,13 @@
 import { revalidatePath } from "next/cache";
 import { requireClientAccess } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { clientChatbotPersonalizationSchema, photoManagementModeSchema, type ClientChatbotPersonalizationInput, type PhotoManagementMode } from "./schema";
+import {
+  allowPriceCommunicationSchema,
+  clientChatbotPersonalizationSchema,
+  photoManagementModeSchema,
+  type ClientChatbotPersonalizationInput,
+  type PhotoManagementMode,
+} from "./schema";
 import type { ActionResult } from "@/lib/actionResult";
 
 function fieldErrorsFrom(issues: { path: PropertyKey[]; message: string }[]) {
@@ -97,6 +103,60 @@ export async function setPhotoManagementMode(mode: PhotoManagementMode): Promise
   }
 
   revalidatePath("/client/photos");
+  return { ok: true, data: null };
+}
+
+/**
+ * The ONE chatbot_settings field a hotel_admin may write themselves — see
+ * features/client/schema.ts:allowPriceCommunicationSchema's own doc comment
+ * on why this is a dedicated, narrow action rather than a reuse of
+ * saveAssistantSettings (features/assistant/actions.ts, requireSuperadmin,
+ * the rest of chatbot_settings). hotelId is never accepted as a parameter —
+ * same discipline as every other action in this file.
+ *
+ * chatbot_settings has NO hotel_admin UPDATE policy (only a read policy,
+ * see 0011_hotel_client_portal.sql) — write access here comes from
+ * createAdminClient() (service-role, bypasses RLS) AFTER
+ * requireClientAccess() has already authorized the caller and the update
+ * is explicitly scoped to their own hotel_id, exactly the same pattern
+ * setPhotoManagementMode above already uses for `hotels`. No RLS policy is
+ * added or changed by this action.
+ *
+ * service_role additionally needs its own GRANT for this write to succeed
+ * against the real database — see
+ * 0040_chatbot_settings_price_communication_service_role_grant.sql,
+ * column-scoped to allow_price_communication only (same discipline as
+ * hotel_partners' own column grants), never a broad `grant update` that
+ * would put chatbot_settings' superadmin-only fields (tone,
+ * custom_instructions, etc.) within reach of a future bug here. That
+ * migration is additive and PROPOSED, mirroring 0039's own status.
+ *
+ * Plain UPDATE, not upsert: chatbot_settings.hotel_id is `not null unique`
+ * and a row is seeded for every hotel at hotel-creation time
+ * (features/hotels/actions.ts::createHotel's own insert) — unlike
+ * widget_settings (only created lazily, the first time a hotel opens the
+ * widget settings page), there is no "hotel with no chatbot_settings row
+ * yet" case to upsert around here. UPDATE also matches the narrower
+ * service_role grant above one-for-one — UPSERT would additionally require
+ * an INSERT grant this action never needs in practice.
+ */
+export async function setAllowPriceCommunication(allow: boolean): Promise<ActionResult<null>> {
+  const { hotelId } = await requireClientAccess();
+
+  const parsed = allowPriceCommunicationSchema.safeParse(allow);
+  if (!parsed.success) return { ok: false, error: "Valeur invalide." };
+
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("chatbot_settings")
+    .update({ allow_price_communication: parsed.data })
+    .eq("hotel_id", hotelId);
+  if (error) {
+    console.error("setAllowPriceCommunication: chatbot_settings update failed", { message: error.message });
+    return { ok: false, error: "Impossible d’enregistrer ce choix." };
+  }
+
+  revalidatePath("/client/chatbot");
   return { ok: true, data: null };
 }
 

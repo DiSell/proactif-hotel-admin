@@ -17,6 +17,7 @@ export interface SaveAssistantSettingsInput {
   response_length: string;
   commercial_proactivity: string;
   custom_instructions: string;
+  allow_price_communication: boolean;
 }
 
 export async function saveAssistantSettings(
@@ -62,6 +63,7 @@ export async function saveAssistantSettings(
       response_length: parsed.data.response_length,
       commercial_proactivity: parsed.data.commercial_proactivity,
       custom_instructions: parsed.data.custom_instructions || null,
+      allow_price_communication: parsed.data.allow_price_communication,
     },
     { onConflict: "hotel_id" }
   );

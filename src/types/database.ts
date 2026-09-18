@@ -96,6 +96,8 @@ export interface ChatbotSettings {
   response_length: ChatbotResponseLength;
   commercial_proactivity: ChatbotCommercialProactivity;
   custom_instructions: string | null;
+  /** 0039_chatbot_price_communication_policy.sql — not null, defaults false. See features/rag/pricePolicy.ts:isPriceCommunicationAllowed for what this actually gates. */
+  allow_price_communication: boolean;
   created_at: string;
   updated_at: string;
 }

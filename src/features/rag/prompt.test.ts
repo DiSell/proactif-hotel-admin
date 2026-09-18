@@ -51,6 +51,7 @@ function makeSettings(overrides: Partial<ChatbotSettings> = {}): ChatbotSettings
     response_length: "normal",
     commercial_proactivity: "discreet",
     custom_instructions: null,
+    allow_price_communication: false,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -1042,5 +1043,85 @@ describe("buildHotelInstructions — spa booking guidance (real-time config must
     expect(instructions).toMatch(/COLLECTE DE LA RÉSERVATION SPA :/);
     expect(instructions).toMatch(/NE rédige JAMAIS toi-même de récapitulatif/);
     expect(instructions).toMatch(/Ne dis JAMAIS que la réservation est confirmée/);
+  });
+
+  describe("price-communication policy — spa's own structured price line (layer A)", () => {
+    it("[OFF, explicit] the real price is never shown to the model — replaced by an honest 'not communicated' line, distinct from the 'not configured' case", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        spaBookingFlowActive: true,
+        spaAvailability: ENABLED_AVAILABILITY,
+        resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+        allowPriceCommunication: false,
+      });
+      expect(instructions).not.toMatch(/Prix : 30\.00 € par personne\./);
+      expect(instructions).toMatch(/fonctionnalité tarifaire désactivée pour cet établissement/);
+    });
+
+    it("[OFF, omitted — the real default] omitting allowPriceCommunication entirely behaves exactly like explicit false — secure by default", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        spaBookingFlowActive: true,
+        spaAvailability: ENABLED_AVAILABILITY,
+        resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+      });
+      expect(instructions).not.toMatch(/Prix : 30\.00 € par personne\./);
+    });
+
+    it("[ON] the real, structured spa price is shown exactly as before this chantier — unchanged behavior", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        spaBookingFlowActive: true,
+        spaAvailability: ENABLED_AVAILABILITY,
+        resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+        allowPriceCommunication: true,
+      });
+      expect(instructions).toMatch(/Prix : 30\.00 € par personne\./);
+    });
+
+    it("[ON, no price configured] still honest — never invents one just because the policy is ON", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        spaBookingFlowActive: true,
+        spaAvailability: { ...ENABLED_AVAILABILITY, pricePerPerson: null },
+        resolvedSpaBookingRequest: NO_DATE_RESOLVED,
+        allowPriceCommunication: true,
+      });
+      expect(instructions).toMatch(/Le prix n'est pas communiqué pour le moment — ne l'invente jamais\./);
+    });
+  });
+});
+
+describe("buildHotelInstructions — price-communication policy, layer D (conditional prompt instruction)", () => {
+  it("[OFF] adds an explicit instruction never to communicate a monetary amount, while explicitly allowing non-price questions (surface/capacity/equipment/description) to continue normally", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded", allowPriceCommunication: false });
+    expect(instructions).toMatch(/COMMUNICATION DES TARIFS — désactivée pour cet établissement/);
+    expect(instructions).toMatch(/Ne communique AUCUN montant, tarif ou prix/);
+    expect(instructions).toMatch(/continue de répondre normalement aux questions non tarifaires/);
+  });
+
+  it("[omitted — the real default] behaves exactly like explicit false", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    expect(instructions).toMatch(/COMMUNICATION DES TARIFS — désactivée pour cet établissement/);
+  });
+
+  it("[ON] adds a DIFFERENT, narrower instruction — never a blanket 'you may cite any price' directive; only server-certified amounts stated elsewhere in these instructions (e.g. the spa's own price line) may ever be communicated", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded", allowPriceCommunication: true });
+    expect(instructions).toMatch(/COMMUNICATION DES TARIFS — activée, mais uniquement pour des montants EXPLICITEMENT fournis ailleurs dans ces instructions comme des tarifs vérifiés/);
+    expect(instructions).toMatch(/Ne communique JAMAIS un montant que tu lirais uniquement dans une donnée de référence/);
+    expect(instructions).not.toMatch(/désactivée pour cet établissement/);
+  });
+
+  it("[independent of groundingMode] fires identically in no_context mode", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "no_context", allowPriceCommunication: false });
+    expect(instructions).toMatch(/COMMUNICATION DES TARIFS — désactivée pour cet établissement/);
   });
 });
