@@ -134,7 +134,9 @@ describe("answer.ts wiring — roomCatalogue", () => {
   it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on !askPartySizeOnly alone to imply it", () => {
     const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);");
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
-    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn\s*\n\s*\? catalogueRankedCandidates\.map/);
+    expect(catalogueBlock).toMatch(
+      /roomDiscoveryIntentDetected &&\s*\n\s*!mentionsPreciseAccommodation &&\s*\n\s*!askPartySizeOnly &&\s*\n\s*isGenuineCatalogueTurn &&\s*\n\s*\(requestedRoomsCount === null \|\| requestedRoomsCount <= 1\)\s*\n\s*\? catalogueRankedCandidates\.map/
+    );
   });
 
   /**
@@ -264,6 +266,51 @@ describe("answer.ts wiring — roomCatalogue", () => {
 
   it("[error path] the generic error fallback always returns an empty roomCatalogue, never omitted/undefined", () => {
     expect(source).toMatch(/roomCatalogue: \[\] \};/);
+  });
+
+  /**
+   * FOURTH PRODUCTION BUG (confirmed by real invocation of
+   * resolveStayRequestFromHistory, not merely reasoned about): "je cherche
+   * une chambre" -> "2 personnes" -> "il me faut une chambre pour 1
+   * personne aussi" produced a full, misleadingly single-room-shaped
+   * 7-entry catalogue — deterministicParty collapsed to {total:1}
+   * (extractPartySize reads only the newest "N personne(s)" mention,
+   * oblivious to "aussi"/additive phrasing), which is trivially compatible
+   * with all 7 categories. Real invocation of resolveStayRequestFromHistory
+   * against this exact conversation returned {adults:3, rooms:2} — the
+   * model correctly understands two rooms even though the deterministic
+   * PartySize layer cannot represent that at all. Fix: requestedRoomsCount
+   * (StayRequestState.rooms, already extracted by the SAME call already
+   * running on these turns — no new LLM call) suppresses the catalogue
+   * outright when rooms > 1, rather than attempting to model per-room
+   * occupancy (explicitly out of scope) or collapsing 2+1 into a
+   * single "3 personnes" search.
+   */
+  describe("[multi-room hardening] requestedRoomsCount suppresses the catalogue without ever modeling per-room occupancy", () => {
+    it("[wiring] requestedRoomsCount is captured from validatedState.rooms, reset to null by default, never a new LLM call", () => {
+      expect(source).toMatch(/let requestedRoomsCount: number \| null = null;/);
+      expect(source).toMatch(/requestedRoomsCount = validatedState\.rooms;/);
+      // Captured from the SAME rawState/validatedState already produced by the single resolveStayRequestFromHistory call above it — never a second call.
+      const singleCallCount = (source.match(/resolveStayRequestFromHistory\(/g) ?? []).length;
+      expect(singleCallCount).toBe(1);
+    });
+
+    it("[pure logic] the gate's new term behaves exactly as specified: null or <=1 passes, >1 blocks", () => {
+      function passesRoomsGate(requestedRoomsCount: number | null): boolean {
+        return requestedRoomsCount === null || requestedRoomsCount <= 1;
+      }
+      expect(passesRoomsGate(null)).toBe(true); // unknown/not asked — the overwhelming majority of turns, unaffected
+      expect(passesRoomsGate(1)).toBe(true);
+      expect(passesRoomsGate(2)).toBe(false); // the exact confirmed case
+      expect(passesRoomsGate(3)).toBe(false);
+    });
+
+    it("[never collapses 2+1 into 1x3] the gate suppresses the catalogue outright on a multi-room signal — it never re-filters candidates against a summed party size instead", () => {
+      const gateBlock = source.slice(source.indexOf("const roomCatalogue: RoomCatalogueEntry[] ="), source.indexOf(": [];", source.indexOf("const roomCatalogue: RoomCatalogueEntry[] =")));
+      // The only PartySize ever consulted for the catalogue is deterministicParty, computed once, well before requestedRoomsCount even exists — never re-derived from adults+childrenCount*rooms or similar.
+      expect(gateBlock).not.toMatch(/requestedRoomsCount\s*\*/);
+      expect(gateBlock).not.toMatch(/rooms\s*\*/);
+    });
   });
 
   it("[never rewrites ROOM_DISCOVERY's own detection/continuation] isRoomDiscoveryIntent, lastAssistantMessageIndicatesRoomDiscoveryContinuation, and withRoomDiscoveryMarker are all untouched call sites — this chantier only adds a new deterministic field alongside them", () => {

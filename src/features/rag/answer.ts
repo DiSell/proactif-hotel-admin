@@ -517,6 +517,17 @@ export async function answerQuestion({
   // LLM-based resolution's broader phrasing coverage.
   const deterministicParty: PartySize = party;
   let availabilityCheckState: AvailabilityCheckState = { kind: "not_requested" };
+  // How many DISTINCT rooms the visitor is asking for this turn, per
+  // resolveStayRequestFromHistory's own already-extracted `rooms` field
+  // (StayRequestState — extractStayRequest.ts) — never a new LLM call, this
+  // field was already being resolved on every one of these turns and
+  // simply went unread until now. null (never requested/determinable, the
+  // overwhelming majority of turns) is treated the same as a single room —
+  // see roomCatalogue's own gate further down for why this matters: a
+  // multi-room request ("une chambre pour 2 et une pour 1 aussi") must
+  // never let the single-scalar `deterministicParty`/PartySize model
+  // silently collapse into "1 chambre pour 3 personnes" territory.
+  let requestedRoomsCount: number | null = null;
 
   if (stayContextRelevant || roomDiscoveryIntentDetected) {
     try {
@@ -529,6 +540,7 @@ export async function answerQuestion({
       // for the exact rule (and the real bug it fixes: an adults-only
       // resolution like "nous sommes 2" used to be silently discarded).
       party = mergeValidatedStayRequestIntoParty(party, validatedState);
+      requestedRoomsCount = validatedState.rooms;
 
       // isAvailabilityRequest, not shouldResolveStayContext, gates the
       // actual provider call — see gates.ts: a business-only capacity
@@ -537,7 +549,7 @@ export async function answerQuestion({
         availabilityCheckState = await checkAvailability({ hotelId, state: validatedState, resolver: availabilityProviderResolver });
       }
     } catch (err) {
-      // Best-effort enrichment — never fails the whole turn. party/availabilityCheckState stay at their safe fallback values.
+      // Best-effort enrichment — never fails the whole turn. party/availabilityCheckState/requestedRoomsCount stay at their safe fallback values.
       console.error("answerQuestion: stay-request resolution failed", { hotelId, message: (err as Error).message });
     }
   }
@@ -613,8 +625,27 @@ export async function answerQuestion({
   const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);
   const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);
   const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;
+  // FOURTH hardening: a confirmed, reproduced case — "il me faut une
+  // chambre pour 1 personne aussi", right after an established "2
+  // personnes" turn, produced deterministicParty={total:1} (extractPartySize
+  // reads ONLY the newest number, oblivious to "aussi"), which is
+  // trivially compatible with all 7 categories (none has a capacity floor
+  // above 1) — a full, misleadingly single-room-shaped catalogue for what
+  // is actually a 2-room request. PartySize has no concept of multiple
+  // rooms at all; building one is explicitly out of scope for this fix.
+  // requestedRoomsCount instead reuses resolveStayRequestFromHistory's own
+  // already-extracted `rooms` field (confirmed by direct invocation: this
+  // exact conversation resolves rooms=2) as a deterministic-enough signal
+  // to suppress the catalogue outright rather than render it — never
+  // reinterpreted as "1 chambre pour N personnes", never merged into
+  // PartySize. null (unknown/not asked — the overwhelming majority of
+  // turns) and 1 both behave exactly as before this hardening.
   const roomCatalogue: RoomCatalogueEntry[] =
-    roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn
+    roomDiscoveryIntentDetected &&
+    !mentionsPreciseAccommodation &&
+    !askPartySizeOnly &&
+    isGenuineCatalogueTurn &&
+    (requestedRoomsCount === null || requestedRoomsCount <= 1)
       ? catalogueRankedCandidates.map((c) => ({
           accommodationTypeId: c.id,
           name: c.name,
