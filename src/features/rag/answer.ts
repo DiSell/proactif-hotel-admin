@@ -478,6 +478,22 @@ export async function answerQuestion({
 
   // Cheap fallback, always available: a single-message regex extraction.
   let party: PartySize = extractPartySize(message);
+  // Captured HERE, before any history-based enrichment below overwrites
+  // `party` — see roomCatalogue's own gate further down for the real,
+  // confirmed bug this fixes: lastAssistantMessageIndicatesRoomDiscoveryContinuation
+  // (roomDiscoveryContinuation.ts) deliberately keeps roomDiscoveryIntentDetected
+  // true for the REST of the conversation once a discovery flow starts —
+  // correct for its own original purpose (mentionsPreciseAccommodation
+  // override, scoped retrieval), but wrong to treat as "still a catalogue
+  // turn" for every later, unrelated message once the party size already
+  // became known once. "2 personnes" answering "combien de personnes ?"
+  // must count as a real discovery turn; a later "bonjour", "merci", or
+  // "avez-vous un parking ?" in the same conversation must not, even though
+  // roomDiscoveryIntentDetected stays true for both via the same marker.
+  // This flag distinguishes them: true only when THIS message alone states
+  // a group size, never when the size is merely already known from earlier
+  // history.
+  const messageAloneStatesPartySize = isPartyKnown(party);
   // Deterministic, LLM-free multi-turn upgrade — tried BEFORE the costlier,
   // measurably unreliable OpenAI-based resolution below (see
   // partySize.ts:extractPartySizeFromHistory's own doc comment: a real,
@@ -548,9 +564,27 @@ export async function answerQuestion({
   // frontend history-rendering artifact. The catalogue must only exist on
   // a genuinely generic discovery turn — never once a precise category has
   // been named, even under a live continuation signal.
+  //
+  // isRoomDiscoveryIntent(message) / messageAloneStatesPartySize below is a
+  // SECOND, broader real bug fixed the same way: roomDiscoveryIntentDetected
+  // stays true for the rest of the conversation once the marker is set
+  // (by design, for its own original purpose — see
+  // roomDiscoveryContinuation.ts's own doc comment), so once a party size
+  // became known once, EVERY later, wholly unrelated message ("bonjour",
+  // "merci", "avez-vous un parking ?") also satisfied
+  // "roomDiscoveryIntentDetected && !mentionsPreciseAccommodation &&
+  // !askPartySizeOnly" and incorrectly re-triggered the full catalogue —
+  // confirmed by direct reproduction (a genuinely fresh "bonjour" is
+  // unaffected; the bug needs a room-discovery flow already established
+  // earlier in the SAME conversation, e.g. after "montre-moi les
+  // chambres" -> "2 personnes"). A catalogue turn requires either a FRESH
+  // discovery phrasing on this exact message (isRoomDiscoveryIntent) or
+  // this exact message itself supplying the group size (the "2 personnes"
+  // reply to "combien de personnes ?") — never a stale flag alone.
   const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
+  const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;
   const roomCatalogue: RoomCatalogueEntry[] =
-    roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly
+    roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn
       ? rankedCandidates.map((c) => ({
           accommodationTypeId: c.id,
           name: c.name,

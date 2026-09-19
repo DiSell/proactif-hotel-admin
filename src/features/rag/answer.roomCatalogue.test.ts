@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { filterAndRankAccommodations, shouldAskPartySizeOnly, type AccommodationCandidate } from "./accommodationRanking";
-import type { PartySize } from "./partySize";
+import { filterAndRankAccommodations, isRoomDiscoveryIntent, shouldAskPartySizeOnly, type AccommodationCandidate } from "./accommodationRanking";
+import { extractPartySize, isPartyKnown, type PartySize } from "./partySize";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "answer.ts"), "utf8");
@@ -134,7 +134,60 @@ describe("answer.ts wiring — roomCatalogue", () => {
   it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on !askPartySizeOnly alone to imply it", () => {
     const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);");
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
-    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly\s*\n\s*\? rankedCandidates\.map/);
+    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn\s*\n\s*\? rankedCandidates\.map/);
+  });
+
+  /**
+   * SECOND PRODUCTION BUG, reproduced and fixed: a genuinely fresh "bonjour"
+   * (brand-new conversation, no history) correctly returns roomCatalogue=[]
+   * — confirmed by direct reproduction. But "bonjour" (or "merci", "avez-vous
+   * un parking ?", any wholly unrelated message) sent AFTER an established
+   * room-discovery flow ("montre-moi les chambres" -> "2 personnes") incorrectly
+   * returned the full 7-entry catalogue — because
+   * lastAssistantMessageIndicatesRoomDiscoveryContinuation
+   * (roomDiscoveryContinuation.ts) deliberately keeps roomDiscoveryIntentDetected
+   * true for the REST of the conversation once the marker is set (correct
+   * for its own original purpose), and once party became known once,
+   * "roomDiscoveryIntentDetected && !mentionsPreciseAccommodation &&
+   * !askPartySizeOnly" alone stayed true for every later message
+   * regardless of what it actually said. Fix: isGenuineCatalogueTurn —
+   * true only when THIS message either freshly matches isRoomDiscoveryIntent
+   * or itself states a group size (messageAloneStatesPartySize, captured
+   * from extractPartySize(message) BEFORE any history-based enrichment) —
+   * never inferred from the stale continuation flag alone.
+   */
+  it("[the second production bug, fixed] isGenuineCatalogueTurn requires either a fresh discovery phrasing or the message itself supplying the party size — never the stale continuation flag alone", () => {
+    const computeStart = source.indexOf("const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;");
+    expect(computeStart).toBeGreaterThan(-1);
+
+    // messageAloneStatesPartySize captured from the single-message extraction, BEFORE the history-based merge overwrites `party`.
+    const captureStart = source.indexOf("const messageAloneStatesPartySize = isPartyKnown(party);");
+    expect(captureStart).toBeGreaterThan(-1);
+    const historyMergeIndex = source.indexOf("party = extractPartySizeFromHistory(historyInput) ?? party;");
+    expect(captureStart).toBeLessThan(historyMergeIndex);
+  });
+
+  it("[pure logic, real functions] reproduces the exact bug scenario: a room-discovery flow already live (party known) does NOT show the catalogue for an unrelated message, but still shows it for a genuine party-size reply or a fresh discovery phrasing", () => {
+    function wouldShowCatalogue(message: string, roomDiscoveryIntentDetected: boolean, mentionsPreciseAccommodation: boolean, party: PartySize): boolean {
+      const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
+      const messageAloneStatesPartySize = isPartyKnown(extractPartySize(message));
+      const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;
+      return roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn;
+    }
+
+    const knownParty: PartySize = { adults: null, children: null, total: 2 };
+
+    // THE BUG: continuation still live, party already known, but "bonjour" itself is unrelated.
+    expect(wouldShowCatalogue("bonjour", true, false, knownParty)).toBe(false);
+    expect(wouldShowCatalogue("merci", true, false, knownParty)).toBe(false);
+    expect(wouldShowCatalogue("avez-vous un parking ?", true, false, knownParty)).toBe(false);
+    expect(wouldShowCatalogue("à quelle heure est le petit déjeuner ?", true, false, knownParty)).toBe(false);
+
+    // Must still work: the direct "2 personnes" reply answering "combien de personnes ?".
+    expect(wouldShowCatalogue("2 personnes", true, false, knownParty)).toBe(true);
+
+    // Must still work: a fresh, explicit discovery phrasing, party already known.
+    expect(wouldShowCatalogue("montre-moi les chambres", true, false, knownParty)).toBe(true);
   });
 
   it("[pure logic, real inputs] a precise category named while roomDiscoveryIntentDetected is only true via a stale continuation signal never produces a non-empty catalogue", () => {
