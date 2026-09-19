@@ -163,6 +163,82 @@ const DISCOVERY_VERB_PATTERNS: RegExp[] = [
   /\bvous\s+avez\b/i,
 ];
 
+/**
+ * Optimal string alignment distance (Levenshtein plus one adjacent-
+ * transposition operation, e.g. "hc" <-> "ch") — small, local, no
+ * dependency. Only ever called on single short words (verb forms, a
+ * handful of letters), so the plain O(n*m) DP table is more than fast
+ * enough; never used on arbitrary-length text.
+ */
+export function editDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Typo tolerance for the discovery verbs above — a real, confirmed gap: "je
+ * charche une chambre" (a plain single-letter typo of "cherche") never
+ * matched /\bcherch(?:e|es|ons|ez|er)\b/i at all, so ROOM_DISCOVERY never
+ * activated even though the model itself understood the request perfectly
+ * well in its own prose. Deliberately narrow:
+ *
+ * - Compared word-by-word against a short list of REAL inflected forms
+ *   (the exact same alternations already spelled out in
+ *   DISCOVERY_VERB_PATTERNS above, never a new invented stem system), at
+ *   edit distance <= 1 (one substitution, insertion, deletion, or adjacent
+ *   transposition) — never a substring/fuzzy scan of the whole message,
+ *   which would risk matching a near-miss word that merely sits next to an
+ *   unrelated one.
+ * - "voir" is deliberately EXCLUDED — it is short and common enough
+ *   (4 letters) that several real, unrelated French words sit at edit
+ *   distance 1 from it ("noir", "soir", "voie"...); fuzzy-matching it would
+ *   trade a rare typo for a real false-positive risk. It keeps its exact,
+ *   deterministic match in DISCOVERY_VERB_PATTERNS above, unchanged.
+ * - "avez-vous"/"proposez-vous"/"vous avez" are also excluded — two-word
+ *   idioms are harder to fuzzy-match safely and are far less prone to a
+ *   single-word typo than a single verb form; out of scope for this fix.
+ *
+ * This is purely ADDITIVE to DISCOVERY_VERB_PATTERNS (see isRoomDiscoveryIntent
+ * below) — every existing exact match keeps matching exactly as before.
+ */
+const FUZZY_DISCOVERY_VERB_FORMS: string[] = [
+  "cherche",
+  "cherches",
+  "cherchons",
+  "cherchez",
+  "chercher",
+  "recherche",
+  "recherches",
+  "recherchons",
+  "recherchez",
+  "rechercher",
+  "montre",
+  "montrer",
+  "montrez",
+  "decouvrir",
+  "découvrir",
+];
+
+function hasApproximateDiscoveryVerb(message: string): boolean {
+  const words = message.toLowerCase().match(/\p{L}+/gu) ?? [];
+  return words.some((word) =>
+    FUZZY_DISCOVERY_VERB_FORMS.some((form) => Math.abs(word.length - form.length) <= 1 && editDistance(word, form) <= 1)
+  );
+}
+
 const QUEL_ROOM_TYPE_PATTERN =
   /\bquel(?:le)?s?\s+(?:types?\s+d[e'’]\s*)?(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
 
@@ -189,7 +265,8 @@ const ELLIPTICAL_CATALOGUE_PATTERN =
 export function isRoomDiscoveryIntent(message: string): boolean {
   if (QUEL_ROOM_TYPE_PATTERN.test(message)) return true;
   if (ELLIPTICAL_CATALOGUE_PATTERN.test(message)) return true;
-  return hasGenericRoomMention(message) && DISCOVERY_VERB_PATTERNS.some((pattern) => pattern.test(message));
+  if (!hasGenericRoomMention(message)) return false;
+  return DISCOVERY_VERB_PATTERNS.some((pattern) => pattern.test(message)) || hasApproximateDiscoveryVerb(message);
 }
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  editDistance,
   filterAndRankAccommodations,
   findMentionedAccommodation,
   isCapacityCompatible,
@@ -189,6 +190,65 @@ describe("isRoomDiscoveryIntent", () => {
     "le spa est ouvert ?",
   ])("[negative] %s", (message) => {
     expect(isRoomDiscoveryIntent(message)).toBe(false);
+  });
+});
+
+/**
+ * Real, confirmed bug: "je charche une chambre" (a plain single-letter typo
+ * of "cherche") never matched the exact DISCOVERY_VERB_PATTERNS at all, so
+ * ROOM_DISCOVERY never activated for the rest of the conversation even
+ * though the model itself understood the request perfectly well in its own
+ * prose — traced end-to-end against a real dev server (see this chantier's
+ * own diagnostic). Fix: word-level edit-distance-1 tolerance against the
+ * exact same inflected forms DISCOVERY_VERB_PATTERNS already lists, for
+ * cherch(er)/recherch(er)/montre(r)/découvrir only — "voir" stays exact
+ * (see editDistance/hasApproximateDiscoveryVerb's own doc comment for why).
+ */
+describe("editDistance", () => {
+  it.each([
+    ["cherche", "cherche", 0],
+    ["charche", "cherche", 1], // substitution
+    ["cherch", "cherche", 1], // deletion (missing trailing letter)
+    ["cherchee", "cherche", 1], // insertion (extra trailing letter)
+    ["cherhce", "cherche", 1], // adjacent transposition ("hc" <-> "ch")
+    ["noir", "montre", 4],
+  ])("editDistance(%s, %s) === %i", (a, b, expected) => {
+    expect(editDistance(a, b)).toBe(expected);
+  });
+});
+
+describe("isRoomDiscoveryIntent — typo tolerance on discovery verbs", () => {
+  it.each([
+    "je charche une chambre", // THE reported production bug — single substitution
+    "je cherhce une chambre", // adjacent transposition
+    "je cherch une chambre", // missing trailing letter
+    "je recherche une chambre", // sanity: exact form still matches
+    "montre-moi les chambres", // exact form, must still match unchanged
+    "je veux decouvrir les suites", // unaccented spelling of découvrir, exact form
+  ])("[positive] %s", (message) => {
+    expect(isRoomDiscoveryIntent(message)).toBe(true);
+  });
+
+  it.each([
+    // "voir" is deliberately excluded from fuzzy matching — these must never
+    // be treated as a typo of "voir", even alongside a genuine room mention.
+    "la chambre est de couleur noir",
+    "quelle voie pour la chambre ?",
+    "on se retrouve ce soir pour la chambre ?",
+    // A word nowhere near any discovery-verb form, even with a real room mention.
+    "la chambre a une jolie fenêtre",
+    // No room mention at all — the AND with hasGenericRoomMention must still gate everything.
+    "je charche mon chemin",
+  ])("[negative — no false positive] %s", (message) => {
+    expect(isRoomDiscoveryIntent(message)).toBe(false);
+  });
+
+  it("[exact patterns unaffected] 'je veux voir la chambre' still matches via the exact, deterministic 'voir' pattern", () => {
+    expect(isRoomDiscoveryIntent("je veux voir la chambre")).toBe(true);
+  });
+
+  it("[precise category still excluded] a named category typo'd nearby must not suddenly become a generic catalogue request", () => {
+    expect(isRoomDiscoveryIntent("la Junior Suite a la clim ?")).toBe(false);
   });
 });
 
