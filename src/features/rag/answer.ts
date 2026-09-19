@@ -523,22 +523,34 @@ export async function answerQuestion({
   rankedCandidates = applyAvailabilityToCandidates(rankedCandidates, availabilityCheckState);
 
   // ROOM DISCOVERY CATALOGUE — deterministic, see RoomCatalogueEntry's own
-  // doc comment for the exact bug this fixes (a confirmed, reproduced case:
-  // for a bare "2" reply continuing a room-discovery flow, retrieveKnowledgeHybrid's
-  // own chunk coverage for that low-signal query happened to be thin/absent
-  // for 2 of 7 compatible categories, and the model's free-text reply
-  // dropped exactly those 2 — even though buildAccommodationGuidance's own
-  // prompt instructions already named all 7). Built directly from
-  // rankedCandidates right here — independent of groundingMode, independent
-  // of whatever RAG chunks happened to be retrieved this turn, independent
-  // of the model's own generation — so it can never silently narrow.
-  // shouldAskPartySizeOnly is the exact same gate buildHotelInstructions
-  // uses to decide whether to show its own prose guidance at all (single
-  // source of truth, accommodationRanking.ts) — the two can never disagree
-  // about whether a catalogue should exist this turn.
+  // doc comment for the original bug this fixes (a confirmed, reproduced
+  // case: for a bare "2" reply continuing a room-discovery flow,
+  // retrieveKnowledgeHybrid's own chunk coverage for that low-signal query
+  // happened to be thin/absent for 2 of 7 compatible categories, and the
+  // model's free-text reply dropped exactly those 2 — even though
+  // buildAccommodationGuidance's own prompt instructions already named all
+  // 7). Built directly from rankedCandidates right here — independent of
+  // groundingMode, independent of whatever RAG chunks happened to be
+  // retrieved this turn, independent of the model's own generation — so it
+  // can never silently narrow.
+  //
+  // mentionsPreciseAccommodation is checked explicitly here, NOT folded
+  // into "just reuse !askPartySizeOnly" — a real, confirmed regression:
+  // shouldAskPartySizeOnly's own false already covers TWO different turn
+  // shapes (party known on a genuinely generic discovery turn, OR a precise
+  // category named this turn while roomDiscoveryIntentDetected is still
+  // true only via the stale continuation marker — see
+  // roomDiscoveryContinuation.ts). Gating the catalogue on !askPartySizeOnly
+  // alone couldn't tell those two apart, so "Je veux voir la Deluxe" right
+  // after a catalogue turn produced roomRecommendation=Deluxe AND a
+  // 7-entry roomCatalogue in the SAME API response — a real backend
+  // over-inclusion (confirmed by direct reproduction), not merely a
+  // frontend history-rendering artifact. The catalogue must only exist on
+  // a genuinely generic discovery turn — never once a precise category has
+  // been named, even under a live continuation signal.
   const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
   const roomCatalogue: RoomCatalogueEntry[] =
-    roomDiscoveryIntentDetected && !askPartySizeOnly
+    roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly
       ? rankedCandidates.map((c) => ({
           accommodationTypeId: c.id,
           name: c.name,

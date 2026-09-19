@@ -109,12 +109,46 @@ describe("answer.ts wiring — roomCatalogue", () => {
     const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);");
     expect(computeStart).toBeGreaterThan(-1);
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
-    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !askPartySizeOnly\s*\n\s*\? rankedCandidates\.map/);
     expect(catalogueBlock).not.toMatch(/groundingMode/);
 
     // Computed BEFORE the grounded/no_context branch decision (applies to both).
     const branchIndex = source.indexOf('if (groundingMode === "grounded")');
     expect(computeStart).toBeLessThan(branchIndex);
+  });
+
+  /**
+   * PRODUCTION BUG, reproduced and fixed: "Je veux voir la Deluxe" right
+   * after a catalogue turn ("montre-moi les chambres" -> "2 personnes")
+   * returned BOTH roomRecommendation=Deluxe AND a 7-entry roomCatalogue in
+   * the SAME API response — confirmed by direct reproduction against the
+   * real dev server, NOT a frontend history-rendering artifact as first
+   * hypothesized. Cause: roomDiscoveryIntentDetected stays true via the
+   * stale continuation marker (roomDiscoveryContinuation.ts) even once a
+   * precise category is named, and shouldAskPartySizeOnly's own false
+   * already covers BOTH "party known, generic turn" AND "precise category
+   * named this turn" — gating the catalogue on !askPartySizeOnly alone
+   * couldn't tell those apart. Fix: the catalogue's own gate explicitly
+   * checks !mentionsPreciseAccommodation too, never inferred from
+   * askPartySizeOnly alone.
+   */
+  it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on !askPartySizeOnly alone to imply it", () => {
+    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);");
+    const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
+    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly\s*\n\s*\? rankedCandidates\.map/);
+  });
+
+  it("[pure logic, real inputs] a precise category named while roomDiscoveryIntentDetected is only true via a stale continuation signal never produces a non-empty catalogue", () => {
+    // Mirrors the exact three-part gate now in answer.ts, using the real shouldAskPartySizeOnly.
+    function wouldShowCatalogue(roomDiscoveryIntentDetected: boolean, mentionsPreciseAccommodation: boolean, party: PartySize): boolean {
+      const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
+      return roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly;
+    }
+
+    // "Je veux voir la Deluxe": continuation marker still live (roomDiscoveryIntentDetected=true), party already known from the previous turn, but THIS message names a precise category.
+    expect(wouldShowCatalogue(true, true, { adults: null, children: null, total: 2 })).toBe(false);
+
+    // The genuine generic case ("2 personnes" answering "combien de personnes ?") must still show it.
+    expect(wouldShowCatalogue(true, false, { adults: null, children: null, total: 2 })).toBe(true);
   });
 
   it("[only 4 fields, never a price] the mapped entry shape is exactly accommodationTypeId/name/pageUrl/maxGuests — structurally incapable of leaking a tariff regardless of allow_price_communication", () => {
