@@ -106,7 +106,7 @@ describe("CAS 3 — party of 6 at Le 1837: only Junior Suite + Junior PMR are ca
  */
 describe("answer.ts wiring — roomCatalogue", () => {
   it("[deterministic, independent of groundingMode] computed once from rankedCandidates via shouldAskPartySizeOnly, right after the capacity+availability filters — never gated on groundingMode/retrieval", () => {
-    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);");
+    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);");
     expect(computeStart).toBeGreaterThan(-1);
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
     expect(catalogueBlock).not.toMatch(/groundingMode/);
@@ -132,9 +132,9 @@ describe("answer.ts wiring — roomCatalogue", () => {
    * askPartySizeOnly alone.
    */
   it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on !askPartySizeOnly alone to imply it", () => {
-    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);");
+    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);");
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
-    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn\s*\n\s*\? rankedCandidates\.map/);
+    expect(catalogueBlock).toMatch(/roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn\s*\n\s*\? catalogueRankedCandidates\.map/);
   });
 
   /**
@@ -205,7 +205,7 @@ describe("answer.ts wiring — roomCatalogue", () => {
   });
 
   it("[only 4 fields, never a price] the mapped entry shape is exactly accommodationTypeId/name/pageUrl/maxGuests — structurally incapable of leaking a tariff regardless of allow_price_communication", () => {
-    const mapStart = source.indexOf("rankedCandidates.map((c) => ({");
+    const mapStart = source.indexOf("catalogueRankedCandidates.map((c) => ({");
     const mapEnd = source.indexOf("}))", mapStart);
     const mapBlock = source.slice(mapStart, mapEnd);
     expect(mapBlock).toMatch(/accommodationTypeId: c\.id,/);
@@ -228,6 +228,38 @@ describe("answer.ts wiring — roomCatalogue", () => {
 
     expect(source).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue \};/);
     expect(source).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue \};/);
+  });
+
+  /**
+   * THIRD PRODUCTION BUG (theoretical hardening — the exact literal
+   * "je charche une chambre" alone was NOT reproducible against a genuinely
+   * fresh conversation on this HEAD; this closes a real, confirmed
+   * code-level gap regardless): mergeValidatedStayRequestIntoParty
+   * (partySize.ts) folds resolveStayRequestFromHistory's OWN output — an
+   * LLM call — into `party`. That call is explicitly instructed
+   * ("Ne devine jamais une valeur non exprimée...") never to guess an
+   * unstated adults/children count, but this field's entire reason to
+   * exist (see RoomCatalogueEntry's own doc comment) is to never depend on
+   * the model's good behavior for something this visible. Fix:
+   * deterministicParty — captured from extractPartySize/
+   * extractPartySizeFromHistory ONLY, before mergeValidatedStayRequestIntoParty
+   * can touch it — is used for the catalogue's own gate AND its own
+   * candidate list (catalogueRankedCandidates), never `party`/`rankedCandidates`
+   * (which keep the LLM-resolved value for everything else: prompt
+   * guidance, the model's own offered candidates, booking).
+   */
+  it("[hardened against LLM-derived party] the gate and the candidate list both use deterministicParty, never the LLM-mergeable `party`", () => {
+    const computeStart = source.indexOf("const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);");
+    expect(computeStart).toBeGreaterThan(-1);
+    // Must be computed AFTER mergeValidatedStayRequestIntoParty could have run, so it can never accidentally read party's PRE-merge value under a different name.
+    const mergeIndex = source.indexOf("party = mergeValidatedStayRequestIntoParty(party, validatedState);");
+    expect(mergeIndex).toBeGreaterThan(-1);
+    expect(computeStart).toBeGreaterThan(mergeIndex);
+
+    // deterministicParty itself must be snapshotted BEFORE that merge call exists at all.
+    const snapshotIndex = source.indexOf("const deterministicParty: PartySize = party;");
+    expect(snapshotIndex).toBeGreaterThan(-1);
+    expect(snapshotIndex).toBeLessThan(mergeIndex);
   });
 
   it("[error path] the generic error fallback always returns an empty roomCatalogue, never omitted/undefined", () => {

@@ -505,6 +505,17 @@ export async function answerQuestion({
   if (!isPartyKnown(party)) {
     party = extractPartySizeFromHistory(historyInput) ?? party;
   }
+  // Snapshot taken HERE, before mergeValidatedStayRequestIntoParty below can
+  // touch `party` — see roomCatalogue's own gate further down for why. Both
+  // extractPartySize (message alone) and extractPartySizeFromHistory above
+  // are pure regex, never a network call — deterministicParty can only ever
+  // be "known" from something the visitor literally typed as a number,
+  // never inferred. Used EXCLUSIVELY for the roomCatalogue field (gate AND
+  // the capacity filter behind its entries); every other use of `party`
+  // below (prompt guidance, the model's own offered rankedCandidates,
+  // booking) is completely unaffected and keeps benefiting from the
+  // LLM-based resolution's broader phrasing coverage.
+  const deterministicParty: PartySize = party;
   let availabilityCheckState: AvailabilityCheckState = { kind: "not_requested" };
 
   if (stayContextRelevant || roomDiscoveryIntentDetected) {
@@ -581,11 +592,30 @@ export async function answerQuestion({
   // discovery phrasing on this exact message (isRoomDiscoveryIntent) or
   // this exact message itself supplying the group size (the "2 personnes"
   // reply to "combien de personnes ?") — never a stale flag alone.
-  const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, party);
+  //
+  // THIRD hardening, same principle applied one layer deeper: the gate
+  // above (and shouldAskPartySizeOnly's own internal isPartyKnown check)
+  // must never trust `party` once it may have been overwritten by
+  // mergeValidatedStayRequestIntoParty — that merge folds in
+  // resolveStayRequestFromHistory's OWN output, an LLM call. That call is
+  // explicitly instructed never to guess an unstated value (see
+  // extractStayRequest.ts's own buildExtractionInstructions), but this
+  // field's whole reason to exist is to never depend on the model's good
+  // behavior for something this visible — see RoomCatalogueEntry's own doc
+  // comment. deterministicParty (captured earlier, purely from
+  // extractPartySize/extractPartySizeFromHistory — regex only, no network
+  // call) is used here instead of `party` for both the gate and the
+  // catalogue's own candidate list, so a party size can only ever unlock
+  // the catalogue when the visitor's own words, matched by plain regex,
+  // actually said so. Every other use of `party`/`rankedCandidates` in this
+  // function (prompt guidance, the model's own offered candidates,
+  // booking) is untouched and keeps the LLM-resolved value.
+  const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);
+  const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);
   const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;
   const roomCatalogue: RoomCatalogueEntry[] =
     roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !askPartySizeOnly && isGenuineCatalogueTurn
-      ? rankedCandidates.map((c) => ({
+      ? catalogueRankedCandidates.map((c) => ({
           accommodationTypeId: c.id,
           name: c.name,
           pageUrl: accommodationTypesById.get(c.id)?.source_url ?? null,
