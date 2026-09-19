@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { filterAndRankAccommodations, isRoomDiscoveryIntent, shouldAskPartySizeOnly, type AccommodationCandidate } from "./accommodationRanking";
 import { extractPartySize, isPartyKnown, type PartySize } from "./partySize";
+import { isBookingIntent } from "./answer";
+import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
+import { lastAssistantMessageIndicatesRoomDiscoveryContinuation } from "./roomDiscoveryContinuation";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "answer.ts"), "utf8");
@@ -105,8 +108,10 @@ describe("CAS 3 — party of 6 at Le 1837: only Junior Suite + Junior PMR are ca
  * every other answer.ts test file in this repo.
  */
 describe("answer.ts wiring — roomCatalogue", () => {
-  it("[deterministic, independent of groundingMode] computed once from rankedCandidates via shouldAskPartySizeOnly, right after the capacity+availability filters — never gated on groundingMode/retrieval", () => {
-    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);");
+  it("[deterministic, independent of groundingMode] computed once from rankedCandidates via catalogueRankedCandidates, right after the capacity+availability filters — never gated on groundingMode/retrieval", () => {
+    const computeStart = source.indexOf(
+      "const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);"
+    );
     expect(computeStart).toBeGreaterThan(-1);
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
     expect(catalogueBlock).not.toMatch(/groundingMode/);
@@ -131,11 +136,32 @@ describe("answer.ts wiring — roomCatalogue", () => {
    * checks !mentionsPreciseAccommodation too, never inferred from
    * askPartySizeOnly alone.
    */
-  it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on !askPartySizeOnly alone to imply it", () => {
-    const computeStart = source.indexOf("const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);");
+  it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on isPartyKnown alone to imply it", () => {
+    const computeStart = source.indexOf(
+      "const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);"
+    );
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
     expect(catalogueBlock).toMatch(
-      /roomDiscoveryIntentDetected &&\s*\n\s*!mentionsPreciseAccommodation &&\s*\n\s*!askPartySizeOnly &&\s*\n\s*isGenuineCatalogueTurn &&\s*\n\s*\(requestedRoomsCount === null \|\| requestedRoomsCount <= 1\)\s*\n\s*\? catalogueRankedCandidates\.map/
+      /isCatalogueEligibleTurn &&\s*\n\s*!mentionsPreciseAccommodation &&\s*\n\s*isPartyKnown\(deterministicParty\) &&\s*\n\s*isGenuineCatalogueTurn &&\s*\n\s*\(requestedRoomsCount === null \|\| requestedRoomsCount <= 1\)\s*\n\s*\? catalogueRankedCandidates\.map/
+    );
+  });
+
+  it("[FIFTH extension, BOOKING-eligible catalogue] isCatalogueEligibleTurn accepts either roomDiscoveryIntentDetected or bookingIntentDetected — a booking conversation with a fully-known party is no longer silently excluded from the catalogue", () => {
+    const computeStart = source.indexOf("const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || bookingIntentDetected;");
+    expect(computeStart).toBeGreaterThan(-1);
+    const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
+    expect(catalogueBlock).toMatch(/isCatalogueEligibleTurn &&/);
+
+    // bookingIntentDetected itself is untouched — same formula/semantics as ever, only its
+    // declaration moved earlier (right after roomDiscoveryIntentDetected) so this gate can read it.
+    const bookingIntentStart = source.indexOf("const bookingIntentDetected =");
+    expect(bookingIntentStart).toBeGreaterThan(-1);
+    expect(bookingIntentStart).toBeLessThan(computeStart);
+    const roomDiscoveryIntentStart = source.indexOf("const roomDiscoveryIntentDetected =");
+    expect(roomDiscoveryIntentStart).toBeGreaterThan(-1);
+    expect(roomDiscoveryIntentStart).toBeLessThan(bookingIntentStart);
+    expect(source.slice(bookingIntentStart, bookingIntentStart + 200)).toMatch(
+      /const bookingIntentDetected =\s*\n\s*!roomDiscoveryIntentDetected && \(isBookingIntent\(message\) \|\| lastAssistantMessageIndicatesBookingIntent\(historyInput\)\);/
     );
   });
 
@@ -317,6 +343,136 @@ describe("answer.ts wiring — roomCatalogue", () => {
     expect(source).toMatch(/const roomDiscoveryContinuationSignal = lastAssistantMessageIndicatesRoomDiscoveryContinuation\(historyInput\);/);
     expect(source).toMatch(/isRoomDiscoveryIntent\(message\)/);
     expect(source).toMatch(/withRoomDiscoveryMarker\(reply\)/);
+  });
+});
+
+/**
+ * AUDIT RÉGRESSION PRODUIT — les cartes de chambres ont disparu du parcours
+ * réservation. Git-history-traced (51e2023) to a functional gap, not a
+ * regression: roomDiscoveryIntentDetected/bookingIntentDetected have been
+ * mutually exclusive since roomDiscoveryIntentDetected was introduced (a
+ * decision for the PROSE/CTA layer only), long before roomCatalogue existed
+ * (a604761). Gating roomCatalogue on roomDiscoveryIntentDetected alone
+ * inherited that exclusion by accident, so a BOOKING conversation with a
+ * fully-known party never showed the catalogue. isCatalogueEligibleTurn
+ * (roomDiscoveryIntentDetected || bookingIntentDetected) fixes this without
+ * touching either flag's own formula, their mutual exclusion, or any other
+ * protection in the gate. These tests reproduce the gate using the real,
+ * exported functions (isBookingIntent from answer.ts, isRoomDiscoveryIntent
+ * from accommodationRanking.ts, the two continuation-marker readers) —
+ * pure logic, no Supabase/OpenAI involved.
+ */
+describe("FIFTH extension — BOOKING-eligible catalogue (the AUDIT RÉGRESSION PRODUIT chantier)", () => {
+  function wouldShowCatalogueGate(
+    roomDiscoveryIntentDetected: boolean,
+    bookingIntentDetected: boolean,
+    mentionsPreciseAccommodation: boolean,
+    deterministicParty: PartySize,
+    isGenuineCatalogueTurn: boolean,
+    requestedRoomsCount: number | null
+  ): boolean {
+    const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || bookingIntentDetected;
+    return (
+      isCatalogueEligibleTurn &&
+      !mentionsPreciseAccommodation &&
+      isPartyKnown(deterministicParty) &&
+      isGenuineCatalogueTurn &&
+      (requestedRoomsCount === null || requestedRoomsCount <= 1)
+    );
+  }
+
+  const partyOf2: PartySize = { adults: null, children: null, total: 2 };
+  const partyOf6: PartySize = { adults: null, children: null, total: 6 };
+  const unknownParty: PartySize = { adults: null, children: null, total: null };
+
+  it("[1. BOOKING sans party] bookingIntentDetected seul, party inconnue -> pas de catalogue", () => {
+    expect(wouldShowCatalogueGate(false, true, false, unknownParty, true, null)).toBe(false);
+  });
+
+  it("[2. LE TEST PRINCIPAL — BOOKING continuation] 'je veux réserver une chambre' puis 'du 22 au 24 septembre pour 2 personnes' -> catalogue affiché", () => {
+    // Turn 2: isBookingIntent("du 22 au 24 septembre pour 2 personnes") is false (no booking
+    // keyword), but the continuation marker set on turn 1's reply keeps bookingIntentDetected
+    // true. messageAloneStatesPartySize is true (the message itself states "2 personnes").
+    const message = "du 22 au 24 septembre pour 2 personnes";
+    expect(isBookingIntent(message)).toBe(false);
+    const historyAfterTurn1 = [{ role: "assistant" as const, content: withBookingIntentMarker("Quelles sont vos dates et pour combien de personnes ?") }];
+    expect(lastAssistantMessageIndicatesBookingIntent(historyAfterTurn1)).toBe(true);
+    const roomDiscoveryIntentDetected = isRoomDiscoveryIntent(message) || lastAssistantMessageIndicatesRoomDiscoveryContinuation(historyAfterTurn1);
+    expect(roomDiscoveryIntentDetected).toBe(false);
+    const bookingIntentDetected = !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyAfterTurn1));
+    expect(bookingIntentDetected).toBe(true);
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(isGenuineCatalogueTurn).toBe(true);
+
+    expect(wouldShowCatalogueGate(roomDiscoveryIntentDetected, bookingIntentDetected, false, partyOf2, isGenuineCatalogueTurn, null)).toBe(true);
+  });
+
+  it("[3. BOOKING single-shot] 'je veux réserver pour 2 personnes' en un seul message -> catalogue affiché", () => {
+    const message = "je veux réserver une chambre pour 2 personnes";
+    expect(isBookingIntent(message)).toBe(true);
+    const bookingIntentDetected = !isRoomDiscoveryIntent(message) && isBookingIntent(message);
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(wouldShowCatalogueGate(false, bookingIntentDetected, false, partyOf2, isGenuineCatalogueTurn, null)).toBe(true);
+  });
+
+  it("[4. BOOKING 6 personnes] même flux avec un groupe de 6 -> catalogue limité par la capacité (résolu en amont par catalogueRankedCandidates, hors du gate lui-même)", () => {
+    const message = "du 22 au 24 septembre pour 6 personnes";
+    const historyAfterTurn1 = [{ role: "assistant" as const, content: withBookingIntentMarker("Pour combien de personnes ?") }];
+    const bookingIntentDetected = !isRoomDiscoveryIntent(message) && lastAssistantMessageIndicatesBookingIntent(historyAfterTurn1);
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(wouldShowCatalogueGate(false, bookingIntentDetected, false, partyOf6, isGenuineCatalogueTurn, null)).toBe(true);
+    // The gate itself doesn't filter by capacity — catalogueRankedCandidates (filterAndRankAccommodations) does that separately, already covered by CAS 3 above.
+  });
+
+  it("[5. BOOKING établie + 'merci'] une fois le flux booking engagé et la party connue, un message sans rapport ne réaffiche pas le catalogue", () => {
+    const message = "merci";
+    const historyAfterTurn2 = [{ role: "assistant" as const, content: withBookingIntentMarker("Votre réservation est en cours de préparation.") }];
+    const roomDiscoveryIntentDetected = isRoomDiscoveryIntent(message) || lastAssistantMessageIndicatesRoomDiscoveryContinuation(historyAfterTurn2);
+    const bookingIntentDetected = !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyAfterTurn2));
+    expect(bookingIntentDetected).toBe(true); // continuation marker still live
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(isGenuineCatalogueTurn).toBe(false); // "merci" alone states no party size and isn't a discovery phrasing
+    expect(wouldShowCatalogueGate(roomDiscoveryIntentDetected, bookingIntentDetected, false, partyOf2, isGenuineCatalogueTurn, null)).toBe(false);
+  });
+
+  it("[6. BOOKING établie + 'bonjour']  même protection pour un autre message hors-sujet", () => {
+    const message = "bonjour";
+    const historyAfterTurn2 = [{ role: "assistant" as const, content: withBookingIntentMarker("Votre réservation est en cours de préparation.") }];
+    const bookingIntentDetected = !isRoomDiscoveryIntent(message) && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyAfterTurn2));
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(wouldShowCatalogueGate(false, bookingIntentDetected, false, partyOf2, isGenuineCatalogueTurn, null)).toBe(false);
+  });
+
+  it("[7. BOOKING multi-chambres] requestedRoomsCount > 1 supprime le catalogue même en contexte booking, sans jamais modéliser l'occupation par chambre", () => {
+    const message = "du 22 au 24 septembre, 2 chambres pour 3 personnes";
+    const bookingIntentDetected = !isRoomDiscoveryIntent(message) && isBookingIntent(message);
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(wouldShowCatalogueGate(false, bookingIntentDetected, false, partyOf2, isGenuineCatalogueTurn, 2)).toBe(false);
+  });
+
+  it("[8. ROOM_DISCOVERY 2 personnes, non-régression] le flux room-discovery historique continue de fonctionner à l'identique", () => {
+    const message = "2 personnes";
+    const historyAfterTurn1 = [{ role: "assistant" as const, content: "Combien de personnes ?" }];
+    const roomDiscoveryIntentDetected = isRoomDiscoveryIntent("je cherche une chambre") || lastAssistantMessageIndicatesRoomDiscoveryContinuation(historyAfterTurn1);
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || isPartyKnown(extractPartySize(message));
+    expect(wouldShowCatalogueGate(roomDiscoveryIntentDetected || isRoomDiscoveryIntent("je cherche une chambre"), false, false, partyOf2, isGenuineCatalogueTurn, null)).toBe(true);
+  });
+
+  it("[9. ROOM_DISCOVERY 6 personnes, non-régression] toujours filtré par capacité via catalogueRankedCandidates, jamais par le gate lui-même", () => {
+    const isGenuineCatalogueTurn = isRoomDiscoveryIntent("je cherche une chambre pour 6 personnes") || isPartyKnown(extractPartySize("je cherche une chambre pour 6 personnes"));
+    expect(wouldShowCatalogueGate(true, false, false, partyOf6, isGenuineCatalogueTurn, null)).toBe(true);
+  });
+
+  it("[10. sélection précise, non-régression] mentionsPreciseAccommodation bloque le catalogue quel que soit le flux (room-discovery ou booking)", () => {
+    expect(wouldShowCatalogueGate(true, false, true, partyOf2, true, null)).toBe(false);
+    expect(wouldShowCatalogueGate(false, true, true, partyOf2, true, null)).toBe(false);
+  });
+
+  it("[wiring] bookingIntentDetected's own formula/semantics are completely unchanged by being moved earlier — still !roomDiscoveryIntentDetected && (isBookingIntent || continuation), never touched", () => {
+    const bookingIntentStart = source.indexOf("const bookingIntentDetected =");
+    expect(source.slice(bookingIntentStart, bookingIntentStart + 200)).toMatch(
+      /const bookingIntentDetected =\s*\n\s*!roomDiscoveryIntentDetected && \(isBookingIntent\(message\) \|\| lastAssistantMessageIndicatesBookingIntent\(historyInput\)\);/
+    );
   });
 });
 

@@ -11,7 +11,6 @@ import {
   filterAndRankAccommodations,
   findMentionedAccommodation,
   isRoomDiscoveryIntent,
-  shouldAskPartySizeOnly,
   type AccommodationCandidate,
   type RankedCandidate,
 } from "./accommodationRanking";
@@ -389,6 +388,46 @@ export async function answerQuestion({
   const roomDiscoveryIntentDetected =
     isRoomDiscoveryIntent(message) || (roomDiscoveryContinuationSignal && !isBookingIntent(message));
 
+  // Computed once, independent of groundingMode — drives the generic
+  // booking CTA (see buildBookingAction) in both branches below. Two
+  // independent signals, deliberately combined with OR: isBookingIntent
+  // (a pure, cheap regex check on THIS message alone) catches a fresh "je
+  // veux réserver" the first time it's said; lastAssistantMessageIndicatesBookingIntent
+  // (bookingIntentContinuation.ts — the exact same invisible-marker
+  // technique as spaBookingFlow.ts's own continuation marker, applied to
+  // this different domain) catches every turn AFTER that, once the visitor
+  // is already mid-conversation supplying the dates/party size the
+  // assistant itself just asked for — text that never contains a booking
+  // keyword at all ("20/09 au 22/09 2 personnes"). This was a real,
+  // reported bug: the CTA silently vanished on exactly that second turn,
+  // right when it was most useful. The marker is only ever set following a
+  // genuine isBookingIntent match (see the reply-finalization block below in
+  // both answerGrounded/answerNoContext), so a purely documentary
+  // conversation ("la Suite Deluxe a la clim ?" -> "et pour 2 personnes ?")
+  // never sets it in the first place and therefore never shows the CTA
+  // either — continuation is never inferred from keywords alone.
+  //
+  // roomDiscoveryIntentDetected takes precedence for THIS turn only — reuses
+  // the same precedence-by-short-circuit principle already used below for
+  // partnerRequestFlowActive/spaBookingCandidateActive, not a new state
+  // machine: a fresh "montre-moi les chambres" right after "je veux
+  // réserver" must suppress the Réserver CTA this turn (see the ROOM_DISCOVERY
+  // report), without ever writing a "clear the marker" operation — the
+  // marker simply isn't re-applied to this turn's reply (see the
+  // withBookingIntentMarker calls in answerGrounded/answerNoContext below),
+  // so it naturally stops propagating, and a later, fresh "je veux réserver"
+  // still reactivates booking normally since isBookingIntent fires
+  // independently of any of this.
+  //
+  // Moved up from its original position (just before the roomCatalogue
+  // gate's own consumers further below) so roomCatalogue can also read it —
+  // see that gate's own doc comment (isCatalogueEligibleTurn) for why.
+  // Formula and semantics are completely unchanged by this move: still
+  // depends only on roomDiscoveryIntentDetected (already computed above)
+  // and message/historyInput (both available from the very start).
+  const bookingIntentDetected =
+    !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput));
+
   // Moved up from just after retrieval (still depends only on hotelId/
   // supabase, nothing computed in between) so mentionedAccommodation below
   // can be resolved BEFORE relevantChunks is finalized — the scoped
@@ -623,7 +662,6 @@ export async function answerQuestion({
   // function (prompt guidance, the model's own offered candidates,
   // booking) is untouched and keeps the LLM-resolved value.
   const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);
-  const askPartySizeOnly = shouldAskPartySizeOnly(roomDiscoveryIntentDetected, mentionsPreciseAccommodation, deterministicParty);
   const isGenuineCatalogueTurn = isRoomDiscoveryIntent(message) || messageAloneStatesPartySize;
   // FOURTH hardening: a confirmed, reproduced case — "il me faut une
   // chambre pour 1 personne aussi", right after an established "2
@@ -640,10 +678,33 @@ export async function answerQuestion({
   // reinterpreted as "1 chambre pour N personnes", never merged into
   // PartySize. null (unknown/not asked — the overwhelming majority of
   // turns) and 1 both behave exactly as before this hardening.
+  //
+  // FIFTH extension — a confirmed, git-history-traced gap, not a
+  // regression: roomDiscoveryIntentDetected and bookingIntentDetected have
+  // been mutually exclusive by design since roomDiscoveryIntentDetected was
+  // introduced (51e2023) — a decision made for the PROSE/CTA layer only
+  // ("roomDiscoveryIntentDetected takes precedence for THIS turn only",
+  // see that commit's own comment), long before roomCatalogue existed
+  // (a604761). Gating the catalogue on roomDiscoveryIntentDetected alone
+  // inherited that exclusion by accident: a BOOKING conversation
+  // ("je veux réserver une chambre" -> "du 22 au 24 septembre pour 2
+  // personnes") could reach a fully-known deterministicParty and still
+  // never show the catalogue, purely because bookingIntentDetected was
+  // never consulted. isCatalogueEligibleTurn fixes this by ALSO accepting
+  // an active booking turn — it changes nothing about
+  // roomDiscoveryIntentDetected/bookingIntentDetected themselves (still
+  // computed exactly as before, still mutually exclusive, still driving
+  // the prose/CTA/retrieval-scoping decisions they always have) or their
+  // own precedence; it only widens which turns are ALLOWED to show the
+  // deterministic catalogue. Every other protection below (precise
+  // accommodation already named, party actually known, genuine-turn check,
+  // multi-room suppression) applies identically regardless of which of the
+  // two intents made the turn eligible.
+  const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || bookingIntentDetected;
   const roomCatalogue: RoomCatalogueEntry[] =
-    roomDiscoveryIntentDetected &&
+    isCatalogueEligibleTurn &&
     !mentionsPreciseAccommodation &&
-    !askPartySizeOnly &&
+    isPartyKnown(deterministicParty) &&
     isGenuineCatalogueTurn &&
     (requestedRoomsCount === null || requestedRoomsCount <= 1)
       ? catalogueRankedCandidates.map((c) => ({
@@ -653,39 +714,6 @@ export async function answerQuestion({
           maxGuests: c.maxGuests,
         }))
       : [];
-
-  // Computed once, independent of groundingMode — drives the generic
-  // booking CTA (see buildBookingAction) in both branches below. Two
-  // independent signals, deliberately combined with OR: isBookingIntent
-  // (a pure, cheap regex check on THIS message alone) catches a fresh "je
-  // veux réserver" the first time it's said; lastAssistantMessageIndicatesBookingIntent
-  // (bookingIntentContinuation.ts — the exact same invisible-marker
-  // technique as spaBookingFlow.ts's own continuation marker, applied to
-  // this different domain) catches every turn AFTER that, once the visitor
-  // is already mid-conversation supplying the dates/party size the
-  // assistant itself just asked for — text that never contains a booking
-  // keyword at all ("20/09 au 22/09 2 personnes"). This was a real,
-  // reported bug: the CTA silently vanished on exactly that second turn,
-  // right when it was most useful. The marker is only ever set following a
-  // genuine isBookingIntent match (see the reply-finalization block below in
-  // both answerGrounded/answerNoContext), so a purely documentary
-  // conversation ("la Suite Deluxe a la clim ?" -> "et pour 2 personnes ?")
-  // never sets it in the first place and therefore never shows the CTA
-  // either — continuation is never inferred from keywords alone.
-  //
-  // roomDiscoveryIntentDetected takes precedence for THIS turn only — reuses
-  // the same precedence-by-short-circuit principle already used below for
-  // partnerRequestFlowActive/spaBookingCandidateActive, not a new state
-  // machine: a fresh "montre-moi les chambres" right after "je veux
-  // réserver" must suppress the Réserver CTA this turn (see the ROOM_DISCOVERY
-  // report), without ever writing a "clear the marker" operation — the
-  // marker simply isn't re-applied to this turn's reply (see the
-  // withBookingIntentMarker calls in answerGrounded/answerNoContext below),
-  // so it naturally stops propagating, and a later, fresh "je veux réserver"
-  // still reactivates booking normally since isBookingIntent fires
-  // independently of any of this.
-  const bookingIntentDetected =
-    !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput));
 
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
