@@ -88,13 +88,39 @@ describe("handleNewConversationClick — the visitor-facing trigger", () => {
 });
 
 describe("header button — discreet, present, wired to the click handler", () => {
+  const headerStart = source.indexOf('background: config.primaryColor, flexShrink: 0 }}>');
+  const headerEnd = source.indexOf("{config.activeBanner", headerStart);
+  const header = source.slice(headerStart, headerEnd);
+
   it("[wired correctly] the header renders a button calling handleNewConversationClick, disabled while loading, with an accessible label", () => {
-    const headerStart = source.indexOf('background: config.primaryColor, flexShrink: 0 }}>');
-    const headerEnd = source.indexOf("{config.activeBanner", headerStart);
-    const header = source.slice(headerStart, headerEnd);
     expect(header).toMatch(/onClick=\{handleNewConversationClick\}/);
     expect(header).toMatch(/disabled=\{loading\}/);
-    expect(header).toMatch(/aria-label="Nouvelle conversation"/);
+    expect(header).toMatch(/aria-label=\{loading \?/);
+  });
+
+  /**
+   * Real, confirmed UX gap this closes: the HTML `disabled` attribute above
+   * already guarantees a click never fires while loading (browsers never
+   * dispatch click events to a disabled button) — that part was never
+   * broken. The actual gap was purely visual: a visitor could not reliably
+   * tell the button was inert during that window, and could believe
+   * "Nouvelle conversation" had taken effect when it silently hadn't
+   * (handleNewConversationClick's own `if (loading) return;` is
+   * defense-in-depth only, never the real gate — see that function's own
+   * doc comment). Fixed by making the disabled state unmistakable: a much
+   * stronger opacity drop and the semantically-correct "not-allowed"
+   * cursor, both conditioned on the exact same `loading` flag the
+   * `disabled` attribute already uses — never a second, independent
+   * loading concept.
+   */
+  it("[disabled state is unmistakable] a strong opacity contrast and the semantically-correct not-allowed cursor, both driven by the same `loading` flag as the disabled attribute itself", () => {
+    expect(header).toMatch(/opacity: loading \? 0\.25 : 0\.85,/);
+    expect(header).toMatch(/cursor: loading \? "not-allowed" : "pointer",/);
+  });
+
+  it("[no ambiguity about why it's inert] title/aria-label change while loading, rather than silently staying identical to the active state", () => {
+    expect(header).toMatch(/title=\{loading \? "Veuillez patienter…" : "Nouvelle conversation"\}/);
+    expect(header).toMatch(/aria-label=\{loading \? "Nouvelle conversation \(indisponible pendant l'envoi d'un message\)" : "Nouvelle conversation"\}/);
   });
 });
 

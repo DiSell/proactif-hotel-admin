@@ -512,8 +512,8 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           type="button"
           onClick={handleNewConversationClick}
           disabled={loading}
-          title="Nouvelle conversation"
-          aria-label="Nouvelle conversation"
+          title={loading ? "Veuillez patienter…" : "Nouvelle conversation"}
+          aria-label={loading ? "Nouvelle conversation (indisponible pendant l'envoi d'un message)" : "Nouvelle conversation"}
           style={{
             display: "flex",
             height: 28,
@@ -526,8 +526,19 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
             border: "none",
             background: "transparent",
             color: config.secondaryColor,
-            opacity: loading ? 0.5 : 0.85,
-            cursor: loading ? "default" : "pointer",
+            // Deliberately a much stronger contrast than a typical disabled
+            // affordance (0.25 vs 0.85, plus "not-allowed" instead of the
+            // barely-different "default" cursor this used to be): the HTML
+            // `disabled` attribute already guarantees the click never fires
+            // while loading (browsers never dispatch click events to a
+            // disabled button — handleNewConversationClick's own `if
+            // (loading) return;` is only defense-in-depth for a
+            // non-mouse/programmatic trigger, never the actual gate). The
+            // real, confirmed gap this closes is purely visual: a visitor
+            // could not reliably tell the button was inert versus simply
+            // idle, and could believe a "reset" happened when nothing did.
+            opacity: loading ? 0.25 : 0.85,
+            cursor: loading ? "not-allowed" : "pointer",
           }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
