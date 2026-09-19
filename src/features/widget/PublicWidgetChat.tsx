@@ -326,6 +326,49 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     clearStorage(conversationIdStorageKey(widgetKey));
   }
 
+  /**
+   * "Nouvelle conversation" — explicit visitor action, distinct from a
+   * reload (which keeps sessionStorage, and therefore the same
+   * conversationId/history, by design — see this file's own doc comment on
+   * sessionStorage scope). Reuses forgetConversation() as-is: the exact
+   * same mechanism that already makes a stale/404'd conversationId
+   * self-heal into a fresh conversation on the next message (see
+   * handleSend's catch block) — never a second, parallel reset system.
+   *
+   * sessionToken is deliberately left untouched: same visitor, new
+   * conversation — never a fresh, unrelated visitor identity. The OLD
+   * conversation is never deleted server-side; this only stops referencing
+   * it client-side (see route.ts: omitting conversationId on the next
+   * request makes the server create a brand new row, it never reuses or
+   * removes the old one).
+   *
+   * Resets every piece of state that renders something DERIVED from the
+   * previous conversation's messages/turns (the room catalogue, a room
+   * recommendation, its photo modal, a pending host-booking action, a
+   * pending phone-collection form, any stale error) — never
+   * `config`/`sessionToken`, which belong to the hotel/visitor, not to one
+   * conversation.
+   */
+  function resetConversation() {
+    forgetConversation();
+    setMessages([{ role: "assistant", content: config.welcomeMessage }]);
+    setInput("");
+    setError(null);
+    setActivePhonePrompt(null);
+    setPhoneInput("");
+    setPhoneError(null);
+    setPhoneSubmitting(false);
+    setOpenRoomRecommendation(null);
+    setHostBookingState(null);
+  }
+
+  function handleNewConversationClick() {
+    if (loading) return; // avoid racing an in-flight request's response, which would otherwise land after the reset and resurrect the old conversationId/messages
+    if (messages.length <= 1 && !conversationId) return; // already a fresh conversation — nothing to confirm or reset
+    if (!window.confirm("Démarrer une nouvelle conversation ? La conversation actuelle restera enregistrée mais ne sera plus affichée ici.")) return;
+    resetConversation();
+  }
+
   async function handleSend() {
     const trimmed = input.trim();
     if (!trimmed || loading || !sessionToken) return;
@@ -465,6 +508,33 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           {config.assistantName.slice(0, 1).toUpperCase() || "A"}
         </div>
         <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: config.secondaryColor }}>{config.assistantName}</p>
+        <button
+          type="button"
+          onClick={handleNewConversationClick}
+          disabled={loading}
+          title="Nouvelle conversation"
+          aria-label="Nouvelle conversation"
+          style={{
+            display: "flex",
+            height: 28,
+            width: 28,
+            flexShrink: 0,
+            alignItems: "center",
+            justifyContent: "center",
+            marginLeft: "auto",
+            borderRadius: 9999,
+            border: "none",
+            background: "transparent",
+            color: config.secondaryColor,
+            opacity: loading ? 0.5 : 0.85,
+            cursor: loading ? "default" : "pointer",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+          </svg>
+        </button>
       </div>
 
       {config.activeBanner && (
