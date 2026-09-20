@@ -62,6 +62,25 @@ export interface BuildHotelInstructionsParams {
    */
   bookingIntentDetected?: boolean;
   /**
+   * BOOKING TUNNEL chantier — narrower than bookingIntentDetected on
+   * purpose: true only while a GENUINE reservation attempt (never a bare
+   * price/availability question, see answer.ts's isReservationIntent) is
+   * still missing dates and/or party. Drives buildBookingCollectionGuidance
+   * below (ask ONLY what's missing) AND suppresses accommodationGuidance's
+   * own candidate listing for that same turn — the model must never
+   * present/describe accommodations while still collecting the visitor's
+   * dates/occupants, exactly the same "ask first, present later" principle
+   * ROOM_DISCOVERY's own askPartySizeOnly/buildRoomDiscoveryGuidance already
+   * apply for party size alone. Never true for ROOM_DISCOVERY (which has no
+   * notion of dates) or for a standalone price/availability question (which
+   * keeps today's behavior — see missingBookingDates/missingBookingParty
+   * below for the exact missing-field wording).
+   */
+  reservationCollectionActive?: boolean;
+  /** Only meaningful alongside reservationCollectionActive — which of dates/party buildBookingCollectionGuidance should actually ask for, never re-asking what's already known. */
+  missingBookingDates?: boolean;
+  missingBookingParty?: boolean;
+  /**
    * Orthogonal to groundingMode, same shape as bookingIntentDetected above
    * — true whenever the message expresses a local-partner intent (see
    * answer.ts's isPartnerIntent from features/rag/partners.ts). Independent
@@ -243,6 +262,9 @@ export function buildHotelInstructions({
   party,
   availabilityCheckState,
   bookingIntentDetected,
+  reservationCollectionActive,
+  missingBookingDates,
+  missingBookingParty,
   partnerIntentDetected,
   partnerCandidates,
   partnerRequestFlowActive,
@@ -323,8 +345,16 @@ export function buildHotelInstructions({
     Boolean(mentionsPreciseAccommodation),
     party ?? { adults: null, children: null, total: null }
   );
+  // BOOKING TUNNEL chantier: a genuine reservation attempt still missing
+  // dates/party must never let accommodationGuidance hand the model a
+  // candidate list to narrate from — same principle as askPartySizeOnly
+  // above, applied to BOOKING's own distinct signal (never touches
+  // askPartySizeOnly/roomDiscoveryIntentDetected themselves). A standalone
+  // price/availability question (reservationCollectionActive stays false
+  // for those — see its own doc comment) is completely unaffected: today's
+  // behavior is preserved exactly.
   const accommodationGuidance =
-    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly
+    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly && !reservationCollectionActive
       ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })
       : "";
   // Orthogonal to groundingMode — a no_context turn (e.g. a hotel with no
@@ -333,6 +363,16 @@ export function buildHotelInstructions({
   // adds nothing: buildAccommodationGuidance (grounded mode only, see above)
   // is the sole source of truth for which categories actually get presented.
   const roomDiscoveryGuidance = askPartySizeOnly ? buildRoomDiscoveryGuidance() : "";
+  // Orthogonal to groundingMode and to roomDiscoveryGuidance — BOOKING and
+  // ROOM_DISCOVERY are distinct intents with their own guidance (never
+  // merged, per this chantier's own explicit constraint). Asks ONLY for
+  // whatever missingBookingDates/missingBookingParty say is still unknown,
+  // driven by the SAME deterministic signals as the roomCatalogue/CTA gate
+  // (answer.ts's bookingReady) — never re-asking something already resolved
+  // from earlier in the conversation.
+  const bookingCollectionGuidance = reservationCollectionActive
+    ? buildBookingCollectionGuidance(Boolean(missingBookingDates), Boolean(missingBookingParty))
+    : "";
   // Orthogonal to groundingMode, deliberately — see BuildHotelInstructionsParams.
   const availabilityGuidance =
     availabilityCheckState && availabilityCheckState.kind !== "not_requested" ? buildAvailabilityGuidance(availabilityCheckState) : "";
@@ -371,6 +411,7 @@ export function buildHotelInstructions({
     eventsGuidance,
     noContextGuidance,
     roomDiscoveryGuidance,
+    bookingCollectionGuidance,
     accommodationGuidance,
     availabilityGuidance,
     bookingIntentGuidance,
@@ -783,6 +824,32 @@ function buildRoomDiscoveryGuidance(): string {
     "Le visiteur souhaite découvrir les hébergements proposés, mais la taille de son groupe n'a pas encore été déterminée.",
     "Demande UNIQUEMENT le nombre de personnes avant de présenter quoi que ce soit — ne liste, ne décris et ne recommande AUCUN hébergement tant que cette information n'est pas connue.",
     "Ne pose pas d'autre question à ce stade (dates, budget, préférences) : uniquement le nombre de personnes.",
+  ].join("\n");
+}
+
+/**
+ * BOOKING TUNNEL chantier — the reservation counterpart to
+ * buildRoomDiscoveryGuidance above, deliberately kept separate (never
+ * merged, never reused verbatim): a genuine reservation needs BOTH dates
+ * AND party before any accommodation is presented, whereas ROOM_DISCOVERY
+ * only ever needs party and explicitly never asks for dates (no real NEO
+ * availability integration exists — see RoomCatalogueEntry's own doc
+ * comment). Only ever built when reservationCollectionActive fired (see its
+ * own doc comment) — a standalone price/availability question never reaches
+ * this function at all. Asks ONLY for whatever is still actually missing,
+ * so a visitor who already gave one of the two is never asked for it again.
+ */
+function buildBookingCollectionGuidance(missingDates: boolean, missingParty: boolean): string {
+  const missing: string[] = [];
+  if (missingDates) missing.push("les dates de séjour (arrivée et départ)");
+  if (missingParty) missing.push("le nombre de personnes (adultes et enfants éventuels)");
+
+  return [
+    "COLLECTE RÉSERVATION :",
+    "Le visiteur souhaite réserver, mais certaines informations nécessaires ne sont pas encore connues.",
+    `Demande UNIQUEMENT ${missing.join(" et ")} — ne liste, ne décris et ne recommande AUCUN hébergement tant que cette information n'est pas connue, et ne redemande JAMAIS une information déjà fournie par le visiteur dans la conversation.`,
+    "Ne pose pas d'autre question à ce stade (préférences, budget, petit-déjeuner…) : uniquement ce qui manque ci-dessus.",
+    "Ne propose pas encore le bouton « Réserver » ni le module de réservation dans ta réponse : il apparaîtra automatiquement une fois ces informations connues.",
   ].join("\n");
 }
 

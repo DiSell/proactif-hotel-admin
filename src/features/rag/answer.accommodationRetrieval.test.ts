@@ -24,8 +24,8 @@ describe("answerQuestion — widened retrieval for stay/accommodation-relevant t
     expect(source).toMatch(/const stayContextRelevant = shouldResolveStayContext\(message\);/);
   });
 
-  it("[reused, not recomputed, for the stay-request block below] the later gate is `if (stayContextRelevant || roomDiscoveryIntentDetected)`, not a second shouldResolveStayContext(message) call", () => {
-    expect(source).toMatch(/if \(stayContextRelevant \|\| roomDiscoveryIntentDetected\) \{/);
+  it("[reused, not recomputed, for the stay-request block below] the later gate is `if (stayContextRelevant || roomDiscoveryIntentDetected || bookingIntentDetected)`, not a second shouldResolveStayContext(message) call — bookingIntentDetected added by the BOOKING TUNNEL chantier so stayCheckIn/stayCheckOut (which have no history-scanning fallback, unlike party) stay re-confirmed for as long as a booking conversation continues, not just its first stay-mentioning turn", () => {
+    expect(source).toMatch(/if \(stayContextRelevant \|\| roomDiscoveryIntentDetected \|\| bookingIntentDetected\) \{/);
   });
 
   it("[computed before retrieval, not after] stayContextRelevant must exist before retrieveKnowledgeHybrid is ever called — a limit decided from it can't apply otherwise", () => {

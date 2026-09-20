@@ -241,7 +241,7 @@ describe("answer.ts wiring — roomDiscoveryIntentDetected/continuation/party-me
 
   it("[deterministic history scan wired in BEFORE the OpenAI-based resolution] extractPartySizeFromHistory is called unconditionally, ahead of the stay-context gate — the fix for the measured resolveStayRequestFromHistory non-determinism", () => {
     const deterministicIndex = source.indexOf("party = extractPartySizeFromHistory(historyInput) ?? party;");
-    const gateIndex = source.indexOf("if (stayContextRelevant || roomDiscoveryIntentDetected) {");
+    const gateIndex = source.indexOf("if (stayContextRelevant || roomDiscoveryIntentDetected || bookingIntentDetected) {");
     const llmCallIndex = source.indexOf("await resolveStayRequestFromHistory(");
     expect(deterministicIndex).toBeGreaterThan(-1);
     expect(deterministicIndex).toBeLessThan(gateIndex);
@@ -268,8 +268,8 @@ describe("answer.ts wiring — roomDiscoveryIntentDetected/continuation/party-me
     }
   });
 
-  it("[retrieval + stay-context resolution still widen for room discovery] unchanged shape, still a single reused gate", () => {
+  it("[retrieval + stay-context resolution still widen for room discovery] unchanged shape for retrieval; the stay-request gate itself was extended by the BOOKING TUNNEL chantier to also include bookingIntentDetected (see answer.accommodationRetrieval.test.ts's own test for why)", () => {
     expect(source).toMatch(/limit: stayContextRelevant \|\| roomDiscoveryIntentDetected \? ACCOMMODATION_RETRIEVAL_LIMIT : RETRIEVAL_LIMIT,/);
-    expect(source).toMatch(/if \(stayContextRelevant \|\| roomDiscoveryIntentDetected\) \{/);
+    expect(source).toMatch(/if \(stayContextRelevant \|\| roomDiscoveryIntentDetected \|\| bookingIntentDetected\) \{/);
   });
 });

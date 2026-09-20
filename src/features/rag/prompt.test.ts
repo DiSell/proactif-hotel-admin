@@ -130,6 +130,122 @@ describe("buildHotelInstructions — booking intent guidance", () => {
   });
 });
 
+/**
+ * BOOKING TUNNEL chantier — reservationCollectionActive drives BOTH the
+ * new collection guidance (ask only what's missing) AND the suppression of
+ * accommodationGuidance's own candidate listing for that same turn, so a
+ * genuine reservation attempt can never have the model narrate categories
+ * in prose while still missing dates/party. A standalone price/availability
+ * question (reservationCollectionActive left false/undefined) must be
+ * completely unaffected — this is the exact behavior the user explicitly
+ * required NOT to regress.
+ */
+describe("buildHotelInstructions — booking collection guidance (BOOKING TUNNEL chantier)", () => {
+  function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
+    return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
+  }
+  const twoCandidates = candidates([
+    { id: "acc-a", name: "Standard", maxGuests: 2, fit: "unknown" },
+    { id: "acc-b", name: "Deluxe", maxGuests: 4, fit: "unknown" },
+  ]);
+
+  it("[missing both] asks for dates AND party, never lists/describes an accommodation", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: null },
+      bookingIntentDetected: true,
+      reservationCollectionActive: true,
+      missingBookingDates: true,
+      missingBookingParty: true,
+    });
+    expect(instructions).toMatch(/COLLECTE RÉSERVATION/);
+    expect(instructions).toMatch(/les dates de séjour \(arrivée et départ\)/);
+    expect(instructions).toMatch(/le nombre de personnes/);
+    expect(instructions).not.toMatch(/HÉBERGEMENTS — candidats/);
+    expect(instructions).not.toContain('id="acc-a"');
+  });
+
+  it("[missing only dates] asks ONLY for dates, never re-asks the party the visitor already gave", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: 2 },
+      bookingIntentDetected: true,
+      reservationCollectionActive: true,
+      missingBookingDates: true,
+      missingBookingParty: false,
+    });
+    expect(instructions).toMatch(/Demande UNIQUEMENT les dates de séjour/);
+    expect(instructions).not.toMatch(/le nombre de personnes \(adultes et enfants/);
+    expect(instructions).not.toMatch(/HÉBERGEMENTS — candidats/);
+  });
+
+  it("[missing only party] asks ONLY for the party, never re-asks the dates the visitor already gave", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: null },
+      bookingIntentDetected: true,
+      reservationCollectionActive: true,
+      missingBookingDates: false,
+      missingBookingParty: true,
+    });
+    expect(instructions).toMatch(/Demande UNIQUEMENT le nombre de personnes/);
+    expect(instructions).not.toMatch(/les dates de séjour \(arrivée et départ\)/);
+    expect(instructions).not.toMatch(/HÉBERGEMENTS — candidats/);
+  });
+
+  it("[ready] once reservationCollectionActive is false, accommodationGuidance fires normally again — no leftover suppression", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: 2 },
+      bookingIntentDetected: true,
+      reservationCollectionActive: false,
+    });
+    expect(instructions).not.toMatch(/COLLECTE RÉSERVATION/);
+    expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
+    expect(instructions).toContain('id="acc-a"');
+  });
+
+  it("[non-régression prix/disponibilité seule] reservationCollectionActive absent/false never suppresses accommodationGuidance — a standalone price/availability question keeps today's behavior exactly", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: null },
+      bookingIntentDetected: true,
+      // reservationCollectionActive intentionally omitted — exactly what answer.ts sends for a bare price/availability question.
+    });
+    expect(instructions).not.toMatch(/COLLECTE RÉSERVATION/);
+    expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
+  });
+
+  it("[ROOM_DISCOVERY non-régression] roomDiscoveryGuidance/askPartySizeOnly are completely untouched by reservationCollectionActive — never both guidances at once, never a merged wording", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: twoCandidates,
+      party: { adults: null, children: null, total: null },
+      roomDiscoveryIntentDetected: true,
+      reservationCollectionActive: false,
+    });
+    expect(instructions).toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+    expect(instructions).not.toMatch(/COLLECTE RÉSERVATION/);
+  });
+});
+
 describe("buildHotelInstructions — absolute rules: hostility, insults, and malicious/jailbreak attempts", () => {
   it("[never respond in kind to hostility] the model is told to stay calm/professional and never insult, threaten, humiliate or mock back", () => {
     const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });

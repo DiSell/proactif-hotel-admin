@@ -138,6 +138,31 @@ export function isBookingIntent(message: string): boolean {
 }
 
 /**
+ * A strict SUBSET of isAvailabilityRequest's own patterns — deliberately
+ * narrower, on purpose: catches ONLY an explicit reservation attempt
+ * ("réserver", "book a room"), never a standalone availability ("avez-vous
+ * des chambres disponibles ?", "vous avez de la place ?") or price ("quel
+ * est le tarif ?") question, both of which isBookingIntent/isAvailabilityRequest
+ * deliberately still cover for the CTA's own long-standing behavior (see
+ * isBookingIntent's own doc comment above — unchanged by this).
+ *
+ * Exists for exactly one purpose: gating bookingReady/reservationCollectionActive
+ * below (the "collect dates+party before the CTA/catalogue" tunnel) WITHOUT
+ * touching that existing, deliberately broad behavior. A real product
+ * decision, not an oversight: the BOOKING TUNNEL chantier's own audit found
+ * that naively gating the CTA on bookingReady for every isBookingIntent match
+ * would silently delay the CTA for a bare price/availability question too —
+ * explicitly rejected. A genuine reservation attempt goes through the
+ * collect-then-propose tunnel; an isolated price/availability question keeps
+ * today's immediate-CTA behavior, unchanged.
+ */
+const RESERVATION_INTENT_PATTERNS: RegExp[] = [/r[ée]serv/i, /\bbook(?:ing)?\b/i];
+
+export function isReservationIntent(message: string): boolean {
+  return RESERVATION_INTENT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
  * The only place a ChatAction is ever constructed. Delegates the "which
  * kind" decision entirely to bookingCtaKind (features/rag/bookingCta.ts) —
  * the exact same decision prompt.ts's buildBookingIntentGuidance makes, so
@@ -428,6 +453,21 @@ export async function answerQuestion({
   const bookingIntentDetected =
     !roomDiscoveryIntentDetected && (isBookingIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput));
 
+  // Mirrors bookingIntentDetected exactly (same continuation marker, same
+  // roomDiscoveryIntentDetected precedence) but narrower on the CURRENT
+  // message side — isReservationIntent instead of isBookingIntent. This is
+  // deliberate: the SAME shared marker means a reservation conversation's
+  // own continuation is still recognized turn after turn (a bare "20/09 au
+  // 22/09 2 personnes" carries no reservation keyword of its own, same
+  // reasoning as bookingIntentDetected's own doc comment above), while a
+  // turn whose ONLY signal is a fresh price/availability keyword (no prior
+  // marker) is correctly excluded — see isReservationIntent's own doc
+  // comment for why this distinction exists. Used exclusively to gate
+  // bookingReady/reservationCollectionActive below, never bookingIntentDetected's
+  // own existing consumers (marker-writing, buildBookingIntentGuidance).
+  const reservationIntentDetected =
+    !roomDiscoveryIntentDetected && (isReservationIntent(message) || lastAssistantMessageIndicatesBookingIntent(historyInput));
+
   // Moved up from just after retrieval (still depends only on hotelId/
   // supabase, nothing computed in between) so mentionedAccommodation below
   // can be resolved BEFORE relevantChunks is finalized — the scoped
@@ -567,8 +607,36 @@ export async function answerQuestion({
   // never let the single-scalar `deterministicParty`/PartySize model
   // silently collapse into "1 chambre pour 3 personnes" territory.
   let requestedRoomsCount: number | null = null;
+  // Exposed here for the same reason requestedRoomsCount is: validatedState
+  // (below) was already being resolved on every one of these turns, but
+  // checkIn/checkOut never escaped the try block they're computed in — see
+  // the BOOKING TUNNEL chantier's own audit. No new LLM call, no new
+  // extraction: the exact same resolveStayRequestFromHistory call already
+  // running for requestedRoomsCount/party. null (not yet stated/resolved)
+  // is the safe default a caught error or a turn that never entered this
+  // block both fall back to.
+  let stayCheckIn: string | null = null;
+  let stayCheckOut: string | null = null;
 
-  if (stayContextRelevant || roomDiscoveryIntentDetected) {
+  // bookingIntentDetected added to this gate by the BOOKING TUNNEL chantier
+  // — a real bug found via live end-to-end reproduction, not a hypothetical:
+  // unlike `party` (which has its own history-scanning fallback,
+  // extractPartySizeFromHistory, so it stays "known" across turns that don't
+  // restate it) and requestedRoomsCount, stayCheckIn/stayCheckOut have no
+  // such persistence — they're ONLY ever set inside this block, reset to
+  // null by default every single turn. Once a booking conversation was
+  // already fully ready (dates+party known) and the visitor asked something
+  // that doesn't itself mention dates/party ("je veux voir la Deluxe",
+  // "merci"), stayContextRelevant went false for THAT message alone,
+  // skipping this whole block and silently resetting stayCheckIn/stayCheckOut
+  // to null — bookingReady flipped back to false and the CTA vanished mid
+  // conversation, even though nothing was actually un-collected. Adding
+  // bookingIntentDetected (already true via the SAME continuation marker
+  // that keeps the CTA/marker alive — see its own doc comment) keeps this
+  // block re-confirming the already-known dates from the FULL history for
+  // as long as the booking conversation continues, exactly mirroring how
+  // roomDiscoveryIntentDetected already does the same for ROOM_DISCOVERY.
+  if (stayContextRelevant || roomDiscoveryIntentDetected || bookingIntentDetected) {
     try {
       const rawState = await resolveStayRequestFromHistory([...historyInput, { role: "user", content: message }], {
         referenceDate: new Date().toISOString().slice(0, 10),
@@ -580,6 +648,8 @@ export async function answerQuestion({
       // resolution like "nous sommes 2" used to be silently discarded).
       party = mergeValidatedStayRequestIntoParty(party, validatedState);
       requestedRoomsCount = validatedState.rooms;
+      stayCheckIn = validatedState.checkIn;
+      stayCheckOut = validatedState.checkOut;
 
       // isAvailabilityRequest, not shouldResolveStayContext, gates the
       // actual provider call — see gates.ts: a business-only capacity
@@ -700,7 +770,42 @@ export async function answerQuestion({
   // accommodation already named, party actually known, genuine-turn check,
   // multi-room suppression) applies identically regardless of which of the
   // two intents made the turn eligible.
-  const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || bookingIntentDetected;
+  //
+  // bookingReady — BOOKING TUNNEL chantier: the visitor's OWN dates
+  // (stayCheckIn/stayCheckOut, deterministic — same already-running
+  // resolveStayRequestFromHistory call as requestedRoomsCount, no new LLM
+  // call), the deterministic party, and the existing multi-room protection,
+  // combined once. Never gates ROOM_DISCOVERY (which has no notion of dates
+  // at all and must keep showing the catalogue on party alone — explicitly
+  // validated product decision, not an oversight).
+  const bookingReady =
+    stayCheckIn !== null && stayCheckOut !== null && isPartyKnown(deterministicParty) && (requestedRoomsCount === null || requestedRoomsCount <= 1);
+  // reservationCollectionActive — true while a GENUINE reservation attempt
+  // (reservationIntentDetected, never a bare price/availability question —
+  // see its own doc comment) is under way but bookingReady isn't met yet.
+  // Drives BOTH the CTA suppression (buildBookingAction's call sites below)
+  // and the prompt's own collection guidance (buildBookingCollectionGuidance,
+  // prompt.ts) — one signal, two consumers, so the reply's prose and the
+  // CTA's presence can never disagree about whether the tunnel is "ready".
+  const reservationCollectionActive = reservationIntentDetected && !bookingReady;
+  // Fed to buildBookingCollectionGuidance (prompt.ts) so it asks for EXACTLY
+  // what's missing — never re-asking dates/party the visitor already gave,
+  // same deterministic signals as bookingReady itself (never the LLM-lenient
+  // `party`), so the prose and the hard gate can never disagree about what's
+  // "known".
+  const missingBookingDates = stayCheckIn === null || stayCheckOut === null;
+  const missingBookingParty = !isPartyKnown(deterministicParty);
+  // SIXTH extension: for the BOOKING side of isCatalogueEligibleTurn
+  // specifically (never ROOM_DISCOVERY's own side), also require bookingReady
+  // — a real, explicit product decision (BOOKING TUNNEL chantier), not a
+  // tightening of ROOM_DISCOVERY: showing 7 capacity-only cards the moment
+  // party is known, before dates are even asked, reads as "here are your
+  // available rooms" in a reservation conversation, which we can never
+  // honestly claim (no real NEO availability integration — see
+  // RoomCatalogueEntry's own doc comment). ROOM_DISCOVERY has no notion of
+  // dates at all and is untouched: it still shows the catalogue on party
+  // alone, exactly as before.
+  const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || (bookingIntentDetected && bookingReady);
   const roomCatalogue: RoomCatalogueEntry[] =
     isCatalogueEligibleTurn &&
     !mentionsPreciseAccommodation &&
@@ -856,6 +961,9 @@ export async function answerQuestion({
       accommodationTypesById,
       availabilityCheckState,
       bookingIntentDetected,
+      reservationCollectionActive,
+      missingBookingDates,
+      missingBookingParty,
       roomDiscoveryIntentDetected,
       mentionsPreciseAccommodation,
       mentionedAccommodationId: mentionedAccommodation?.id ?? null,
@@ -888,6 +996,9 @@ export async function answerQuestion({
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    reservationCollectionActive,
+    missingBookingDates,
+    missingBookingParty,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
@@ -1122,6 +1233,10 @@ async function answerGrounded(
     accommodationTypesById: Map<string, AccommodationType>;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    /** See answer.ts's own reservationCollectionActive computation — narrower than bookingIntentDetected, never true for a bare price/availability question. */
+    reservationCollectionActive: boolean;
+    missingBookingDates: boolean;
+    missingBookingParty: boolean;
     roomDiscoveryIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     /**
@@ -1167,6 +1282,9 @@ async function answerGrounded(
     accommodationTypesById,
     availabilityCheckState,
     bookingIntentDetected,
+    reservationCollectionActive,
+    missingBookingDates,
+    missingBookingParty,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
     mentionedAccommodationId,
@@ -1194,6 +1312,9 @@ async function answerGrounded(
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    reservationCollectionActive,
+    missingBookingDates,
+    missingBookingParty,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
@@ -1359,7 +1480,12 @@ async function answerGrounded(
   // offered — otherwise a visitor shown a room recommendation would have
   // no way to act on it at all.
   const hasDuplicateBookingLink = Boolean(roomRecommendation) && bookingCtaKind(hotel) === "url";
-  const action = hasDuplicateBookingLink ? null : buildBookingAction(bookingIntentDetected, hotel);
+  // BOOKING TUNNEL chantier: suppress the CTA only while a GENUINE
+  // reservation attempt is still collecting dates/party — never for a bare
+  // price/availability question, which keeps showing the CTA immediately
+  // exactly as before (reservationCollectionActive is false for those, see
+  // its own doc comment above).
+  const action = hasDuplicateBookingLink ? null : buildBookingAction(bookingIntentDetected && !reservationCollectionActive, hotel);
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
@@ -1389,6 +1515,10 @@ async function answerNoContext(
     party: PartySize;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
+    /** See answer.ts's own reservationCollectionActive computation — narrower than bookingIntentDetected, never true for a bare price/availability question. */
+    reservationCollectionActive: boolean;
+    missingBookingDates: boolean;
+    missingBookingParty: boolean;
     roomDiscoveryIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     allowPriceCommunication: boolean;
@@ -1422,6 +1552,9 @@ async function answerNoContext(
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    reservationCollectionActive,
+    missingBookingDates,
+    missingBookingParty,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
@@ -1447,6 +1580,9 @@ async function answerNoContext(
     party,
     availabilityCheckState,
     bookingIntentDetected,
+    reservationCollectionActive,
+    missingBookingDates,
+    missingBookingParty,
     roomDiscoveryIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
@@ -1553,7 +1689,8 @@ async function answerNoContext(
   });
 
   // no_context never produces a RoomRecommendation (see answer.groundingMode.test.ts) — nothing to deduplicate against, unlike answerGrounded.
-  const action = buildBookingAction(bookingIntentDetected, hotel);
+  // BOOKING TUNNEL chantier: see answerGrounded's own identical comment above — reservationCollectionActive never suppresses the CTA for a bare price/availability question.
+  const action = buildBookingAction(bookingIntentDetected && !reservationCollectionActive, hotel);
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
