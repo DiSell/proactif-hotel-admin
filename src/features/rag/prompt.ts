@@ -155,24 +155,31 @@ export interface BuildHotelInstructionsParams {
   /** The conversation's own currently-resolved date/slot/party size (features/rag/spaBookingFlow.ts:resolveSpaBookingRequestFromHistory + validateSpaBookingRequestState) — never the model's own structured output, see that module's own doc comment on why. */
   resolvedSpaBookingRequest?: SpaBookingRequestState;
   /**
-   * Orthogonal to groundingMode, same shape as bookingIntentDetected/
-   * partnerIntentDetected above — true whenever the message expresses a
-   * room-discovery intent (see answer.ts's isRoomDiscoveryIntent from
-   * accommodationRanking.ts). When true and `party` is not yet known, this
-   * takes precedence over accommodationGuidance for THIS turn (see
-   * buildHotelInstructions below): asking for the group size first, never
-   * presenting a list before it's known. Once `party` is known, this adds
-   * nothing — buildAccommodationGuidance (fed by the same existing
-   * rankedCandidates/party pipeline) takes over entirely, never duplicated
-   * here.
+   * 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS"): renamed
+   * from roomDiscoveryIntentDetected — that flag conflated INFORMATION,
+   * CATALOGUE and RECOMMENDATION into a single signal, which is exactly why
+   * a plain "Quels types de chambres proposez-vous ?" used to get the same
+   * "combien de personnes ?" question as a genuine "Quel logement me
+   * conseillez-vous ?". This is now fed exclusively by
+   * accommodationRanking.ts's isAccommodationRecommendationIntent (a
+   * genuine "what do you advise for us" request, or its own continuation
+   * marker) — INFORMATION and CATALOGUE turns never set this, so they never
+   * ask for capacity and always fall straight through to
+   * accommodationGuidance below (or plain prose, in no_context mode).
+   * When true and `party` is not yet known, this takes precedence over
+   * accommodationGuidance for THIS turn (see buildHotelInstructions below):
+   * asking for the group size first, never presenting a list before it's
+   * known. Once `party` is known, this adds nothing — buildAccommodationGuidance
+   * (fed by the same existing rankedCandidates/party pipeline) takes over
+   * entirely, never duplicated here.
    */
-  roomDiscoveryIntentDetected?: boolean;
+  recommendationIntentDetected?: boolean;
   /**
    * True when the CURRENT message already names one of the hotel's real
    * accommodation_types by name (see answer.ts's own
    * mentionsKnownAccommodationName call, fed by the actual DB rows for this
    * hotel) — overrides askPartySizeOnly below even while
-   * roomDiscoveryIntentDetected is true via a stale continuation signal: a
+   * recommendationIntentDetected is true via a stale continuation signal: a
    * visitor who already named a precise category must never be asked
    * "combien de personnes ?" before getting an answer about it.
    */
@@ -274,7 +281,7 @@ export function buildHotelInstructions({
   spaBookingFlowActive,
   spaAvailability,
   resolvedSpaBookingRequest,
-  roomDiscoveryIntentDetected,
+  recommendationIntentDetected,
   mentionsPreciseAccommodation,
   allowPriceCommunication,
 }: BuildHotelInstructionsParams): string {
@@ -344,7 +351,7 @@ export function buildHotelInstructions({
     : "";
 
   const noContextGuidance = groundingMode === "no_context" ? buildNoContextGuidance(settings) : "";
-  // A fresh room-discovery intent this turn with a still-unknown party takes
+  // A fresh RECOMMENDATION intent this turn with a still-unknown party takes
   // priority over accommodationGuidance below, for THIS turn only: showing
   // both at once would tell the model to both "ask for the group size first"
   // and "here's a list, party size unclear" in the same breath. Never
@@ -353,12 +360,12 @@ export function buildHotelInstructions({
   // decides, at the call site, whether to invoke it this turn.
   //
   // mentionsPreciseAccommodation overrides this even while
-  // roomDiscoveryIntentDetected is only true via a stale continuation signal
-  // (see roomDiscoveryContinuation.ts): a visitor who already named one of
-  // the hotel's real categories by name must get an answer about it, never
-  // "combien de personnes ?" first.
+  // recommendationIntentDetected is only true via a stale continuation
+  // signal (see recommendationContinuation.ts): a visitor who already named
+  // one of the hotel's real categories by name must get an answer about it,
+  // never "combien de personnes ?" first.
   const askPartySizeOnly = shouldAskPartySizeOnly(
-    Boolean(roomDiscoveryIntentDetected),
+    Boolean(recommendationIntentDetected),
     Boolean(mentionsPreciseAccommodation),
     party ?? { adults: null, children: null, total: null }
   );
@@ -366,12 +373,23 @@ export function buildHotelInstructions({
   // dates/party must never let accommodationGuidance hand the model a
   // candidate list to narrate from — same principle as askPartySizeOnly
   // above, applied to BOOKING's own distinct signal (never touches
-  // askPartySizeOnly/roomDiscoveryIntentDetected themselves). A standalone
+  // askPartySizeOnly/recommendationIntentDetected themselves). A standalone
   // price/availability question (reservationCollectionActive stays false
   // for those — see its own doc comment) is completely unaffected: today's
   // behavior is preserved exactly.
+  //
+  // 3-INTENTIONS chantier: no longer gated on groundingMode === "grounded".
+  // rankedCandidates/accommodation_types is deterministic structured data,
+  // never RAG-dependent — a no_context turn (0 relevant chunks retrieved,
+  // e.g. "Nous sommes 6, que proposez-vous ?") must still be able to name
+  // the real, capacity-compatible categories rather than fall back to a
+  // generic "je ne dispose pas de cette information" despite the data
+  // existing. This never risks inventing descriptive text: buildAccommodationGuidance
+  // only ever lists id/name/known-capacity, exactly as it always has (see
+  // its own doc comment) — the no_context boundary against inventing
+  // ANYTHING ELSE (amenities, policies, pricing…) is untouched.
   const accommodationGuidance =
-    groundingMode === "grounded" && rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly && !reservationCollectionActive
+    rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly && !reservationCollectionActive
       ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })
       : "";
   // Orthogonal to groundingMode — a no_context turn (e.g. a hotel with no
@@ -828,7 +846,7 @@ function buildNoContextGuidance(settings: ChatbotSettings | null): string {
  * list as a second, structural line of defense).
  */
 /**
- * Only ever built when roomDiscoveryIntentDetected fired AND the group size
+ * Only ever built when recommendationIntentDetected fired AND the group size
  * is still unknown (see buildHotelInstructions's askPartySizeOnly) — a party
  * already known defers entirely to buildAccommodationGuidance instead, so
  * this function never lists, describes or names a single accommodation.

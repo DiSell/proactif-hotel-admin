@@ -136,14 +136,34 @@ describe("answer.ts wiring — roomCatalogue", () => {
    * checks !mentionsPreciseAccommodation too, never inferred from
    * askPartySizeOnly alone.
    */
-  it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on isPartyKnown alone to imply it", () => {
+  it("[the exact production bug, fixed] the catalogue gate explicitly excludes mentionsPreciseAccommodation, never relying on isGenuineCatalogueTurn alone to imply it", () => {
     const computeStart = source.indexOf(
       "const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);"
     );
     const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
     expect(catalogueBlock).toMatch(
-      /isCatalogueEligibleTurn &&\s*\n\s*!mentionsPreciseAccommodation &&\s*\n\s*isPartyKnown\(deterministicParty\) &&\s*\n\s*isGenuineCatalogueTurn &&\s*\n\s*\(requestedRoomsCount === null \|\| requestedRoomsCount <= 1\)\s*\n\s*\? catalogueRankedCandidates\.map/
+      /isCatalogueEligibleTurn &&\s*\n\s*!mentionsPreciseAccommodation &&\s*\n\s*isGenuineCatalogueTurn &&\s*\n\s*\(requestedRoomsCount === null \|\| requestedRoomsCount <= 1\)\s*\n\s*\? catalogueRankedCandidates\.map/
     );
+  });
+
+  /**
+   * 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS", mission
+   * item 4): a genuine CATALOGUE/browsing turn ("Montrez-moi vos
+   * logements.") must show every category immediately, capacity known or
+   * not — isPartyKnown(deterministicParty) is deliberately no longer part
+   * of this gate. catalogueRankedCandidates (filterAndRankAccommodations)
+   * already returns every candidate as "unknown fit" when the party is
+   * unknown, and the real capacity-filtered subset once it IS known — the
+   * gate only ever decided WHETHER to show the list, never HOW to filter
+   * it. bookingReady (the BOOKING side of isCatalogueEligibleTurn) still
+   * requires isPartyKnown on its own formula, untouched.
+   */
+  it("[3-INTENTIONS] the catalogue gate no longer requires isPartyKnown — a browsing turn shows the full list even with capacity unknown", () => {
+    const computeStart = source.indexOf(
+      "const catalogueRankedCandidates = applyAvailabilityToCandidates(filterAndRankAccommodations(candidates, deterministicParty), availabilityCheckState);"
+    );
+    const catalogueBlock = source.slice(computeStart, source.indexOf(": [];", computeStart) + ": [];".length);
+    expect(catalogueBlock).not.toMatch(/isPartyKnown\(deterministicParty\) &&\s*\n\s*isGenuineCatalogueTurn/);
   });
 
   it("[FIFTH/SIXTH extension, BOOKING-eligible catalogue] isCatalogueEligibleTurn accepts either roomDiscoveryIntentDetected or (bookingIntentDetected && bookingReady) — a booking conversation is no longer silently excluded from the catalogue, but (BOOKING TUNNEL chantier) must also have dates known, unlike ROOM_DISCOVERY which never requires dates", () => {

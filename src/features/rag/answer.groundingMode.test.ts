@@ -83,10 +83,23 @@ describe("answerGrounded — accommodation recommendation", () => {
     expect(doc).toMatch(/UNVERIFIED/);
   });
 
-  it("buildAccommodationGuidance / rankedCandidates are only ever computed inside the grounded branch of answerQuestion, never the no_context branch", () => {
+  /**
+   * 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS", message H:
+   * "Nous sommes 6, que proposez-vous ?" — 0 relevant RAG chunks retrieved,
+   * groundingMode="no_context", yet accommodation_types/rankedCandidates is
+   * deterministic structured data that exists regardless of retrieval luck).
+   * answerNoContext now receives rankedCandidates (computed ONCE in
+   * answerQuestion, from the SAME single accommodation_types query
+   * answerGrounded already used — never a second, independent query) so
+   * buildAccommodationGuidance can still name real, capacity-compatible
+   * categories in no_context mode instead of a generic "I don't know".
+   */
+  it("rankedCandidates is threaded into answerNoContext too (no_context structured-data fix), but the accommodation_types query itself still runs exactly once, in answerQuestion", () => {
     const noContextFn = source.slice(source.indexOf("async function answerNoContext"), source.indexOf("async function loadHistory"));
-    expect(noContextFn).not.toMatch(/rankedCandidates/);
+    expect(noContextFn).toMatch(/rankedCandidates/);
     expect(noContextFn).not.toMatch(/accommodation_types/);
+    const queryCallCount = (source.match(/\.from\("accommodation_types"\)/g) ?? []).length;
+    expect(queryCallCount).toBe(1);
   });
 });
 

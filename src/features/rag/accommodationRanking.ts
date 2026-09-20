@@ -116,15 +116,26 @@ import { isPartyKnown as isPartyKnownInternal } from "./partySize";
 
 /**
  * Single source of truth for "should this turn ask for the group size
- * before presenting anything, instead of showing the catalogue" — used by
- * BOTH buildHotelInstructions (prompt.ts, the model's own instruction) AND
+ * before presenting anything, instead of recommending" — used by BOTH
+ * buildHotelInstructions (prompt.ts, the model's own instruction) AND
  * answerQuestion (answer.ts, the deterministic roomCatalogue field it
  * computes independently — see that field's own doc comment in types.ts),
  * so the two can never drift out of sync with each other. Previously
  * computed inline, separately, only in prompt.ts.
+ *
+ * 3-INTENTIONS chantier: the first parameter used to be the old, single
+ * roomDiscoveryIntentDetected flag (which conflated INFORMATION, CATALOGUE
+ * AND RECOMMENDATION into one signal — see isRoomDiscoveryIntent's own doc
+ * comment for why that was wrong). It is now recommendationIntentDetected
+ * (isAccommodationRecommendationIntent below, or its own continuation
+ * marker) — the party question must fire ONLY for a genuine "what do you
+ * recommend for us" request, never for a plain informational or
+ * catalogue/browsing turn, both of which must never ask for capacity at
+ * all. The function body itself is unchanged: only the caller's signal
+ * changed meaning.
  */
-export function shouldAskPartySizeOnly(roomDiscoveryIntentDetected: boolean, mentionsPreciseAccommodation: boolean, party: PartySize): boolean {
-  return roomDiscoveryIntentDetected && !mentionsPreciseAccommodation && !isPartyKnownInternal(party);
+export function shouldAskPartySizeOnly(recommendationIntentDetected: boolean, mentionsPreciseAccommodation: boolean, party: PartySize): boolean {
+  return recommendationIntentDetected && !mentionsPreciseAccommodation && !isPartyKnownInternal(party);
 }
 
 /**
@@ -239,15 +250,22 @@ function hasApproximateDiscoveryVerb(message: string): boolean {
   );
 }
 
-const QUEL_ROOM_TYPE_PATTERN =
-  /\bquel(?:le)?s?\s+(?:types?\s+d[e'’]\s*)?(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
-
 /** Determiner/quantifier DIRECTLY touching the noun — see the doc comment above for why this is what "generic" means here. */
 const GENERIC_DETERMINER_ROOM_MENTION_PATTERN =
   /\b(?:les?|la|des|une?|vos|nos|ces?|comme)\s+(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
 
+/**
+ * 3-INTENTIONS chantier: no longer includes the old "quel(s) type(s) de
+ * NOUN" shape (moved to ACCOMMODATION_INFORMATION_TYPES_PATTERN below) —
+ * that shape is a WH-question about which categories exist ("what KINDS of
+ * rooms do you have"), never a request to browse/see them, so it must never
+ * feed the CATALOGUE-flavored detector below. Only the determiner+noun
+ * shape ("les chambres", "vos logements", "comme hébergements") remains
+ * here — always paired with a display verb (montre/voir/...) by
+ * isRoomDiscoveryIntent itself, never used alone.
+ */
 function hasGenericRoomMention(message: string): boolean {
-  return QUEL_ROOM_TYPE_PATTERN.test(message) || GENERIC_DETERMINER_ROOM_MENTION_PATTERN.test(message);
+  return GENERIC_DETERMINER_ROOM_MENTION_PATTERN.test(message);
 }
 
 /**
@@ -262,11 +280,69 @@ function hasGenericRoomMention(message: string): boolean {
 const ELLIPTICAL_CATALOGUE_PATTERN =
   /^\s*(?:les?|la|des|une?|vos|nos|ces?|quel(?:le)?s?)\s+(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\s*[?!.]*\s*$/i;
 
+/**
+ * 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS"): this used
+ * to also match the bare "quel(s) [type(s) de] NOUN" WH-shape, which is why
+ * a pure informational question ("Quels types de chambres proposez-vous ?")
+ * was wrongly treated exactly like "Montrez-moi vos logements." — both
+ * ended up asking for the group size before answering anything. That shape
+ * is now ACCOMMODATION_INFORMATION_TYPES_PATTERN's job (see
+ * isAccommodationInformationIntent below): a WH-question about which
+ * categories exist is answered in prose from structured data, never gated
+ * on capacity. isRoomDiscoveryIntent is now exclusively the CATALOGUE/
+ * browsing signal — "show me / let me see" (a display verb) or the bare
+ * elliptical "les chambres ?" — never a bare category-naming question.
+ */
 export function isRoomDiscoveryIntent(message: string): boolean {
-  if (QUEL_ROOM_TYPE_PATTERN.test(message)) return true;
   if (ELLIPTICAL_CATALOGUE_PATTERN.test(message)) return true;
   if (!hasGenericRoomMention(message)) return false;
   return DISCOVERY_VERB_PATTERNS.some((pattern) => pattern.test(message)) || hasApproximateDiscoveryVerb(message);
+}
+
+/**
+ * INFORMATION — "what KINDS/TYPES of X do you have", a WH-question about
+ * which categories exist, never a request to see them (isRoomDiscoveryIntent
+ * above, CATALOGUE) nor a request for personal advice
+ * (isAccommodationRecommendationIntent below, RECOMMENDATION). Widened from
+ * the original "quel(s) [type(s) de] NOUN" shape to also cover "quels SONT
+ * vos types d'appartements" (a real, reported phrasing whose extra "sont
+ * vos" broke the original pattern's strict word-by-word adjacency).
+ */
+const ACCOMMODATION_INFORMATION_TYPES_PATTERN =
+  /\bquel(?:le)?s?\s+(?:sont\s+)?(?:vos|ses|leurs|nos|les)?\s*(?:types?\s+d[e'’]\s*)?(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
+
+/** "vous proposez quoi comme X" / "quoi comme X" — same informational shape, reversed word order from the discovery-verb idioms in DISCOVERY_VERB_PATTERNS. */
+const ACCOMMODATION_INFORMATION_QUOI_COMME_PATTERN =
+  /\bquoi\s+comme\s+(chambres?|suites?|h[ée]bergements?|appartements?|logements?)\b/i;
+
+export function isAccommodationInformationIntent(message: string): boolean {
+  return ACCOMMODATION_INFORMATION_TYPES_PATTERN.test(message) || ACCOMMODATION_INFORMATION_QUOI_COMME_PATTERN.test(message);
+}
+
+/**
+ * RECOMMENDATION — a genuine "what do you advise for US" request, deliberately
+ * requiring an explicit recommendation-flavored VERB (conseiller/recommander/
+ * "le mieux"/convenir), never inferred from a bare room-noun mention alone
+ * (a plain "quel logement proposez-vous" is INFORMATION/CATALOGUE, not a
+ * request for personal advice) — mirrors isRoomDiscoveryIntent's own
+ * verb+noun pairing discipline, so "je vous conseille de venir tôt" (no
+ * accommodation noun at all) never triggers the capacity question.
+ */
+const RECOMMENDATION_VERB_PATTERNS: RegExp[] = [
+  /\bconseill(?:e|es|ez|ons|er|erais|eriez|erait)\b/i,
+  /\brecommand(?:e|es|ez|ons|er|erais|eriez|erait)\b/i,
+  /\ble mieux\b/i,
+  /\bconvien(?:t|nent|drait|drais)\b/i,
+  /\bconvenir\b/i,
+];
+
+export function isAccommodationRecommendationIntent(message: string): boolean {
+  if (!RECOMMENDATION_VERB_PATTERNS.some((pattern) => pattern.test(message))) return false;
+  return (
+    hasGenericRoomMention(message) ||
+    ACCOMMODATION_INFORMATION_TYPES_PATTERN.test(message) ||
+    ELLIPTICAL_CATALOGUE_PATTERN.test(message)
+  );
 }
 
 /**

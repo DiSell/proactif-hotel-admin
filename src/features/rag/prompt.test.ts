@@ -286,14 +286,14 @@ describe("buildHotelInstructions — booking collection guidance (BOOKING TUNNEL
     expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
   });
 
-  it("[ROOM_DISCOVERY non-régression] roomDiscoveryGuidance/askPartySizeOnly are completely untouched by reservationCollectionActive — never both guidances at once, never a merged wording", () => {
+  it("[RECOMMENDATION non-régression] roomDiscoveryGuidance/askPartySizeOnly are completely untouched by reservationCollectionActive — never both guidances at once, never a merged wording", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),
       settings: makeSettings(),
       groundingMode: "grounded",
       rankedCandidates: twoCandidates,
       party: { adults: null, children: null, total: null },
-      roomDiscoveryIntentDetected: true,
+      recommendationIntentDetected: true,
       reservationCollectionActive: false,
     });
     expect(instructions).toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
@@ -499,7 +499,16 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
     expect(instructions).not.toMatch(/HÉBERGEMENTS/);
   });
 
-  it("adds nothing in no_context mode, even if candidates are passed", () => {
+  /**
+   * 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS", message H):
+   * this used to be gated on groundingMode === "grounded" — a real,
+   * confirmed gap where a no_context turn ("Nous sommes 6, que proposez-vous
+   * ?", 0 relevant RAG chunks) never got to name the real, capacity-
+   * compatible categories despite accommodation_types being deterministic
+   * structured data, never RAG-dependent. Renamed to reflect the new,
+   * intentional behavior.
+   */
+  it("[3-INTENTIONS] fires in no_context mode too, when candidates are passed and no capacity question is pending — a deterministic fact must never depend on RAG luck", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),
       settings: makeSettings(),
@@ -507,7 +516,8 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
       rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: 4, fit: "known" }]),
       party: { adults: 2, children: 0, total: 2 },
     });
-    expect(instructions).not.toMatch(/HÉBERGEMENTS/);
+    expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
+    expect(instructions).toContain('id="a"');
   });
 
   it("lists only the offered candidates by exact id — never a hint that a fuller list exists", () => {
@@ -562,7 +572,7 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
   });
 });
 
-describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
+describe("buildHotelInstructions — RECOMMENDATION guidance (3-INTENTIONS chantier — renamed from ROOM_DISCOVERY: this guidance now fires exclusively for a genuine recommendation request, never a plain INFORMATION/CATALOGUE turn — see accommodationRanking.ts:isAccommodationRecommendationIntent)", () => {
   function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
     return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
   }
@@ -572,7 +582,7 @@ describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
       hotel: makeHotel(),
       settings: makeSettings(),
       groundingMode: "grounded",
-      roomDiscoveryIntentDetected: true,
+      recommendationIntentDetected: true,
       rankedCandidates: candidates([{ id: "a", name: "Deluxe", maxGuests: 4, fit: "known" }]),
       party: { adults: null, children: null, total: null },
     });
@@ -587,7 +597,7 @@ describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
       hotel: makeHotel(),
       settings: makeSettings(),
       groundingMode: "no_context",
-      roomDiscoveryIntentDetected: true,
+      recommendationIntentDetected: true,
       party: { adults: null, children: null, total: null },
     });
     expect(instructions).toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
@@ -598,7 +608,7 @@ describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
       hotel: makeHotel(),
       settings: makeSettings(),
       groundingMode: "grounded",
-      roomDiscoveryIntentDetected: true,
+      recommendationIntentDetected: true,
       rankedCandidates: candidates([{ id: "a", name: "Deluxe", maxGuests: 4, fit: "known" }]),
       party: { adults: 2, children: 0, total: 2 },
     });
@@ -607,14 +617,34 @@ describe("buildHotelInstructions — ROOM_DISCOVERY guidance", () => {
     expect(instructions).toContain('id="a"');
   });
 
-  it("no room-discovery guidance at all when the intent wasn't detected this turn, regardless of party", () => {
+  it("no recommendation guidance at all when the intent wasn't detected this turn, regardless of party", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),
       settings: makeSettings(),
       groundingMode: "grounded",
-      roomDiscoveryIntentDetected: false,
+      recommendationIntentDetected: false,
       party: { adults: null, children: null, total: null },
     });
+    expect(instructions).not.toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+  });
+
+  /**
+   * 3-INTENTIONS chantier — the exact fix for message H of the audit's own
+   * matrix ("Nous sommes 6, que proposez-vous ?", 0 relevant RAG chunks):
+   * accommodationGuidance must still fire in no_context mode as long as
+   * candidates exist and no capacity question is pending — it no longer
+   * requires groundingMode === "grounded".
+   */
+  it("[no_context, structured data still accessible] accommodationGuidance fires in no_context mode too, as long as recommendationIntentDetected/askPartySizeOnly don't block it — a deterministic fact must never depend on RAG luck", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "no_context",
+      rankedCandidates: candidates([{ id: "a", name: "Junior Suite", maxGuests: 6, fit: "known" }]),
+      party: { adults: null, children: null, total: 6 },
+    });
+    expect(instructions).toMatch(/HÉBERGEMENTS — candidats/);
+    expect(instructions).toContain('id="a"');
     expect(instructions).not.toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
   });
 });

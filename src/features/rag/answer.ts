@@ -10,6 +10,7 @@ import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValid
 import {
   filterAndRankAccommodations,
   findMentionedAccommodation,
+  isAccommodationRecommendationIntent,
   isRoomDiscoveryIntent,
   type AccommodationCandidate,
   type RankedCandidate,
@@ -17,6 +18,7 @@ import {
 import { bookingCtaKind } from "./bookingCta";
 import { lastAssistantMessageIndicatesBookingIntent, withBookingIntentMarker } from "./bookingIntentContinuation";
 import { lastAssistantMessageIndicatesRoomDiscoveryContinuation, withRoomDiscoveryMarker } from "./roomDiscoveryContinuation";
+import { lastAssistantMessageIndicatesRecommendationContinuation, withRecommendationMarker } from "./recommendationContinuation";
 import { containsUnauthorizedMonetaryAmount, isPriceCommunicationAllowed, redactMonetaryAmounts, PRICE_LOCKED_FALLBACK_REPLY } from "./pricePolicy";
 import {
   ALL_PARTNERS_LIMIT,
@@ -413,6 +415,22 @@ export async function answerQuestion({
   const roomDiscoveryIntentDetected =
     isRoomDiscoveryIntent(message) || (roomDiscoveryContinuationSignal && !isBookingIntent(message));
 
+  // 3-INTENTIONS chantier — RECOMMENDATION is now its OWN signal, distinct
+  // from roomDiscoveryIntentDetected above (which is CATALOGUE/browsing
+  // only, see isRoomDiscoveryIntent's own doc comment). Mirrors the exact
+  // same continuation-marker shape (recommendationContinuation.ts, its own
+  // distinct invisible character) so "Quel logement me conseillez-vous ?"
+  // (asks "combien de personnes ?") -> "Nous sommes 4" (no recommendation
+  // verb of its own) is still recognized as continuing the SAME
+  // recommendation request, never re-asking the capacity it just received.
+  // Guarded by !roomDiscoveryIntentDetected so a genuinely CATALOGUE-shaped
+  // turn (already decided above) is never reinterpreted as a recommendation
+  // just because it happens to also contain a recommendation verb.
+  const recommendationContinuationSignal = lastAssistantMessageIndicatesRecommendationContinuation(historyInput);
+  const recommendationIntentDetected =
+    !roomDiscoveryIntentDetected &&
+    (isAccommodationRecommendationIntent(message) || (recommendationContinuationSignal && !isBookingIntent(message)));
+
   // Computed once, independent of groundingMode — drives the generic
   // booking CTA (see buildBookingAction) in both branches below. Two
   // independent signals, deliberately combined with OR: isBookingIntent
@@ -806,10 +824,21 @@ export async function answerQuestion({
   // dates at all and is untouched: it still shows the catalogue on party
   // alone, exactly as before.
   const isCatalogueEligibleTurn = roomDiscoveryIntentDetected || (bookingIntentDetected && bookingReady);
+  // 3-INTENTIONS chantier: isPartyKnown(deterministicParty) removed from
+  // this gate — a genuine CATALOGUE/browsing request ("Montrez-moi vos
+  // logements.") must show every category immediately, capacity known or
+  // not, never wait for a capacity answer first (that's RECOMMENDATION's
+  // job, gated separately via shouldAskPartySizeOnly/recommendationIntentDetected
+  // in prompt.ts). No replacement condition is needed: catalogueRankedCandidates
+  // (filterAndRankAccommodations) already returns every candidate as
+  // "unknown fit" when deterministicParty is unknown, and the real
+  // capacity-filtered subset once it IS known — this gate only ever decided
+  // WHETHER to show the list, never HOW to filter it. The BOOKING side of
+  // isCatalogueEligibleTurn is unaffected: bookingReady's own formula
+  // (above) still requires isPartyKnown(deterministicParty) on its own.
   const roomCatalogue: RoomCatalogueEntry[] =
     isCatalogueEligibleTurn &&
     !mentionsPreciseAccommodation &&
-    isPartyKnown(deterministicParty) &&
     isGenuineCatalogueTurn &&
     (requestedRoomsCount === null || requestedRoomsCount <= 1)
       ? catalogueRankedCandidates.map((c) => ({
@@ -965,6 +994,7 @@ export async function answerQuestion({
       missingBookingDates,
       missingBookingParty,
       roomDiscoveryIntentDetected,
+      recommendationIntentDetected,
       mentionsPreciseAccommodation,
       mentionedAccommodationId: mentionedAccommodation?.id ?? null,
       allowPriceCommunication,
@@ -993,6 +1023,7 @@ export async function answerQuestion({
     model,
     historyInput,
     startedAt,
+    rankedCandidates,
     party,
     availabilityCheckState,
     bookingIntentDetected,
@@ -1000,6 +1031,7 @@ export async function answerQuestion({
     missingBookingDates,
     missingBookingParty,
     roomDiscoveryIntentDetected,
+    recommendationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
@@ -1244,6 +1276,8 @@ async function answerGrounded(
     missingBookingDates: boolean;
     missingBookingParty: boolean;
     roomDiscoveryIntentDetected: boolean;
+    /** See accommodationRanking.ts:isAccommodationRecommendationIntent's own doc comment — distinct from roomDiscoveryIntentDetected above (CATALOGUE), drives buildHotelInstructions's askPartySizeOnly and its own continuation marker below. */
+    recommendationIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     /**
      * A precise accommodation already resolved DETERMINISTICALLY from the
@@ -1292,6 +1326,7 @@ async function answerGrounded(
     missingBookingDates,
     missingBookingParty,
     roomDiscoveryIntentDetected,
+    recommendationIntentDetected,
     mentionsPreciseAccommodation,
     mentionedAccommodationId,
     allowPriceCommunication,
@@ -1321,7 +1356,7 @@ async function answerGrounded(
     reservationCollectionActive,
     missingBookingDates,
     missingBookingParty,
-    roomDiscoveryIntentDetected,
+    recommendationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     partnerIntentDetected,
@@ -1436,6 +1471,16 @@ async function answerGrounded(
     if (roomDiscoveryIntentDetected) {
       reply = withRoomDiscoveryMarker(reply);
     }
+    // See recommendationContinuation.ts's own doc comment: marks THIS reply
+    // so a later turn with no recommendation verb of its own (a bare
+    // "Nous sommes 4" answering "combien de personnes ?") is still
+    // recognized as continuing the SAME recommendation request. Independent
+    // of roomDiscoveryIntentDetected above — mutually exclusive by
+    // construction (recommendationIntentDetected is guarded by
+    // !roomDiscoveryIntentDetected in answer.ts), never both at once.
+    if (recommendationIntentDetected) {
+      reply = withRecommendationMarker(reply);
+    }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (grounded)", { hotelId, message: (err as Error).message });
     return finalizeError(supabase, hotelId, conversationId, settings, Date.now() - startedAt);
@@ -1518,6 +1563,20 @@ async function answerNoContext(
     model: string;
     historyInput: HistoryInputItem[];
     startedAt: number;
+    /**
+     * 3-INTENTIONS chantier: threaded into answerNoContext for the first
+     * time — buildAccommodationGuidance (prompt.ts) is no longer gated on
+     * groundingMode === "grounded" (see that gate's own doc comment), since
+     * this is deterministic structured data (the hotel's own accommodation
+     * categories/capacities), never RAG-dependent — a no_context turn about
+     * accommodations (e.g. "Nous sommes 6, que proposez-vous ?", 0 relevant
+     * chunks retrieved) must still be able to name the real, capacity-
+     * compatible categories instead of falling back to a generic "I don't
+     * know" despite the data existing. Computed once in answerQuestion, from
+     * the SAME query answerGrounded already used — never a second, separate
+     * fetch here.
+     */
+    rankedCandidates: RankedCandidate[];
     party: PartySize;
     availabilityCheckState: AvailabilityCheckState;
     bookingIntentDetected: boolean;
@@ -1526,6 +1585,8 @@ async function answerNoContext(
     missingBookingDates: boolean;
     missingBookingParty: boolean;
     roomDiscoveryIntentDetected: boolean;
+    /** See answerGrounded's identical field — same recommendationContinuation marker, same meaning, independent of groundingMode. */
+    recommendationIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     allowPriceCommunication: boolean;
     /** See answerGrounded's identical field for the full doc comment — answerNoContext never builds a roomRecommendation at all, but still needs this for the output-side lock's authorizedPriceAmounts, threaded alongside. */
@@ -1555,6 +1616,7 @@ async function answerNoContext(
     model,
     historyInput,
     startedAt,
+    rankedCandidates,
     party,
     availabilityCheckState,
     bookingIntentDetected,
@@ -1562,6 +1624,7 @@ async function answerNoContext(
     missingBookingDates,
     missingBookingParty,
     roomDiscoveryIntentDetected,
+    recommendationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
@@ -1583,13 +1646,14 @@ async function answerNoContext(
     hotel,
     settings,
     groundingMode: "no_context",
+    rankedCandidates,
     party,
     availabilityCheckState,
     bookingIntentDetected,
     reservationCollectionActive,
     missingBookingDates,
     missingBookingParty,
-    roomDiscoveryIntentDetected,
+    recommendationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     partnerIntentDetected,
@@ -1675,6 +1739,11 @@ async function answerNoContext(
     // identical call — independent of groundingMode, same reasoning.
     if (roomDiscoveryIntentDetected) {
       reply = withRoomDiscoveryMarker(reply);
+    }
+    // See recommendationContinuation.ts's own doc comment and answerGrounded's
+    // identical call — independent of groundingMode, same reasoning.
+    if (recommendationIntentDetected) {
+      reply = withRecommendationMarker(reply);
     }
   } catch (err) {
     console.error("answerQuestion: OpenAI call failed (no_context)", { hotelId, message: (err as Error).message });

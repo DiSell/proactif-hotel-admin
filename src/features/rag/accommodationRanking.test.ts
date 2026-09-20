@@ -3,6 +3,8 @@ import {
   editDistance,
   filterAndRankAccommodations,
   findMentionedAccommodation,
+  isAccommodationInformationIntent,
+  isAccommodationRecommendationIntent,
   isCapacityCompatible,
   isPartyKnown,
   isRoomDiscoveryIntent,
@@ -151,19 +153,16 @@ describe("isRoomDiscoveryIntent", () => {
   it.each([
     "montre-moi les chambres",
     "je peux voir les chambres ?",
-    "quelles chambres avez-vous ?",
     "je voudrais découvrir les suites",
     "montrez-moi vos hébergements",
-    "quels appartements proposez-vous ?",
     "tu peus me montrer les chambres ??",
     "montre-moi les chambres pour 2 personnes",
     // Stress-test round 2 — catalogue-level requests that must now pass too.
     "montre moi les chambres",
     "tu peux me montrer les chambres ?",
-    "quelles chambres avez vous ?",
     "les chambres ?", // elliptical, no verb at all
     "je peux voir les appartements ?",
-    "vous avez quoi comme chambre ?", // declarative "vous avez", not the inverted "avez-vous"
+    "vous avez quoi comme chambre ?", // declarative "vous avez", not the inverted "avez-vous" — DISCOVERY_VERB_PATTERNS' own "vous avez" idiom + "comme chambre"
     "je cherche une chambre pour 2", // "chercher" was entirely absent from the verb list
     "fais moi voir les suites",
     "les suites ?", // elliptical
@@ -188,8 +187,74 @@ describe("isRoomDiscoveryIntent", () => {
     "vous avez un parking ?",
     "combien coûte la Deluxe ?",
     "le spa est ouvert ?",
+    // 3-INTENTIONS chantier: a bare "quel(s) [type(s) de] NOUN" WH-question
+    // is INFORMATION, never CATALOGUE — see isAccommodationInformationIntent
+    // below. "avez-vous"/"proposez-vous" alone (inverted order, no
+    // determiner+noun adjacency) don't make it a display/browsing request.
+    "quelles chambres avez-vous ?",
+    "quels appartements proposez-vous ?",
+    "quelles chambres avez vous ?",
   ])("[negative] %s", (message) => {
     expect(isRoomDiscoveryIntent(message)).toBe(false);
+  });
+});
+
+/**
+ * INFORMATION — 3-INTENTIONS chantier (audit "AUDIT INTENTIONS HÉBERGEMENTS"):
+ * a WH-question about which categories exist ("what KINDS of rooms do you
+ * have"), answered in prose from structured accommodation_types data, never
+ * gated on capacity, never triggering the deterministic catalogue cards.
+ */
+describe("isAccommodationInformationIntent", () => {
+  it.each([
+    "Quels types de chambres ou logements proposez-vous ?",
+    "Quels sont vos types d'appartements ?", // the extra "sont vos" that broke the original strict pattern
+    "Vous proposez quoi comme hébergements ?",
+    "quelles chambres avez-vous ?",
+    "quels appartements proposez-vous ?",
+    "quelles chambres avez vous ?",
+    "vous avez quoi comme chambre ?",
+    "Quel logement proposez-vous ?",
+  ])("[positive] %s", (message) => {
+    expect(isAccommodationInformationIntent(message)).toBe(true);
+  });
+
+  it.each([
+    "Montrez-moi vos logements.", // CATALOGUE, not INFORMATION
+    "Je veux voir vos chambres.",
+    "avez-vous un parking ?", // no accommodation noun at all
+    "la Junior Suite fait combien de mètres carrés ?", // precise category, documentary
+    "le spa est ouvert ?",
+  ])("[negative] %s", (message) => {
+    expect(isAccommodationInformationIntent(message)).toBe(false);
+  });
+});
+
+/**
+ * RECOMMENDATION — 3-INTENTIONS chantier: a genuine "what do you advise for
+ * us" request, requiring an explicit recommendation verb (conseiller/
+ * recommander/"le mieux"/convenir), never inferred from a bare room-noun
+ * mention alone.
+ */
+describe("isAccommodationRecommendationIntent", () => {
+  it.each([
+    "Quel logement me conseillez-vous ?",
+    "Quelle chambre nous recommandez-vous ?",
+    "Quel appartement serait le mieux pour nous ?",
+    "Nous sommes 4, quel logement conseillez-vous ?",
+    "Que nous conseillez-vous comme hébergement pour 4 personnes ?",
+    "La chambre me conviendrait-elle pour 2 personnes ?",
+  ])("[positive] %s", (message) => {
+    expect(isAccommodationRecommendationIntent(message)).toBe(true);
+  });
+
+  it.each([
+    "Je vous conseille de venir tôt", // recommendation verb, but no accommodation noun at all
+    "Quels types de chambres proposez-vous ?", // INFORMATION, no recommendation verb
+    "Montrez-moi vos logements.", // CATALOGUE, no recommendation verb
+    "avez-vous un parking ?",
+  ])("[negative] %s", (message) => {
+    expect(isAccommodationRecommendationIntent(message)).toBe(false);
   });
 });
 
