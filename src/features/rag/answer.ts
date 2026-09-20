@@ -1183,11 +1183,17 @@ async function buildRoomRecommendation(
   const accommodationType = accommodationTypesById.get(matched.id);
   if (!accommodationType || accommodationType.hotel_id !== hotelId) return null;
 
+  // PHOTOS / CARROUSEL chantier: is_selected is the client's (or, when
+  // hotels.photo_management = 'proactif', the superadmin's) own curation
+  // flag — see room_photos.is_selected's own migration comment and
+  // features/photos/actions.ts. A deselected photo must never reach the
+  // public widget just because this query previously ignored the flag.
   const { data: photos } = await supabase
     .from("room_photos")
     .select("photo_url, alt_text")
     .eq("hotel_id", hotelId)
     .eq("accommodation_type_id", matched.id)
+    .eq("is_selected", true)
     .order("position", { ascending: true });
 
   return {

@@ -130,6 +130,31 @@ describe("buildRoomRecommendation — bookingUrl", () => {
 });
 
 /**
+ * PHOTOS / CARROUSEL chantier — a deselected photo (room_photos.is_selected
+ * = false, the client's or the superadmin's own curation choice, see
+ * features/photos/actions.ts) must never reach the public widget just
+ * because this query used to ignore the flag entirely. Source-level check —
+ * buildRoomRecommendation touches Supabase directly, same constraint as
+ * every other query in this file.
+ */
+describe("buildRoomRecommendation — is_selected filter", () => {
+  function sliceFn(name: string, nextName: string): string {
+    const start = source.indexOf(`async function ${name}`);
+    const end = source.indexOf(`async function ${nextName}`);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end);
+  }
+
+  it("[deselected photos excluded] the room_photos query filters is_selected = true, in addition to the existing hotel_id/accommodation_type_id scoping and position ordering", () => {
+    const fn = sliceFn("buildRoomRecommendation", "answerGrounded");
+    expect(fn).toMatch(
+      /\.from\("room_photos"\)\s*\n\s*\.select\("photo_url, alt_text"\)\s*\n\s*\.eq\("hotel_id", hotelId\)\s*\n\s*\.eq\("accommodation_type_id", matched\.id\)\s*\n\s*\.eq\("is_selected", true\)\s*\n\s*\.order\("position", \{ ascending: true \}\);/
+    );
+  });
+});
+
+/**
  * Regression guards for the generic booking CTA (P0-1) — independent of
  * RoomRecommendation, must reach the visitor even when no specific room was
  * recommended (grounded with no match, or no_context entirely). Runtime
