@@ -916,28 +916,80 @@ function buildBookingCollectionGuidance(missingDates: boolean, missingParty: boo
   ].join("\n");
 }
 
+/**
+ * FIABILITÉ DES CATÉGORIES chantier (audit "FIABILITÉ DES CATÉGORIES
+ * D'HÉBERGEMENT") — two real, proven bugs fixed here, both a confusion
+ * between two genuinely distinct concepts that used to be conflated into
+ * the single `fit` field:
+ *
+ * A. `c.maxGuests` (the STRUCTURED fact — this accommodation's registered
+ *    maximum capacity, from accommodation_types, always the same number
+ *    regardless of who's asking) vs. `c.fit` (whether THIS candidate's
+ *    capacity was actually compared against a party size THE VISITOR
+ *    STATED — see accommodationRanking.ts:filterAndRankAccommodations).
+ *    `fit === "unknown"` does NOT mean "we don't know this accommodation's
+ *    capacity" — it very often means "the visitor never stated a group
+ *    size at all", in which case filterAndRankAccommodations marks EVERY
+ *    candidate "unknown" regardless of maxGuests (see that function's own
+ *    third branch). The previous code only ever wrote the real number when
+ *    fit==="known", silently hiding a perfectly real, already-loaded fact
+ *    for any INFORMATION-style question ("quels types de logements
+ *    proposez-vous ?") that never mentions a group size — confirmed by the
+ *    audit's own real-invocation evidence. Fixed: the capacity fact is now
+ *    read directly from `c.maxGuests`, never from `c.fit` — `fit` is not
+ *    read by this function at all anymore. This does NOT touch
+ *    filterAndRankAccommodations/fit's own computation (still exactly what
+ *    ranking/recommendation rely on) — only what this function chooses to
+ *    tell the model about a fact it already has.
+ *
+ * B. The aggregate "capacities aren't reliable" warning below used to be
+ *    `rankedCandidates.every((c) => c.fit === "unknown")` — true for EVERY
+ *    turn where the visitor's party is simply unstated, even when every
+ *    single candidate has a perfectly real, non-null maxGuests on file.
+ *    The model then echoed this near verbatim ("je ne dispose pas
+ *    d'informations de capacité suffisamment vérifiées") despite the real
+ *    numbers being available all along. Fixed: now based on
+ *    `c.maxGuests === null` — true only when accommodation_types itself
+ *    genuinely has no capacity on file for any candidate, the actual case
+ *    this warning is meant to guard against. This is a narrower gate, not
+ *    a removed protection: a hotel that truly never filled in any capacity
+ *    still gets the honest "no reliable capacity" warning.
+ *
+ * A third, independent fix: an explicit "names are authoritative" rule
+ * (never touching `fit`/`maxGuests`) — the audit proved the model can blend
+ * a structured name ("Junior PMR") with a real, contradictory RAG phrase
+ * for the very same accommodation (the establishment's own official page
+ * for that room describes it in prose as "The Junior Suite") into an
+ * invented hybrid ("Junior Suite PMR"). Deliberately generic — no
+ * hotel/category name is ever hardcoded here, this must hold for any
+ * hotel's own naming.
+ */
 function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: PartySize): string {
   const lines = rankedCandidates.map((c) => {
-    const capacity = c.fit === "known" ? `capacité confirmée : ${c.maxGuests} personnes` : "capacité non vérifiée";
-    return `- id="${c.id}" — ${c.name} (${capacity})`;
+    const capacityFact = c.maxGuests !== null ? `capacité maximale : ${c.maxGuests} personnes` : "capacité maximale non renseignée";
+    return `- id="${c.id}" — ${c.name} (${capacityFact})`;
   });
 
-  const allUnknown = rankedCandidates.every((c) => c.fit === "unknown");
+  // Based on the STRUCTURED fact itself (maxGuests), never on fit — see
+  // this function's own doc comment. Only true when accommodation_types
+  // genuinely has no capacity on file for any of these candidates.
+  const allCapacitiesUnknown = rankedCandidates.every((c) => c.maxGuests === null);
 
   const partyNote =
     party.total === null
-      ? "La taille du groupe du visiteur n'a pas pu être déterminée avec certitude à partir de son message : tu peux présenter les hébergements ci-dessous, mais ne prétends jamais avoir identifié celui qui leur convient le mieux."
+      ? "La taille du groupe du visiteur n'a pas pu être déterminée avec certitude à partir de son message : tu peux présenter les hébergements ci-dessous, avec leur capacité maximale connue si elle est indiquée, mais ne prétends jamais avoir identifié celui qui leur convient le mieux."
       : `Le groupe du visiteur compte ${party.total} personne(s) (${[party.adults !== null ? `${party.adults} adulte(s)` : null, party.children !== null ? `${party.children} enfant(s)` : null].filter(Boolean).join(", ") || "détail non précisé"}). Les hébergements listés ci-dessous ont déjà été filtrés par le serveur pour exclure tout ce dont la capacité connue est insuffisante pour ce groupe — tu n'as pas besoin de revérifier cela.`;
 
-  const uncertaintyNote = allUnknown
-    ? "Aucun de ces hébergements n'a de capacité fiable enregistrée : ne prétends jamais avoir déterminé le mieux adapté. Réponds en substance que tu peux présenter les hébergements disponibles, mais que tu n'as pas assez d'informations vérifiées pour dire lequel convient le mieux."
+  const uncertaintyNote = allCapacitiesUnknown
+    ? "La capacité maximale d'aucun de ces hébergements n'est enregistrée dans les données de l'établissement : ne prétends jamais connaître ou avoir déterminé une capacité, et ne prétends jamais avoir déterminé le mieux adapté. Réponds en substance que tu peux présenter les hébergements disponibles, mais que tu n'as pas d'information de capacité vérifiée à leur sujet."
     : "";
 
   return [
     "HÉBERGEMENTS — candidats déjà pré-filtrés par capacité :",
     partyNote,
-    "Liste des hébergements que tu peux mentionner ou recommander pour cette question (id — nom — capacité) :",
+    "Liste des hébergements que tu peux mentionner ou recommander pour cette question (id — nom — capacité maximale connue) :",
     lines.join("\n"),
+    "Les NOMS ci-dessus proviennent des données structurées de l'établissement et font autorité : reproduis-les EXACTEMENT tels quels dans ta réponse, quelle que soit la langue de rédaction du reste de ta phrase — ne les fusionne jamais, ne les complète jamais, et ne les remplace jamais par une autre appellation rencontrée dans un texte descriptif, même si ce texte semble désigner le même hébergement autrement.",
     "Tu ne peux renseigner recommendedAccommodationTypeId qu'avec l'un de ces id EXACTS ci-dessus, ou le laisser null si aucun ne se distingue clairement ou si la question ne porte pas sur le choix d'un hébergement. Ne recommande JAMAIS un hébergement absent de cette liste, même s'il t'est déjà connu par ailleurs — un hébergement absent d'ici a été exclu pour une bonne raison (capacité insuffisante) et ne doit jamais être réintroduit.",
     "Tu peux en revanche arbitrer entre les candidats de cette liste selon d'autres critères exprimés par le visiteur (cuisine équipée, chambres séparées, accès PMR, terrasse, budget…) si les connaissances fournies le permettent — mais uniquement parmi cette liste.",
     uncertaintyNote,

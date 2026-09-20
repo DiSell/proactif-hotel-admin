@@ -589,7 +589,14 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
     expect(instructions).toMatch(/n'a pas pu être déterminée avec certitude/);
   });
 
-  it("[uncertainty] tells the model to be honest about missing capacity data when every candidate is unknown fit", () => {
+  /**
+   * FIABILITÉ DES CATÉGORIES chantier: this uncertainty disclaimer is now
+   * based on maxGuests === null (a genuinely missing structured fact),
+   * never on fit — see buildAccommodationGuidance's own doc comment. This
+   * test's candidate has maxGuests: null (truly no capacity on file), so
+   * the disclaimer must still fire, only with the new wording.
+   */
+  it("[uncertainty] tells the model to be honest about missing capacity data when no candidate has a registered maxGuests", () => {
     const instructions = buildHotelInstructions({
       hotel: makeHotel(),
       settings: makeSettings(),
@@ -597,7 +604,7 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
       rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: null, fit: "unknown" }]),
       party: { adults: 2, children: 1, total: 3 },
     });
-    expect(instructions).toMatch(/pas assez d'informations vérifiées/);
+    expect(instructions).toMatch(/pas d'information de capacité vérifiée/);
   });
 
   it("does not force the uncertainty disclaimer when at least one candidate has a known/confirmed capacity", () => {
@@ -608,7 +615,88 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
       rankedCandidates: candidates([{ id: "a", name: "A", maxGuests: 4, fit: "known" }]),
       party: { adults: 2, children: 1, total: 3 },
     });
-    expect(instructions).not.toMatch(/pas assez d'informations vérifiées/);
+    expect(instructions).not.toMatch(/pas d'information de capacité vérifiée/);
+  });
+
+  /**
+   * FIABILITÉ DES CATÉGORIES chantier (audit "FIABILITÉ DES CATÉGORIES
+   * D'HÉBERGEMENT") — the two real, proven bugs this chantier fixes.
+   */
+  describe("maxGuests vs. fit — the real structured fact is never hidden behind an unstated party", () => {
+    it("[TEST A] maxGuests is shown even when fit === \"unknown\" (party unstated) — never silently dropped just because no group size was given", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        rankedCandidates: candidates([{ id: "a", name: "Superior", maxGuests: 4, fit: "unknown" }]),
+        party: { adults: null, children: null, total: null },
+      });
+      expect(instructions).toContain("Superior");
+      expect(instructions).toMatch(/capacité maximale : 4 personnes/);
+      expect(instructions).not.toMatch(/capacité non vérifiée/);
+      expect(instructions).not.toMatch(/capacité confirmée/);
+    });
+
+    it("[TEST B] no global 'no reliable capacity' warning when every candidate DOES have a registered maxGuests, even though fit is unknown for all of them", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        rankedCandidates: candidates([
+          { id: "a", name: "Superior", maxGuests: 4, fit: "unknown" },
+          { id: "b", name: "Deluxe", maxGuests: 4, fit: "unknown" },
+          { id: "c", name: "Junior PMR", maxGuests: 6, fit: "unknown" },
+        ]),
+        party: { adults: null, children: null, total: null },
+      });
+      expect(instructions).not.toMatch(/n'est enregistrée dans les données de l'établissement/);
+      expect(instructions).toMatch(/capacité maximale : 4 personnes/);
+      expect(instructions).toMatch(/capacité maximale : 6 personnes/);
+    });
+
+    it("[TEST B, still fires honestly] the warning still fires when a hotel genuinely has no maxGuests recorded for any candidate, fit notwithstanding", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        rankedCandidates: candidates([
+          { id: "a", name: "Superior", maxGuests: null, fit: "unknown" },
+          { id: "b", name: "Deluxe", maxGuests: null, fit: "unknown" },
+        ]),
+        party: { adults: null, children: null, total: null },
+      });
+      expect(instructions).toMatch(/n'est enregistrée dans les données de l'établissement/);
+    });
+
+    it("[TEST C] an explicit, generic rule states structured names are authoritative and must be reproduced exactly — never merged/completed/replaced by a descriptive-text variant, never a hardcoded category name", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        rankedCandidates: candidates([{ id: "a", name: "Junior PMR", maxGuests: 6, fit: "unknown" }]),
+        party: { adults: null, children: null, total: null },
+      });
+      expect(instructions).toMatch(/proviennent des données structurées de l'établissement et font autorité/);
+      expect(instructions).toMatch(/reproduis-les EXACTEMENT/);
+      expect(instructions).toMatch(/ne les fusionne jamais, ne les complète jamais/);
+      expect(instructions).toMatch(/ne les remplace jamais par une autre appellation rencontrée dans un texte descriptif/);
+      // Generic — never a hardcoded category/hotel name in the rule's own text.
+      expect(instructions).not.toMatch(/Junior Suite PMR/);
+    });
+
+    it("[TEST D, non-régression] party known + fit known — capacity filtering/ranking/recommendation wording is completely unaffected", () => {
+      const instructions = buildHotelInstructions({
+        hotel: makeHotel(),
+        settings: makeSettings(),
+        groundingMode: "grounded",
+        rankedCandidates: candidates([{ id: "a", name: "Junior Suite", maxGuests: 6, fit: "known" }]),
+        party: { adults: 4, children: 2, total: 6 },
+      });
+      expect(instructions).toMatch(/capacité maximale : 6 personnes/);
+      expect(instructions).toMatch(/Le groupe du visiteur compte 6 personne\(s\)/);
+      expect(instructions).toMatch(/déjà été filtrés par le serveur pour exclure tout ce dont la capacité connue est insuffisante/);
+      expect(instructions).toMatch(/Tu ne peux renseigner recommendedAccommodationTypeId qu'avec l'un de ces id EXACTS/);
+    });
   });
 });
 
