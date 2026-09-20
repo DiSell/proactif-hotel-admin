@@ -343,6 +343,46 @@ describe("buildHotelInstructions — absolute rules: hostility, insults, and mal
   });
 });
 
+/**
+ * MOBILE LISIBILITÉ chantier — a purely editorial rule, deliberately generic
+ * (never a per-intention branch: "si INFORMATION...", "si CATALOGUE...").
+ * See MOBILE_READABILITY's own doc comment in prompt.ts.
+ */
+describe("buildHotelInstructions — mobile readability guidance", () => {
+  it("[always present] fires regardless of groundingMode and independently of every intent flag", () => {
+    for (const groundingMode of ["grounded", "no_context"] as const) {
+      const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode });
+      expect(instructions).toMatch(/Présentation — la plupart des visiteurs lisent tes réponses sur un téléphone/);
+    }
+  });
+
+  it("[generic, never per-intention] asks for short paragraphs, bullet lists for enumerations, and a structured recommendation shape — without ever naming INFORMATION/CATALOGUE/RECOMMANDATION as branches", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    const start = instructions.indexOf("Présentation — la plupart des visiteurs");
+    const ruleBlock = instructions.slice(start, instructions.indexOf("\n\n", start));
+    expect(ruleBlock).toMatch(/paragraphes courts/);
+    expect(ruleBlock).toMatch(/liste à puces/);
+    expect(ruleBlock).toMatch(/le choix principal, une justification courte, puis.*une alternative brève/);
+    expect(ruleBlock).not.toMatch(/si INFORMATION|si CATALOGUE|si RECOMMANDATION|roomDiscoveryIntentDetected|recommendationIntentDetected/i);
+  });
+
+  it("[never forces brevity] explicitly protects a naturally short answer from being padded into artificial structure", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    expect(instructions).toMatch(/une réponse qui tient naturellement en une phrase reste une simple phrase, jamais transformée en liste, en plusieurs paragraphes ou en titre/);
+  });
+
+  it("[never touches other absolute rules] does not restate or weaken anti-hallucination rules — only reassures, in its own closing sentence, that it doesn't override them, exactly once", () => {
+    const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });
+    const start = instructions.indexOf("Présentation — la plupart des visiteurs");
+    const ruleBlock = instructions.slice(start, instructions.indexOf("\n\n", start));
+    expect(ruleBlock).not.toMatch(/N'invente JAMAIS/);
+    // The rule's own text may reference "tarifs"/"disponibilités" only inside its own disclaimer sentence (never a new operative instruction about them).
+    expect(ruleBlock).toMatch(/elle ne change rien aux règles absolues ci-dessus/);
+    const disclaimerIndex = ruleBlock.indexOf("elle ne change rien aux règles absolues ci-dessus");
+    expect(ruleBlock.slice(0, disclaimerIndex)).not.toMatch(/tarif|disponibilité réelle/i);
+  });
+});
+
 describe("buildHotelInstructions", () => {
   it("states the hotel identity and assistant name", () => {
     const instructions = buildHotelInstructions({ hotel: makeHotel(), settings: makeSettings(), groundingMode: "grounded" });

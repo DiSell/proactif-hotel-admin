@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RoomPhotoModal } from "@/features/assistant/RoomPhotoModal";
+import { AssistantMessageContent } from "@/components/ui/AssistantMessageContent";
 import type { PublicWidgetConfig } from "./publicHotel";
 
 type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
@@ -585,7 +586,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
                 border: message.role === "user" ? "none" : "1px solid #E5E1D8",
               }}
             >
-              {message.content}
+              {message.role === "assistant" ? <AssistantMessageContent content={message.content} /> : message.content}
             </div>
             {message.role === "assistant" && message.roomRecommendation && (
               <button

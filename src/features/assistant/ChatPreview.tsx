@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { RoomPhotoModal } from "./RoomPhotoModal";
+import { AssistantMessageContent } from "@/components/ui/AssistantMessageContent";
 
 type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
 
@@ -174,7 +175,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
                 borderRadius: message.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px",
               }}
             >
-              {message.content}
+              {message.role === "assistant" ? <AssistantMessageContent content={message.content} /> : message.content}
             </div>
             {showSources && message.role === "assistant" && message.answerStatus && (
               <SourcesDebugPanel answerStatus={message.answerStatus} sources={message.sources ?? []} />

@@ -246,6 +246,32 @@ const FRESHNESS = [
 ].join("\n");
 
 /**
+ * MOBILE LISIBILITÉ chantier — a purely EDITORIAL/presentation rule, always
+ * included, independent of groundingMode AND of every intent-detection flag
+ * in this file (roomDiscoveryIntentDetected/recommendationIntentDetected/
+ * bookingIntentDetected/...): the audit's own real-reply evidence showed the
+ * model already structures some answers well (INFORMATION/CATALOGUE-shaped
+ * lists) but not others (a RECOMMENDATION's principal pick, justification
+ * and alternative fused into one unbroken paragraph) — the fix is a single
+ * generic writing-style instruction, never a per-intention branch ("si
+ * INFORMATION...", "si CATALOGUE..."), so it can never drift out of sync
+ * with — or duplicate — the 3-INTENTIONS chantier's own routing logic.
+ * Deliberately silent on WHEN to be brief vs. detailed (that's
+ * RESPONSE_LENGTH_LABEL/settings.response_length's job, untouched here) —
+ * this only shapes HOW a multi-part answer is laid out once the model has
+ * already decided what to say, and explicitly protects the single-sentence
+ * case from being padded into artificial structure.
+ */
+const MOBILE_READABILITY = [
+  "Présentation — la plupart des visiteurs lisent tes réponses sur un téléphone :",
+  "- Privilégie des paragraphes courts. Sépare les idées distinctes par un saut de ligne plutôt que de les enchaîner dans un seul bloc.",
+  "- Lorsque tu énumères plusieurs éléments (catégories, caractéristiques, options...), présente-les sous forme de liste à puces plutôt qu'en une phrase qui les énumère toutes à la suite.",
+  "- Lorsque ta réponse recommande ou compare des options, distingue clairement, dans cet ordre : le choix principal, une justification courte, puis — seulement si pertinent — une alternative brève. Ne fusionne pas ces éléments en un seul paragraphe continu.",
+  "- Cette présentation ne doit jamais rallonger artificiellement une réponse : une réponse qui tient naturellement en une phrase reste une simple phrase, jamais transformée en liste, en plusieurs paragraphes ou en titre.",
+  "- Cette règle porte uniquement sur la mise en forme de ta réponse ; elle ne change rien aux règles absolues ci-dessus (ne jamais inventer un fait, respecter le périmètre, respecter les règles de communication des tarifs et disponibilités).",
+].join("\n");
+
+/**
  * Builds the Responses API `instructions` string: identity, configured
  * behavior, capabilities, and non-negotiable safety rules — and ONLY that.
  * Retrieved RAG content is never accepted by this function (no `chunks`
@@ -443,6 +469,7 @@ export function buildHotelInstructions({
     SCOPE,
     absoluteRules,
     FRESHNESS,
+    MOBILE_READABILITY,
     customInstructions,
     eventsGuidance,
     noContextGuidance,
