@@ -70,8 +70,9 @@ describe("TargetedPhotoImport — button disabled while pending, summary derived
     expect(source).toMatch(/disabled=\{isPending\}/);
   });
 
-  it("[summary/total sourced from targetedImportPlan.ts] never a separately hardcoded 47/6/10/8/11/12 in this file", () => {
+  it("[summary/total sourced from targetedImportPlan.ts] never a separately hardcoded count in this file — true whether the plan holds 47, 58, or any future total", () => {
     expect(source).toMatch(/import \{ targetedImportSummary, targetedImportTotal \} from "\.\/targetedImportPlan";/);
     expect(source).not.toMatch(/\b47\b/);
+    expect(source).not.toMatch(/\b58\b/);
   });
 });

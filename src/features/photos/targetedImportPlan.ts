@@ -8,12 +8,16 @@
  * here rather than duplicating it.
  *
  * See targetedImport.ts's own doc comment for the full rationale: a
- * ONE-OFF, hotel-scoped import of the 47 photos identified via a real,
+ * ONE-OFF, hotel-scoped import of the photos identified via a real,
  * human-reviewed Playwright inspection of Le 1837's own official room
- * pages — never LLM-selected, never guessed. Every URL's filename carries
- * its own category's slug (e.g. "app-deluxe-1.jpg"), independently
- * cross-checked against accommodation_types.source_url before being
- * accepted by the action.
+ * pages — never LLM-selected, never guessed. Built up in two passes: the
+ * first 5 categories (47 photos) whose filenames carry their own category's
+ * slug (e.g. "app-deluxe-1.jpg"); Superior and Deluxe PMR (11 more photos,
+ * 58 total) added afterward once their own official pages were separately
+ * found and verified (see each category's own inline comment below for how)
+ * — every entry cross-checked against accommodation_types.source_url before
+ * being accepted by the action, whether or not the filename itself carries
+ * a matching slug.
  */
 export const LE_1837_HOTEL_ID = "a675cb48-8deb-4c59-86af-9e6d11ed0a6d";
 
@@ -107,6 +111,45 @@ export const TARGETED_PHOTO_IMPORT_PLAN: readonly TargetedCategoryPlan[] = [
       "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-junior-pmr-11.jpg",
       "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-junior-pmr-10.jpg",
       "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-junior-pmr-13.jpg",
+    ],
+  },
+  {
+    // accommodation_types.source_url was null for this category before this
+    // extension (never associated with an official page by any prior
+    // chantier) — the file names use the French spelling "superieur", not
+    // "superior"; the association to this category comes from the page's
+    // own <title>/<h1> ("Superior") and its real link on the site's own
+    // listing page (/en/apartment-2-pers), not from a filename slug match —
+    // see this conversation's own audit report.
+    name: "Superior",
+    sourceUrl: "https://www.le1837.com/en/superior",
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-1.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-2.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-5.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-6.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-7.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-9.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-15.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-app-superieur-10.jpg",
+    ],
+  },
+  {
+    // accommodation_types.source_url was null for this category before this
+    // extension. IMPORTANT: the link found on the site's own listing page
+    // (/en/apartment-2-pers -> "deluxe-pmr") 404s — it is a stale link the
+    // site itself never updated. The real, live URL ("deluxe-impr") was
+    // found only via the site's own sitemap.xml, confirmed by <h1>Deluxe
+    // PMR</h1> on the loaded page — never guessed. Deliberately NOT
+    // "https://www.le1837.com/en/deluxe-pmr" (404) — see this conversation's
+    // own audit report. File names here are opaque content hashes, not the
+    // "app-{slug}-{n}" convention used elsewhere on this site.
+    name: "Deluxe PMR",
+    sourceUrl: "https://www.le1837.com/en/deluxe-impr",
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/eba91a3f222d183eb1ab6c2c0ff5b1cf.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/cf6eeef4f9f74a15bb718fdd90fa2a98.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/2261ef964c7ecba68e28c9c4c59c1d35.jpg",
     ],
   },
 ] as const;

@@ -8,9 +8,10 @@ import type { ActionResult } from "@/lib/actionResult";
 import { LE_1837_HOTEL_ID, TARGETED_PHOTO_IMPORT_PLAN } from "./targetedImportPlan";
 
 /**
- * PHOTOS / CARROUSEL chantier — ONE-OFF, hotel-scoped import of the 47
- * photos identified via a real, human-reviewed Playwright inspection of
- * Le 1837's own official room pages (see this conversation's own report).
+ * PHOTOS / CARROUSEL chantier — ONE-OFF, hotel-scoped import of the photos
+ * (58 total, across 7 categories — see targetedImportPlan.ts) identified
+ * via a real, human-reviewed Playwright inspection of Le 1837's own
+ * official room pages (see this conversation's own report).
  * Deliberately scoped to exactly ONE hotel (LE_1837_HOTEL_ID) — this entry
  * point exists to unblock this one specific, already-diagnosed case (Le
  * 1837's site is a Vue SPA the crawler cannot render, so the normal
@@ -39,6 +40,17 @@ import { LE_1837_HOTEL_ID, TARGETED_PHOTO_IMPORT_PLAN } from "./targetedImportPl
  * never silently erase an existing value. sourceUrl is double-checked
  * against the plan's own expected value; a mismatch refuses that category
  * outright rather than importing against a possibly-renamed/moved page.
+ *
+ * sourceUrl guard, extended for Superior/Deluxe PMR (both had source_url =
+ * null before this — never associated with an official page by any prior
+ * chantier, unlike the first 5 categories): existing.source_url === null
+ * means "no association yet" and is accepted as a legitimate FIRST
+ * association, never treated as a mismatch. existing.source_url !== null
+ * still refuses outright the moment it disagrees with the plan's own
+ * expected value — this never weakens the original drift protection, it
+ * only stops misreading "nothing recorded yet" as "recorded and wrong".
+ * Never silently normalizes or overwrites a genuinely different existing
+ * value — that case still refuses the whole category, exactly as before.
  */
 export async function importTargetedRoomPhotos(hotelId: string): Promise<ActionResult<SaveAccommodationTypesResult>> {
   await requireSuperadmin();
@@ -67,7 +79,7 @@ export async function importTargetedRoomPhotos(hotelId: string): Promise<ActionR
     if (!existing) {
       return { ok: false, error: `"${category.name}" est introuvable pour cet hôtel — aucune action effectuée.` };
     }
-    if (existing.source_url !== category.sourceUrl) {
+    if (existing.source_url !== null && existing.source_url !== category.sourceUrl) {
       return {
         ok: false,
         error: `"${category.name}" : source_url en base ("${existing.source_url}") ne correspond plus à la page validée ("${category.sourceUrl}") — aucune action effectuée.`,

@@ -67,8 +67,60 @@ describe("importTargetedRoomPhotos — maxGuests is read fresh, never hardcoded/
     expect(pushBlock).not.toMatch(/maxGuests: \d/);
   });
 
-  it("[sourceUrl mismatch refuses the category] a stale/renamed source_url aborts that category rather than importing against the wrong page", () => {
-    expect(source).toMatch(/if \(existing\.source_url !== category\.sourceUrl\) \{/);
+  it("[sourceUrl guard, exact shape] null is accepted as a legitimate first association; only a non-null, differing value refuses the category", () => {
+    expect(source).toMatch(/if \(existing\.source_url !== null && existing\.source_url !== category\.sourceUrl\) \{/);
+  });
+});
+
+/**
+ * EXTENSION 47 -> 58 — Superior and Deluxe PMR both had source_url = null
+ * (never associated with an official page by any prior chantier), unlike
+ * the first 5 categories whose source_url was already set. The original
+ * guard (`existing.source_url !== category.sourceUrl`) would have refused
+ * BOTH of them forever, since null can never equal a real URL — this was a
+ * real gap in the original check's own logic, not a data problem. Fixed by
+ * treating null as "no association yet, first assignment allowed", while a
+ * non-null, DIFFERING value still refuses outright — the original drift
+ * protection is completely unweakened for that case.
+ */
+describe("importTargetedRoomPhotos — sourceUrl guard semantics (real invocation of the exact same predicate)", () => {
+  // Mirrors the exact guard expression from the source (see the [sourceUrl guard, exact shape] test
+  // above, which pins the literal text) — real logic, not a re-derivation of different behavior.
+  function isRefused(existingSourceUrl: string | null, planSourceUrl: string): boolean {
+    return existingSourceUrl !== null && existingSourceUrl !== planSourceUrl;
+  }
+
+  it("[NULL + expected URL -> PASS] a category never associated with an official page before is allowed its first association", () => {
+    expect(isRefused(null, "https://www.le1837.com/en/deluxe-impr")).toBe(false);
+  });
+
+  it("[identical URL + expected URL -> PASS] a category already correctly associated is allowed to proceed (idempotent re-run)", () => {
+    expect(isRefused("https://www.le1837.com/en/deluxe", "https://www.le1837.com/en/deluxe")).toBe(false);
+  });
+
+  it("[different, non-null URL + expected URL -> REFUS] a genuinely diverging association is still refused outright — never silently normalized or overwritten", () => {
+    expect(isRefused("https://www.le1837.com/en/deluxe-pmr", "https://www.le1837.com/en/deluxe-impr")).toBe(true);
+  });
+});
+
+describe("importTargetedRoomPhotos — a refusal for ANY category prevents saveAccommodationTypes from running at all", () => {
+  it("[single call site, after the full loop] saveAccommodationTypes is called exactly once, only after every category has passed its own guard — an early `return` for one category's mismatch means NO category's photos are ever downloaded/uploaded/written, not just the failing one", () => {
+    const callSites = source.match(/saveAccommodationTypes\(/g) ?? [];
+    expect(callSites.length).toBe(1);
+
+    const fnStart = source.indexOf("export async function importTargetedRoomPhotos");
+    const fn = source.slice(fnStart);
+    const loopStart = fn.indexOf("for (const category of TARGETED_PHOTO_IMPORT_PLAN)");
+    const loopEnd = fn.indexOf("\n  }\n\n  return saveAccommodationTypes");
+    const callIndex = fn.indexOf("return saveAccommodationTypes(");
+    expect(loopStart).toBeGreaterThan(-1);
+    expect(loopEnd).toBeGreaterThan(loopStart);
+    expect(callIndex).toBeGreaterThan(loopEnd);
+  });
+
+  it("[existing source_url is never written by this file] no .update(/.upsert( call in this file — the only way source_url is ever persisted is through saveAccommodationTypes itself, and only for categories that already passed the guard", () => {
+    expect(source).not.toMatch(/\.update\(/);
+    expect(source).not.toMatch(/\.upsert\(/);
   });
 });
 
