@@ -31,6 +31,7 @@ function makeHotel(overrides: Partial<Hotel> = {}): Hotel {
     assistant_name: "Camille",
     assistant_enabled: true,
     photo_management: "client",
+    total_accommodation_units: null,
     status: "active",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
@@ -70,6 +71,60 @@ function makeChunk(overrides: Partial<RetrievedChunk> = {}): RetrievedChunk {
     ...overrides,
   };
 }
+
+/**
+ * total_accommodation_units — the establishment's own total count of
+ * PHYSICAL accommodation units, injected as a plain server-stated fact
+ * (like identity's own name/place) precisely so the model never has to
+ * guess or depend on RAG retrieval luck for a single stable number. Never
+ * derived from accommodation_types (categories) or the RAG knowledge base —
+ * see this chantier's own audit report.
+ */
+describe("buildHotelInstructions — total_accommodation_units", () => {
+  it("[non-null] states the exact fact, using the real value — never a hardcoded number", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel({ total_accommodation_units: 36 }),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+    });
+    expect(instructions).toContain("Nombre total de logements de l'établissement : 36.");
+  });
+
+  it("[non-null, different value] reflects whatever value this hotel actually has — proves it's not hardcoded to 36", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel({ total_accommodation_units: 12 }),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+    });
+    expect(instructions).toContain("Nombre total de logements de l'établissement : 12.");
+    expect(instructions).not.toMatch(/Nombre total de logements de l'établissement : 36\./);
+  });
+
+  it("[null] states nothing at all about a total count — the model falls back to its own existing honest 'I don't know', unweakened", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel({ total_accommodation_units: null }),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+    });
+    expect(instructions).not.toMatch(/Nombre total de logements/);
+  });
+
+  it("[never derived from accommodation_types] a hotel with 7 ranked candidates and total_accommodation_units=null never has 7 asserted as the total — the two concepts stay completely independent", () => {
+    function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
+      return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
+    }
+    const sevenCandidates = candidates(Array.from({ length: 7 }, (_, i) => ({ id: `acc-${i}`, name: `Cat ${i}`, maxGuests: 2 })));
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel({ total_accommodation_units: null }),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: sevenCandidates,
+      party: { adults: 2, children: 0, total: 2 },
+    });
+    expect(instructions).not.toMatch(/Nombre total de logements : 7/);
+    expect(instructions).not.toMatch(/Nombre total de logements de l'établissement : 7\./);
+  });
+});
 
 describe("buildHotelInstructions — booking intent guidance", () => {
   it("[no intent] never mentions a Réserver button when bookingIntentDetected is false, regardless of mode", () => {

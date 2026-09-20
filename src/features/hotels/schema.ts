@@ -70,6 +70,28 @@ export const hotelInfoSchema = z.object({
     .or(z.literal("")),
 });
 
+/**
+ * Hotel-info editing only (updateHotelInfoSchema) — deliberately NOT part
+ * of hotelInfoSchema/createHotelSchema: the creation wizard has no step for
+ * this yet, and merging it there would make every hotel-creation payload
+ * suddenly require this key too. The establishment's own total count of
+ * PHYSICAL accommodation units — never to be confused with
+ * accommodation_types (categories). Form field is a plain string like every
+ * other optional field here; "" means "unknown, not provided" (-> null at
+ * the action layer, see actions.ts), never 0 — an operating hotel with zero
+ * physical units is never a real state, so 0 is rejected here exactly like
+ * a negative number or a decimal, matching the DB check constraint
+ * (0041_hotel_total_accommodation_units.sql).
+ */
+const hotelTotalAccommodationUnitsShape = z.object({
+  total_accommodation_units: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || (/^\d+$/.test(value) && Number.parseInt(value, 10) > 0), {
+      message: "Entrez un nombre entier positif (supérieur à 0), ou laissez vide si inconnu.",
+    }),
+});
+
 export const hotelIdentitySchema = z.object({
   primary_color: z
     .string()
@@ -126,6 +148,7 @@ export const updateHotelInfoSchema = hotelInfoSchema
   .merge(hotelIdentitySchema)
   .merge(hotelBookingLinksSchema)
   .merge(hotelBookingActionShape)
+  .merge(hotelTotalAccommodationUnitsShape)
   .refine(hostBookingSelectorRequiredWhenHostWidget.check, hostBookingSelectorRequiredWhenHostWidget.issue);
 export type UpdateHotelInfoInput = z.infer<typeof updateHotelInfoSchema>;
 

@@ -1,0 +1,41 @@
+-- =========================================================================
+-- Proactif System — total_accommodation_units: the hotel's own total count
+-- of PHYSICAL accommodation units it commercializes, as a distinct fact
+-- from accommodation_types (which models CATEGORIES, never a physical
+-- inventory — see accommodation_types.name's own doc comment in
+-- 0004_accommodation_types.sql). A hotel can have 7 accommodation_types
+-- (categories) and 36 total physical units — the two numbers are unrelated
+-- and must never be confused or derived from one another.
+--
+-- Additive only — no change to any existing table, column, function, or
+-- policy.
+--
+-- PROPOSED, NOT YET APPLIED. Apply it through your own Supabase workflow
+-- (dashboard SQL editor / `supabase db push`) when ready — nothing in this
+-- codebase executes migrations automatically.
+--
+-- Root cause this fixes: a visitor asking "combien de logements avez-vous ?"
+-- got an honest "I don't know" even though the establishment's own website
+-- states this number in its general presentation text — that text exists in
+-- knowledge_sources/knowledge_chunks, but hybrid retrieval for this kind of
+-- question surfaces the 7 individual accommodation-category pages instead
+-- (all lexically closer to "logement"/"chambre"), never the homepage chunk
+-- that actually states the total. Rather than depend on retrieval luck for
+-- a single, stable, factual number, it is stored here as a first-class
+-- hotel-profile fact and injected deterministically into the prompt — same
+-- "server states the fact, model never has to guess or search for it"
+-- principle already used for hotel.name/address/languages.
+--
+-- Semantics: NULL = unknown/not yet provided by the admin (default for
+-- every hotel, including Le 1837 immediately after this migration — this
+-- migration NEVER writes a value, see the accompanying conversation).
+-- 1..N = the real total. 0 is deliberately excluded by the check
+-- constraint: "zero physical units" is never a meaningful state for an
+-- operating hotel, so 0 would only ever mean "not entered" — which NULL
+-- already represents unambiguously. Forcing NULL for "unknown" avoids ever
+-- having two different values (0 and NULL) both meaning the same thing.
+-- =========================================================================
+alter table public.hotels
+  add column total_accommodation_units integer,
+  add constraint hotels_total_accommodation_units_positive
+    check (total_accommodation_units is null or total_accommodation_units > 0);

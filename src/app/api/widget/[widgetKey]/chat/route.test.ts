@@ -47,6 +47,7 @@ function makeWidgetContext(): PublicWidgetContext {
       assistant_name: "Camille",
       assistant_enabled: true,
       photo_management: "client",
+      total_accommodation_units: null,
       status: "active",
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:00:00Z",

@@ -74,6 +74,16 @@ export interface Hotel {
    * delegate it.
    */
   photo_management: "client" | "proactif";
+  /**
+   * Mirrors supabase/migrations/0041_hotel_total_accommodation_units.sql —
+   * PROPOSED, not yet applied. The establishment's own total count of
+   * PHYSICAL accommodation units — never to be confused with or derived
+   * from accommodation_types (which models CATEGORIES only — a hotel can
+   * have 7 accommodation_types and 36 total units, unrelated numbers). NULL
+   * = unknown/not yet provided by an admin; never 0 (see the migration's
+   * own doc comment for why 0 is rejected at the DB level).
+   */
+  total_accommodation_units: number | null;
   status: HotelStatus;
   created_at: string;
   updated_at: string;

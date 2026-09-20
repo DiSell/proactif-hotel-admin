@@ -17,6 +17,7 @@ function validUpdateInput(overrides: Record<string, unknown> = {}) {
     spa_booking_url: "",
     booking_action_mode: "url",
     host_booking_selector: "",
+    total_accommodation_units: "",
     ...overrides,
   };
 }
@@ -89,6 +90,56 @@ describe("updateHotelInfoSchema — booking_action_mode / host_booking_selector"
   it("[invalid mode] rejects a value outside the closed enum", () => {
     const result = updateHotelInfoSchema.safeParse(validUpdateInput({ booking_action_mode: "iframe_scrape" }));
     expect(result.success).toBe(false);
+  });
+});
+
+/**
+ * total_accommodation_units — the establishment's own total count of
+ * PHYSICAL accommodation units, never to be confused with or derived from
+ * accommodation_types (categories). NULL/"" = unknown; 0 is deliberately
+ * never a valid stand-in for "unknown" (see this field's own doc comment,
+ * schema.ts) — an operating hotel with zero physical units is never a real
+ * state, so 0 is rejected exactly like a negative number.
+ */
+describe("updateHotelInfoSchema — total_accommodation_units", () => {
+  it("[empty string] valid — unknown/not provided", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "" }));
+    expect(result.success).toBe(true);
+  });
+
+  it("[positive integer] valid — e.g. 36", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "36" }));
+    expect(result.success).toBe(true);
+  });
+
+  it("[single unit] valid — 1 is a real, if minimal, value", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "1" }));
+    expect(result.success).toBe(true);
+  });
+
+  it("[zero] rejected — 0 is never a valid stand-in for 'unknown', that's what the empty string is for", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "0" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("[negative] rejected", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "-5" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("[decimal] rejected — a fractional count of physical units is never meaningful", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "36.5" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("[non-numeric] rejected", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "trente-six" }));
+    expect(result.success).toBe(false);
+  });
+
+  it("[whitespace-only] treated as empty after trim — valid, same as the empty string", () => {
+    const result = updateHotelInfoSchema.safeParse(validUpdateInput({ total_accommodation_units: "   " }));
+    expect(result.success).toBe(true);
   });
 });
 

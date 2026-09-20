@@ -30,6 +30,7 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
       hotel.booking_action_mode === "host_widget" && typeof hotel.host_booking_trigger === "object" && hotel.host_booking_trigger !== null
         ? String((hotel.host_booking_trigger as { selector?: unknown }).selector ?? "")
         : "",
+    total_accommodation_units: hotel.total_accommodation_units !== null ? String(hotel.total_accommodation_units) : "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isPending, startTransition] = useTransition();
@@ -114,6 +115,23 @@ export function HotelInfoForm({ hotel }: { hotel: Hotel }) {
           />
         </FormField>
       </div>
+      <FormField
+        label="Nombre total de logements"
+        htmlFor="total_accommodation_units"
+        error={errors.total_accommodation_units}
+        hint="Le nombre total de logements physiques commercialisés par l'établissement — jamais le nombre de catégories/types d'hébergement. Laissez vide si inconnu."
+      >
+        <input
+          id="total_accommodation_units"
+          type="number"
+          min={1}
+          step={1}
+          value={state.total_accommodation_units}
+          onChange={(event) => patch({ total_accommodation_units: event.target.value })}
+          placeholder="Inconnu"
+          className={inputClassName(Boolean(errors.total_accommodation_units))}
+        />
+      </FormField>
       <FormField label="Mode de réservation" htmlFor="booking_action_mode">
         <select
           id="booking_action_mode"

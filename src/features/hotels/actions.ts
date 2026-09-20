@@ -123,6 +123,8 @@ export interface UpdateHotelInfoInput {
   booking_action_mode: BookingActionMode;
   /** Flat form field — only meaningful when booking_action_mode === "host_widget". Assembled into {strategy:"click", selector} below, never stored as-is. */
   host_booking_selector: string;
+  /** "" means unknown/not provided -> null below. Never the hotel's accommodation_types count — see hotels.total_accommodation_units's own doc comment (types/database.ts). */
+  total_accommodation_units: string;
 }
 
 export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): Promise<ActionResult<null>> {
@@ -165,6 +167,9 @@ export async function updateHotelInfo(id: string, input: UpdateHotelInfoInput): 
         parsed.data.booking_action_mode === "host_widget"
           ? hostBookingTriggerSchema.parse({ strategy: "click", selector: parsed.data.host_booking_selector })
           : null,
+      // "" (unknown/not provided) -> null, never 0 — see hotelTotalAccommodationUnitsShape's
+      // own doc comment (schema.ts) for why 0 is never a valid stand-in for "unknown".
+      total_accommodation_units: parsed.data.total_accommodation_units ? Number.parseInt(parsed.data.total_accommodation_units, 10) : null,
     })
     .eq("id", id);
 

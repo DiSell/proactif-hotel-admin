@@ -290,6 +290,23 @@ export function buildHotelInstructions({
     place ? `, situé à ${place}` : ""
   }. Nous sommes le ${todayIso}.`;
 
+  // hotel.total_accommodation_units is the establishment's own total count
+  // of PHYSICAL accommodation units — never accommodation_types (which
+  // models CATEGORIES only, see that table's own doc comment). A server-
+  // stated fact, exactly like identity above: the model never has to guess
+  // or search the RAG knowledge base for a single stable number that a real
+  // retrieval query can easily miss (see this chantier's own audit — the
+  // establishment's own homepage states this number in a large marketing
+  // paragraph that a hybrid search for "combien de logements" doesn't
+  // reliably surface, since the individual accommodation-category pages
+  // score higher for that same query without ever answering it). NULL
+  // (not yet provided by an admin) adds nothing here — the model then falls
+  // back to its own existing honest "I don't know" behavior, unweakened.
+  const totalAccommodationUnitsFact =
+    hotel.total_accommodation_units !== null
+      ? `Nombre total de logements de l'établissement : ${hotel.total_accommodation_units}.`
+      : "";
+
   const tone = TONE_LABEL[settings?.tone ?? "warm"];
   const formality = settings?.formality === "tu" ? "tutoiement" : "vouvoiement";
   const length = RESPONSE_LENGTH_LABEL[settings?.response_length ?? "normal"];
@@ -402,6 +419,7 @@ export function buildHotelInstructions({
 
   return [
     identity,
+    totalAccommodationUnitsFact,
     behavior,
     CAPABILITIES,
     SCOPE,

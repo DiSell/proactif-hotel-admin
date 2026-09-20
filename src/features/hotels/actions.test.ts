@@ -79,6 +79,40 @@ describe("updateHotelInfo — booking_action_mode / host_booking_trigger", () =>
   });
 });
 
+/**
+ * total_accommodation_units — the establishment's own total count of
+ * PHYSICAL accommodation units. "" (unknown/not provided) must become null,
+ * never 0 or an empty string — see hotelTotalAccommodationUnitsShape's own
+ * doc comment (schema.ts) for why 0 is never a valid stand-in for unknown.
+ */
+describe("updateHotelInfo — total_accommodation_units", () => {
+  function sliceFunction(exportedName: string): string {
+    const start = source.indexOf(`export async function ${exportedName}`);
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport async function", start + 1);
+    return source.slice(start, nextExport === -1 ? undefined : nextExport);
+  }
+
+  it("UpdateHotelInfoInput carries the field", () => {
+    const start = source.indexOf("export interface UpdateHotelInfoInput");
+    const end = source.indexOf("\n}", start);
+    const iface = source.slice(start, end);
+    expect(iface).toMatch(/total_accommodation_units: string;/);
+  });
+
+  it("[empty -> null, never 0] the write converts the parsed string to an integer, or null when empty — never a bare passthrough that would write a string, and never defaults to 0", () => {
+    const fn = sliceFunction("updateHotelInfo");
+    expect(fn).toMatch(/total_accommodation_units:\s*parsed\.data\.total_accommodation_units \? Number\.parseInt\(parsed\.data\.total_accommodation_units, 10\) : null,/);
+    expect(fn).not.toMatch(/total_accommodation_units:\s*parsed\.data\.total_accommodation_units,/);
+    expect(fn).not.toMatch(/total_accommodation_units:\s*parsed\.data\.total_accommodation_units \|\| 0,/);
+  });
+
+  it("[validated input] goes through updateHotelInfoSchema before writing, same as every other field on this action", () => {
+    const fn = sliceFunction("updateHotelInfo");
+    expect(fn).not.toMatch(/\.update\(\{[^}]*\binput\.total_accommodation_units\b/);
+  });
+});
+
 describe("deleteHotel", () => {
   function sliceFunction(exportedName: string): string {
     const start = source.indexOf(`export async function ${exportedName}`);
