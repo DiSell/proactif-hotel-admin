@@ -260,12 +260,13 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
-  // CATÉGORIES INFORMATION CLIQUABLES chantier — which accommodationSummary
-  // entry (by accommodationTypeId) currently has a photo fetch in flight, if
-  // any. Drives the discreet per-row loading affordance and disables that
-  // row against a second trigger while its request is pending — never a
-  // second modal/state, the fetched result feeds the SAME openRoomRecommendation
-  // state RoomRecommendation already uses (see handleAccommodationSummaryClick).
+  // CATÉGORIES INFORMATION CLIQUABLES + PREVIEW AU SURVOL chantiers — which
+  // accommodationSummary entry (by accommodationTypeId) currently has a
+  // CLICK-triggered photo fetch in flight, if any. Drives the discreet
+  // per-row loading affordance and disables that row against a second
+  // trigger while its request is pending — never a second modal/state, the
+  // fetched result feeds the SAME openRoomRecommendation state
+  // RoomRecommendation already uses (see handleAccommodationSummaryClick).
   const [loadingAccommodationTypeId, setLoadingAccommodationTypeId] = useState<string | null>(null);
   // Race-condition guard for rapid successive clicks (see
   // handleAccommodationSummaryClick's own doc comment): a monotonically
@@ -276,6 +277,42 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   // ref, not state: this value is never rendered, only read/written inside
   // the click handler and its own async continuation.
   const accommodationSummaryRequestRef = useRef(0);
+  // PREVIEW AU SURVOL chantier — session-local cache, never localStorage,
+  // never global: cleared the moment this component unmounts/remounts
+  // (a fresh Map on every mount). Keyed by accommodationTypeId, values are
+  // exactly what /room-photos returns — already the shape openRoomRecommendation
+  // expects, so a cached entry can feed EITHER the preview or the full
+  // modal without any reshaping. A ref, not state: mutating it must never
+  // by itself trigger a re-render — the preview's own state
+  // (previewAccommodationTypeId/previewData below) is what actually drives
+  // what's shown, read from this cache at the point of use.
+  const accommodationPhotosCacheRef = useRef<Map<string, RoomRecommendation>>(new Map());
+  // Real per-visitor pointer capability, computed once (lazy initializer,
+  // matches the sessionToken/conversationId pattern above): a floating
+  // preview only ever makes sense where a genuine hover gesture exists.
+  // Deliberately NOT inferred from "did onMouseEnter fire" — some touch
+  // browsers synthesize mouse events on tap, which would otherwise show a
+  // preview an instant before the tap's own click opens the full modal.
+  // window.matchMedia is guarded (SSR has no window; a browser without
+  // matchMedia support degrades to "no preview", never a crash) — see
+  // section 6 of the mission for why this specific query, not a UA sniff.
+  const [supportsHoverDevice] = useState<boolean>(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(hover: hover) and (pointer: fine)").matches
+  );
+  // Which accommodationSummary entry's preview is currently shown (hover OR
+  // keyboard focus — see the row's own onFocus/onBlur below), and its
+  // photos once loaded. null photos + no error = still loading (or nothing
+  // hovered/focused at all, when previewAccommodationTypeId is also null).
+  const [previewAccommodationTypeId, setPreviewAccommodationTypeId] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<RoomRecommendation | null>(null);
+  const [previewError, setPreviewError] = useState(false);
+  // Race-condition guard for the preview, independent of accommodationSummaryRequestRef
+  // (click) — moving the pointer from Mini-suite to Junior Suite before
+  // Mini-suite's own preview fetch resolves must never let that late
+  // response overwrite Junior Suite's already-showing preview. Incremented
+  // on every hover/focus start AND on every leave/blur, so a fetch that
+  // outlives the row it was requested for can never affect state again.
+  const accommodationPreviewRequestRef = useRef(0);
   // The structured phone-collection form — a deterministic backend signal
   // (chat response's own partnerRequestPhonePrompt field), never something
   // inferred by parsing `reply`. Cleared explicitly on successful submit;
@@ -454,25 +491,44 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   }
 
   /**
-   * CATÉGORIES INFORMATION CLIQUABLES chantier — fetches photos on demand
-   * for an accommodationSummary entry, then reuses the EXACT SAME modal
-   * state/component as RoomRecommendation (openRoomRecommendation +
+   * PREVIEW AU SURVOL chantier — the single place /room-photos is ever
+   * fetched from, shared by the click flow (handleAccommodationSummaryClick)
+   * and the hover/focus preview flow (handleAccommodationPreviewStart)
+   * below, so the two can never duplicate a request for the same category.
+   * Cache-first: a category already loaded (by an earlier hover OR an
+   * earlier click) resolves instantly with zero network call. Throws on a
+   * non-ok response or a network error — callers decide what "failure"
+   * means for their own UI (a full error banner for a click, a quiet
+   * inline note for a preview), this function only ever fetches+caches.
+   */
+  async function loadAccommodationPhotos(accommodationTypeId: string): Promise<RoomRecommendation> {
+    const cached = accommodationPhotosCacheRef.current.get(accommodationTypeId);
+    if (cached) return cached;
+
+    const response = await fetch(`/api/widget/${encodeURIComponent(widgetKey)}/room-photos?accommodationTypeId=${encodeURIComponent(accommodationTypeId)}`);
+    if (!response.ok) {
+      throw new Error(`room-photos fetch failed (${response.status})`);
+    }
+    const data: RoomRecommendation = await response.json();
+    accommodationPhotosCacheRef.current.set(accommodationTypeId, data);
+    return data;
+  }
+
+  /**
+   * CATÉGORIES INFORMATION CLIQUABLES chantier — fetches (or reuses the
+   * cache) for an accommodationSummary entry, then reuses the EXACT SAME
+   * modal state/component as RoomRecommendation (openRoomRecommendation +
    * RoomPhotoModal below) — never a second modal, never a second state.
-   * accommodationSummary itself is never extended with a photos field: this
-   * is the only place that data is ever fetched, and only once the visitor
-   * actually asks for it.
+   * accommodationSummary itself is never extended with a photos field.
    *
    * Race-condition guard: accommodationSummaryRequestRef is incremented at
    * the START of every call, and the value captured here (`requestId`) is
-   * compared again once the fetch resolves. Clicking Mini-suite then
-   * Junior Suite before the first request finishes invalidates Mini-suite's
-   * own in-flight request the instant Junior Suite's click runs — its
-   * eventual response (success OR failure) is silently discarded (never
-   * opens a modal, never clears a loading indicator that no longer belongs
-   * to it), so a slow, stale response can never overwrite/reopen the modal
-   * for a category the visitor already moved on from. A plain incrementing
-   * ref is enough here (no AbortController): the fetch itself is cheap and
-   * harmless to let finish, only its EFFECT on state needs to be gated.
+   * compared again once loadAccommodationPhotos resolves. Clicking
+   * Mini-suite then Junior Suite before the first request finishes
+   * invalidates Mini-suite's own in-flight request the instant Junior
+   * Suite's click runs — its eventual result (success OR failure) is
+   * silently discarded (never opens a modal, never clears a loading
+   * indicator that no longer belongs to it).
    */
   async function handleAccommodationSummaryClick(entry: RoomCatalogueEntry) {
     const requestId = accommodationSummaryRequestRef.current + 1;
@@ -480,22 +536,12 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     setLoadingAccommodationTypeId(entry.accommodationTypeId);
 
     try {
-      const response = await fetch(
-        `/api/widget/${encodeURIComponent(widgetKey)}/room-photos?accommodationTypeId=${encodeURIComponent(entry.accommodationTypeId)}`
-      );
+      const data = await loadAccommodationPhotos(entry.accommodationTypeId);
       if (accommodationSummaryRequestRef.current !== requestId) return; // superseded by a later click — discard silently
-
-      if (!response.ok) {
-        setError("Impossible de charger les photos de cet hébergement. Réessayez.");
-        return;
-      }
-
-      const data: RoomRecommendation = await response.json();
-      if (accommodationSummaryRequestRef.current !== requestId) return; // superseded while awaiting response.json()
       // SUCCÈS + 0 photo (data.photos = []) still opens the modal normally —
       // RoomPhotoModal's own existing "Aucune photo disponible" fallback
       // handles that case unchanged. Only a genuine fetch/HTTP failure
-      // above skips opening it at all.
+      // (the catch branch below) skips opening it at all.
       setOpenRoomRecommendation(data);
     } catch {
       if (accommodationSummaryRequestRef.current !== requestId) return;
@@ -503,6 +549,48 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     } finally {
       if (accommodationSummaryRequestRef.current === requestId) setLoadingAccommodationTypeId(null);
     }
+  }
+
+  /**
+   * PREVIEW AU SURVOL chantier — desktop hover (gated on supportsHoverDevice
+   * at the call site, never here) or keyboard focus (never gated — see
+   * section 7 of the mission: a visitor tabbing through must get the same
+   * information a mouse user gets). Shows the cached result instantly if
+   * this category was already loaded (by an earlier hover OR an earlier
+   * click); otherwise fetches once and updates the preview when it
+   * resolves, unless the pointer/focus has already moved on (see
+   * accommodationPreviewRequestRef's own doc comment above).
+   */
+  function handleAccommodationPreviewStart(entry: RoomCatalogueEntry) {
+    const requestId = accommodationPreviewRequestRef.current + 1;
+    accommodationPreviewRequestRef.current = requestId;
+    setPreviewAccommodationTypeId(entry.accommodationTypeId);
+    setPreviewError(false);
+
+    const cached = accommodationPhotosCacheRef.current.get(entry.accommodationTypeId);
+    if (cached) {
+      setPreviewData(cached);
+      return;
+    }
+    setPreviewData(null); // still loading — never "Aucune photo disponible" before a real answer
+
+    loadAccommodationPhotos(entry.accommodationTypeId)
+      .then((data) => {
+        if (accommodationPreviewRequestRef.current !== requestId) return; // pointer/focus moved elsewhere — discard silently
+        setPreviewData(data);
+      })
+      .catch(() => {
+        if (accommodationPreviewRequestRef.current !== requestId) return;
+        setPreviewError(true);
+      });
+  }
+
+  /** Invalidates any in-flight preview fetch for THIS category and clears the preview, but only if it's still the one showing — guards against an out-of-order leave/blur clearing a newer row's already-visible preview. */
+  function handleAccommodationPreviewEnd(accommodationTypeId: string) {
+    accommodationPreviewRequestRef.current += 1;
+    setPreviewAccommodationTypeId((current) => (current === accommodationTypeId ? null : current));
+    setPreviewData(null);
+    setPreviewError(false);
   }
 
   /**
@@ -732,10 +820,10 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
               </div>
             )}
             {/*
-             * INFORMATION DÉTERMINISTE + CATÉGORIES INFORMATION CLIQUABLES
-             * chantiers — the exhaustive, guaranteed list of accommodation
-             * categories for a genuine INFORMATION turn (see
-             * features/rag/types.ts:AnswerQuestionResult.accommodationSummary's
+             * INFORMATION DÉTERMINISTE + CATÉGORIES INFORMATION CLIQUABLES +
+             * PREVIEW AU SURVOL chantiers — the exhaustive, guaranteed list
+             * of accommodation categories for a genuine INFORMATION turn
+             * (see features/rag/types.ts:AnswerQuestionResult.accommodationSummary's
              * own doc comment). Deliberately NOT styled like roomCatalogue's
              * cards above (no border, no background per entry) — INFORMATION
              * must stay visually a light, conversational list, never become
@@ -750,49 +838,117 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
              * ever preloaded, accommodationSummary itself never carries a
              * photos field) and reuses the exact same openRoomRecommendation
              * state/RoomPhotoModal already used by RoomRecommendation below —
-             * never a second modal.
+             * never a second modal. A wrapping `position: relative` div lets
+             * the floating preview (below) anchor to its own row without any
+             * measurement/portal — the simplest positioning that works here.
              */}
             {message.role === "assistant" && message.accommodationSummary && message.accommodationSummary.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: "82%", fontSize: 12 }}>
                 {message.accommodationSummary.map((entry) => {
                   const isLoading = loadingAccommodationTypeId === entry.accommodationTypeId;
+                  const isPreviewing = previewAccommodationTypeId === entry.accommodationTypeId;
                   return (
-                    <button
-                      key={entry.accommodationTypeId}
-                      type="button"
-                      className="pwc-accsummary-row"
-                      onClick={() => handleAccommodationSummaryClick(entry)}
-                      disabled={isLoading}
-                      aria-label={`Voir les photos de ${entry.name}`}
-                      aria-busy={isLoading}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: 8,
-                        width: "100%",
-                        border: "none",
-                        borderRadius: 8,
-                        background: "transparent",
-                        padding: "8px 6px",
-                        textAlign: "left",
-                        font: "inherit",
-                        color: "inherit",
-                        cursor: isLoading ? "default" : "pointer",
-                      }}
-                    >
-                      <span>
-                        <span style={{ fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</span>
-                        {entry.maxGuests !== null && (
-                          <span style={{ display: "block", color: "#6b6b6b", marginTop: 1 }}>
-                            Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
-                          </span>
-                        )}
-                      </span>
-                      <span aria-hidden="true" style={{ color: "#8A6A3E", flexShrink: 0 }}>
-                        {isLoading ? "…" : "›"}
-                      </span>
-                    </button>
+                    <div key={entry.accommodationTypeId} style={{ position: "relative" }}>
+                      <button
+                        type="button"
+                        className="pwc-accsummary-row"
+                        onClick={() => handleAccommodationSummaryClick(entry)}
+                        onMouseEnter={() => {
+                          if (supportsHoverDevice) handleAccommodationPreviewStart(entry);
+                        }}
+                        onMouseLeave={() => {
+                          if (supportsHoverDevice) handleAccommodationPreviewEnd(entry.accommodationTypeId);
+                        }}
+                        onFocus={() => handleAccommodationPreviewStart(entry)}
+                        onBlur={() => handleAccommodationPreviewEnd(entry.accommodationTypeId)}
+                        disabled={isLoading}
+                        aria-label={`Voir les photos de ${entry.name}`}
+                        aria-busy={isLoading}
+                        aria-describedby={isPreviewing ? `pwc-accsummary-preview-${entry.accommodationTypeId}` : undefined}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          width: "100%",
+                          border: "none",
+                          borderRadius: 8,
+                          background: "transparent",
+                          padding: "10px 6px",
+                          textAlign: "left",
+                          font: "inherit",
+                          color: "inherit",
+                          cursor: isLoading ? "default" : "pointer",
+                        }}
+                      >
+                        <span>
+                          <span style={{ fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</span>
+                          {entry.maxGuests !== null && (
+                            <span style={{ display: "block", color: "#6b6b6b", marginTop: 1 }}>
+                              Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
+                            </span>
+                          )}
+                        </span>
+                        <span aria-hidden="true" style={{ color: "#8A6A3E", flexShrink: 0, fontSize: 18, fontWeight: 700, lineHeight: 1 }}>
+                          {isLoading ? "…" : "›"}
+                        </span>
+                      </button>
+                      {/*
+                       * PREVIEW AU SURVOL chantier — a light floating box,
+                       * never a second modal, never a full carousel. Only
+                       * ever mounted for the row currently hovered/focused
+                       * (isPreviewing) — removed entirely otherwise, so it
+                       * never intercepts clicks/taps on other rows or on the
+                       * chat input below.
+                       */}
+                      {isPreviewing && (
+                        <div
+                          id={`pwc-accsummary-preview-${entry.accommodationTypeId}`}
+                          role="status"
+                          style={{
+                            position: "absolute",
+                            top: "100%",
+                            left: 0,
+                            zIndex: 20,
+                            marginTop: 4,
+                            minWidth: 180,
+                            maxWidth: 260,
+                            borderRadius: 8,
+                            border: "1px solid #E5E1D8",
+                            background: "#fff",
+                            boxShadow: "0 4px 16px rgba(0,0,0,0.12)",
+                            padding: "8px 10px",
+                            fontSize: 11,
+                          }}
+                        >
+                          <p style={{ margin: 0, fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</p>
+                          {previewError ? (
+                            <p style={{ margin: "4px 0 0", color: "#B23B3B" }}>Aperçu indisponible.</p>
+                          ) : previewData === null ? (
+                            <p style={{ margin: "4px 0 0", color: "#6b6b6b" }}>Chargement des photos…</p>
+                          ) : previewData.photos.length === 0 ? (
+                            <p style={{ margin: "4px 0 0", color: "#6b6b6b" }}>Aucune photo disponible.</p>
+                          ) : (
+                            <>
+                              <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+                                {previewData.photos.slice(0, 4).map((photo, index) => (
+                                  // eslint-disable-next-line @next/next/no-img-element -- externally-hosted storage thumbnail, not a local/optimizable asset.
+                                  <img
+                                    key={`${photo.url}-${index}`}
+                                    src={photo.url}
+                                    alt=""
+                                    style={{ width: 44, height: 44, borderRadius: 4, objectFit: "cover", flexShrink: 0 }}
+                                  />
+                                ))}
+                              </div>
+                              <p style={{ margin: "6px 0 0", color: "#6b6b6b" }}>
+                                {previewData.photos.length} photo{previewData.photos.length > 1 ? "s" : ""}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>

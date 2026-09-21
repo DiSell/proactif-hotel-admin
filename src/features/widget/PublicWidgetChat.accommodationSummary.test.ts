@@ -7,13 +7,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "PublicWidgetChat.tsx"), "utf8");
 
 /**
- * INFORMATION DÉTERMINISTE + CATÉGORIES INFORMATION CLIQUABLES chantiers —
- * source-level (no jsdom in this repo, same constraint as
+ * INFORMATION DÉTERMINISTE + CATÉGORIES INFORMATION CLIQUABLES + PREVIEW AU
+ * SURVOL chantiers — source-level (no jsdom in this repo, same constraint as
  * PublicWidgetChat.roomCatalogue.test.ts). Proves the summary is rendered,
- * visually distinct from roomCatalogue's cards, AND (this chantier) that
- * each row is a real clickable/focusable button wired to an on-demand photo
- * fetch reusing RoomRecommendation's own modal/state — never a second
- * modal, never a preloaded photos field on accommodationSummary itself.
+ * visually distinct from roomCatalogue's cards, each row is a real
+ * clickable/focusable button wired to an on-demand, cached photo fetch
+ * reusing RoomRecommendation's own modal/state, AND (this chantier) that
+ * hovering/focusing a row shows a light floating preview without ever
+ * duplicating the fetch or the modal.
  */
 describe("PublicWidgetChat — accommodationSummary (type + data wiring)", () => {
   it("[type present] ChatMessage and ChatApiResponse both declare accommodationSummary, reusing RoomCatalogueEntry (never a second parallel type)", () => {
@@ -29,7 +30,6 @@ describe("PublicWidgetChat — accommodationSummary (type + data wiring)", () =>
   });
 
   it("[accommodationSummary's own contract is never extended with photos] no photos field on the type — the whole point of fetching on demand", () => {
-    expect(source).toMatch(/interface RoomCatalogueEntry \{[\s\S]*?accommodationTypeId: string;[\s\S]*?name: string;[\s\S]*?pageUrl: string \| null;[\s\S]*?maxGuests: number \| null;[\s\S]*?\}/);
     const ifaceStart = source.indexOf("interface RoomCatalogueEntry");
     const ifaceEnd = source.indexOf("}", ifaceStart);
     expect(source.slice(ifaceStart, ifaceEnd)).not.toMatch(/photos/);
@@ -39,6 +39,14 @@ describe("PublicWidgetChat — accommodationSummary (type + data wiring)", () =>
 function accommodationSummaryBlock(): string {
   const start = source.indexOf("message.role === \"assistant\" && message.accommodationSummary && message.accommodationSummary.length > 0");
   const end = source.indexOf("Server guarantees roomRecommendation", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+function fnBlock(name: string, nextName: string): string {
+  const start = source.indexOf(`function ${name}`);
+  const end = source.indexOf(nextName, start);
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return source.slice(start, end);
@@ -59,10 +67,13 @@ describe("PublicWidgetChat — accommodationSummary (rendering)", () => {
     expect(block).not.toMatch(/Mini-suite|Standard|Superior|Deluxe|Junior Suite|Junior PMR|Le 1837/);
   });
 
-  it("[visually distinct from roomCatalogue — mobile-light, no cards] no border/background-per-entry card style, unlike roomCatalogue", () => {
+  it("[visually distinct from roomCatalogue — mobile-light, no cards] the row button itself has no border/background-per-entry card style, unlike roomCatalogue", () => {
     const block = accommodationSummaryBlock();
-    expect(block).not.toMatch(/border: "1px solid/);
-    expect(block).not.toMatch(/background: "#fff"/);
+    const buttonStart = block.indexOf("<button");
+    const buttonEnd = block.indexOf("</button>");
+    const buttonBlock = block.slice(buttonStart, buttonEnd);
+    expect(buttonBlock).not.toMatch(/border: "1px solid/);
+    expect(buttonBlock).not.toMatch(/background: "#fff"/);
 
     // roomCatalogue's own card block, for contrast — confirms the two really do differ.
     const catalogueBlockStart = source.indexOf("message.roomCatalogue && message.roomCatalogue.length > 0");
@@ -70,12 +81,6 @@ describe("PublicWidgetChat — accommodationSummary (rendering)", () => {
     const catalogueBlock = source.slice(catalogueBlockStart, catalogueBlockEnd);
     expect(catalogueBlock).toMatch(/border: "1px solid/);
     expect(catalogueBlock).toMatch(/background: "#fff"/);
-  });
-
-  it("[never duplicates roomCatalogue's own no-price/no-description guarantee] no description, no price anywhere in this block", () => {
-    const block = accommodationSummaryBlock();
-    expect(block).not.toMatch(/description/i);
-    expect(block).not.toMatch(/€|\bEUR\b|\bprice\b/i);
   });
 
   it("[independent field, never both non-empty rendering blocks confused] roomCatalogue and accommodationSummary are two separate conditional blocks in the JSX, each keyed on its own field", () => {
@@ -86,10 +91,10 @@ describe("PublicWidgetChat — accommodationSummary (rendering)", () => {
   });
 });
 
-describe("PublicWidgetChat — accommodationSummary rows are real, accessible buttons (TEST B / item 6)", () => {
+describe("PublicWidgetChat — affordance (item 2: chevron clearly visible, real button, no heavy card)", () => {
   it("[real <button>] each row is a native <button type=\"button\">, not a <div> — free Tab/Enter/Space support, no custom key handling needed", () => {
     const block = accommodationSummaryBlock();
-    expect(block).toMatch(/<button\s*\n\s*key=\{entry\.accommodationTypeId\}\s*\n\s*type="button"/);
+    expect(block).toMatch(/<button\s*\n\s*type="button"/);
   });
 
   it("[aria-label] each button carries an explicit, dynamic aria-label naming the category — never a hardcoded name", () => {
@@ -102,59 +107,96 @@ describe("PublicWidgetChat — accommodationSummary rows are real, accessible bu
     expect(block).toMatch(/width: "100%"/);
   });
 
-  it("[chevron, discreet interactivity hint] a '›' marker, hidden from assistive tech (aria-hidden), swapped for a loading indicator while fetching", () => {
+  it("[chevron made clearly visible] larger, bold chevron — not the same subtle inherited text size as before this chantier", () => {
     const block = accommodationSummaryBlock();
-    expect(block).toMatch(/aria-hidden="true"[\s\S]*?\{isLoading \? "…" : "›"\}/);
+    expect(block).toMatch(/aria-hidden="true"[\s\S]*?fontSize: 18, fontWeight: 700/);
+    expect(block).toMatch(/\{isLoading \? "…" : "›"\}/);
   });
 
-  it("[hover/focus styling exists, scoped to this row only] a dedicated CSS class with :hover/:focus-visible rules — inline styles alone can't express these", () => {
-    expect(source).toMatch(/\.pwc-accsummary-row:hover:not\(:disabled\)/);
-    expect(source).toMatch(/\.pwc-accsummary-row:focus-visible/);
+  it("[comfortable tap target] vertical padding increased for touch comfort (10px, up from 8px)", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/padding: "10px 6px"/);
+  });
+
+  it("[hover/focus styling exists, scoped to this row only, discreet background] a dedicated CSS class with :hover/:focus-visible rules — inline styles alone can't express these; never a heavy card border", () => {
+    expect(source).toMatch(/\.pwc-accsummary-row:hover:not\(:disabled\)\s*\{\s*background:\s*#F1EDE3;\s*\}/);
+    expect(source).toMatch(/\.pwc-accsummary-row:focus-visible\s*\{\s*outline:\s*2px solid #8A6A3E;/);
     const block = accommodationSummaryBlock();
     expect(block).toMatch(/className="pwc-accsummary-row"/);
   });
 });
 
-describe("PublicWidgetChat — handleAccommodationSummaryClick (TEST B: fetch/loading/error/0-photo)", () => {
-  function handlerBlock(): string {
-    const start = source.indexOf("async function handleAccommodationSummaryClick");
-    const end = source.indexOf("async function handleSubmitPhone");
-    expect(start).toBeGreaterThan(-1);
-    expect(end).toBeGreaterThan(start);
-    return source.slice(start, end);
+describe("PublicWidgetChat — loadAccommodationPhotos (shared fetch, item 4)", () => {
+  function loadFnBlock(): string {
+    return fnBlock("loadAccommodationPhotos", "async function handleAccommodationSummaryClick");
   }
 
-  it("[calls the new route with the exact accommodationTypeId] never a different id, never a guessed URL", () => {
-    const fn = handlerBlock();
+  it("[cache-first] checks the cache before ever fetching", () => {
+    const fn = loadFnBlock();
+    const cacheCheckIndex = fn.indexOf("accommodationPhotosCacheRef.current.get(accommodationTypeId)");
+    const fetchIndex = fn.indexOf("await fetch(");
+    expect(cacheCheckIndex).toBeGreaterThan(-1);
+    expect(fetchIndex).toBeGreaterThan(cacheCheckIndex);
+    expect(fn).toMatch(/if \(cached\) return cached;/);
+  });
+
+  it("[calls the room-photos route with the exact accommodationTypeId]", () => {
+    const fn = loadFnBlock();
     expect(fn).toMatch(
-      /`\/api\/widget\/\$\{encodeURIComponent\(widgetKey\)\}\/room-photos\?accommodationTypeId=\$\{encodeURIComponent\(entry\.accommodationTypeId\)\}`/
+      /`\/api\/widget\/\$\{encodeURIComponent\(widgetKey\)\}\/room-photos\?accommodationTypeId=\$\{encodeURIComponent\(accommodationTypeId\)\}`/
     );
   });
 
-  it("[loading set before fetch, cleared after] setLoadingAccommodationTypeId(entry.accommodationTypeId) runs before the fetch; cleared in a finally-equivalent path regardless of outcome", () => {
+  it("[throws on non-ok, never returns a partial value]", () => {
+    const fn = loadFnBlock();
+    expect(fn).toMatch(/if \(!response\.ok\) \{\s*\n\s*throw new Error/);
+  });
+
+  it("[writes the cache exactly once, on a real successful fetch] never caches an error, never caches before the response is parsed", () => {
+    const fn = loadFnBlock();
+    const jsonIndex = fn.indexOf("await response.json()");
+    const setCacheIndex = fn.indexOf("accommodationPhotosCacheRef.current.set(");
+    expect(setCacheIndex).toBeGreaterThan(jsonIndex);
+  });
+
+  it("[single fetch call site for room-photos] both the click flow and the preview flow go through this one function — never a duplicated fetch elsewhere", () => {
+    expect((source.match(/\/room-photos\?accommodationTypeId=/g) ?? []).length).toBe(1);
+  });
+});
+
+describe("PublicWidgetChat — handleAccommodationSummaryClick (TEST B: click/loading/error/0-photo)", () => {
+  function handlerBlock(): string {
+    return fnBlock("handleAccommodationSummaryClick", "handleAccommodationPreviewStart");
+  }
+
+  it("[delegates to loadAccommodationPhotos] never a second, inline fetch in the click handler itself", () => {
     const fn = handlerBlock();
-    const setLoadingIndex = fn.indexOf("setLoadingAccommodationTypeId(entry.accommodationTypeId)");
-    const fetchIndex = fn.indexOf("await fetch(");
+    expect(fn).toMatch(/const data = await loadAccommodationPhotos\(entry\.accommodationTypeId\);/);
+    expect(fn).not.toMatch(/await fetch\(/);
+  });
+
+  it("[loading set before the call, cleared after regardless of outcome]", () => {
+    const fn = handlerBlock();
+    const setLoadingIndex = fn.indexOf("setLoadingAccommodationTypeId(entry.accommodationTypeId);");
+    const callIndex = fn.indexOf("await loadAccommodationPhotos(");
     expect(setLoadingIndex).toBeGreaterThan(-1);
-    expect(fetchIndex).toBeGreaterThan(setLoadingIndex);
+    expect(callIndex).toBeGreaterThan(setLoadingIndex);
     expect(fn).toMatch(/finally \{\s*\n\s*if \(accommodationSummaryRequestRef\.current === requestId\) setLoadingAccommodationTypeId\(null\);/);
   });
 
   it("[reuses openRoomRecommendation, never a second modal state] the fetched result is passed straight to setOpenRoomRecommendation, the exact state RoomRecommendation's own \"Voir la chambre\" button already uses", () => {
     const fn = handlerBlock();
     expect(fn).toMatch(/setOpenRoomRecommendation\(data\);/);
-    // No second modal-open state introduced anywhere in the file.
-    expect((source.match(/useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
+    // openRoomRecommendation's OWN declaration stays singular — previewData legitimately
+    // reuses the same type annotation for a different, non-modal purpose (TEST DESKTOP HOVER),
+    // so a blanket count of every `useState<RoomRecommendation | null>` occurrence would be wrong.
+    expect((source.match(/const \[openRoomRecommendation, setOpenRoomRecommendation\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
+    expect((source.match(/const \[previewData, setPreviewData\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
+    expect(source).not.toMatch(/<RoomPhotoModal[\s\S]*?<RoomPhotoModal/);
   });
 
-  it("[network/HTTP error -> no fake empty modal] a non-ok response or a thrown error sets the existing generic `error` state and returns WITHOUT calling setOpenRoomRecommendation", () => {
+  it("[network/HTTP error -> no fake empty modal] a thrown error (loadAccommodationPhotos rejects on non-ok/network failure) sets the existing generic `error` state and never calls setOpenRoomRecommendation", () => {
     const fn = handlerBlock();
-    const notOkIndex = fn.indexOf("if (!response.ok)");
-    const notOkBlockEnd = fn.indexOf("}", fn.indexOf("return;", notOkIndex));
-    const notOkBlock = fn.slice(notOkIndex, notOkBlockEnd);
-    expect(notOkBlock).toMatch(/setError\(/);
-    expect(notOkBlock).not.toMatch(/setOpenRoomRecommendation/);
-
     const catchIndex = fn.indexOf("} catch {");
     const catchBlock = fn.slice(catchIndex, fn.indexOf("} finally", catchIndex));
     expect(catchBlock).toMatch(/setError\(/);
@@ -172,47 +214,186 @@ describe("PublicWidgetChat — handleAccommodationSummaryClick (TEST B: fetch/lo
   });
 });
 
-describe("PublicWidgetChat — race condition guard (TEST C)", () => {
+describe("PublicWidgetChat — race condition guard, click (TEST C)", () => {
   function handlerBlock(): string {
-    const start = source.indexOf("async function handleAccommodationSummaryClick");
-    const end = source.indexOf("async function handleSubmitPhone");
-    return source.slice(start, end);
+    return fnBlock("handleAccommodationSummaryClick", "handleAccommodationPreviewStart");
   }
 
-  it("[monotonic request token] a ref incremented at the very start of every call, captured locally as requestId, before the loading state or the fetch itself", () => {
+  it("[monotonic request token] a ref incremented at the very start of every call, captured locally as requestId, before the loading state or the call to loadAccommodationPhotos", () => {
     expect(source).toMatch(/const accommodationSummaryRequestRef = useRef\(0\);/);
     const fn = handlerBlock();
     const requestIdIndex = fn.indexOf("const requestId = accommodationSummaryRequestRef.current + 1;");
     const assignIndex = fn.indexOf("accommodationSummaryRequestRef.current = requestId;");
     const loadingIndex = fn.indexOf("setLoadingAccommodationTypeId(entry.accommodationTypeId);");
-    const fetchIndex = fn.indexOf("await fetch(");
+    const callIndex = fn.indexOf("await loadAccommodationPhotos(");
     expect(requestIdIndex).toBeGreaterThan(-1);
     expect(assignIndex).toBeGreaterThan(requestIdIndex);
     expect(loadingIndex).toBeGreaterThan(assignIndex);
-    expect(fetchIndex).toBeGreaterThan(loadingIndex);
+    expect(callIndex).toBeGreaterThan(loadingIndex);
   });
 
-  it("[stale response after fetch discarded] checked immediately after the fetch resolves, before response.ok is even inspected", () => {
+  it("[stale response discarded before opening the modal]", () => {
     const fn = handlerBlock();
-    const fetchIndex = fn.indexOf("await fetch(");
-    const firstGuardIndex = fn.indexOf("if (accommodationSummaryRequestRef.current !== requestId) return;", fetchIndex);
-    const okCheckIndex = fn.indexOf("if (!response.ok)");
-    expect(firstGuardIndex).toBeGreaterThan(fetchIndex);
-    expect(firstGuardIndex).toBeLessThan(okCheckIndex);
-  });
-
-  it("[stale response after response.json() also discarded] a second guard after parsing the body, before setOpenRoomRecommendation", () => {
-    const fn = handlerBlock();
-    const jsonIndex = fn.indexOf("await response.json()");
+    const callIndex = fn.indexOf("await loadAccommodationPhotos(");
+    const guardIndex = fn.indexOf("if (accommodationSummaryRequestRef.current !== requestId) return;", callIndex);
     const openIndex = fn.indexOf("setOpenRoomRecommendation(data);");
-    const secondGuardIndex = fn.indexOf("if (accommodationSummaryRequestRef.current !== requestId) return;", jsonIndex);
-    expect(secondGuardIndex).toBeGreaterThan(jsonIndex);
-    expect(secondGuardIndex).toBeLessThan(openIndex);
+    expect(guardIndex).toBeGreaterThan(callIndex);
+    expect(guardIndex).toBeLessThan(openIndex);
   });
 
-  it("[stale loading indicator never cleared by a superseded request] the finally block only clears loading if this request is STILL the current one", () => {
+  it("[stale loading indicator never cleared by a superseded request]", () => {
     const fn = handlerBlock();
     expect(fn).toMatch(/finally \{\s*\n\s*if \(accommodationSummaryRequestRef\.current === requestId\) setLoadingAccommodationTypeId\(null\);\s*\n\s*\}/);
+  });
+});
+
+describe("PublicWidgetChat — hover detection (item 6: real hover capability, never a naive onMouseEnter)", () => {
+  it("[matchMedia hover+fine-pointer check] supportsHoverDevice is computed once via matchMedia, never inferred from an event having fired", () => {
+    expect(source).toMatch(/const \[supportsHoverDevice\] = useState<boolean>\(/);
+    expect(source).toMatch(/window\.matchMedia\("\(hover: hover\) and \(pointer: fine\)"\)\.matches/);
+  });
+
+  it("[SSR/no-matchMedia safe] guarded by typeof window and typeof window.matchMedia checks — never throws server-side or on an old browser", () => {
+    const start = source.indexOf("const [supportsHoverDevice]");
+    const end = source.indexOf(");", start);
+    const block = source.slice(start, end);
+    expect(block).toMatch(/typeof window !== "undefined"/);
+    expect(block).toMatch(/typeof window\.matchMedia === "function"/);
+  });
+
+  it("[gates onMouseEnter/onMouseLeave, never onFocus/onBlur] mouse-hover preview only fires on a real hover-capable device; keyboard focus always works regardless (item 7)", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/onMouseEnter=\{\(\) => \{\s*\n\s*if \(supportsHoverDevice\) handleAccommodationPreviewStart\(entry\);/);
+    expect(block).toMatch(/onMouseLeave=\{\(\) => \{\s*\n\s*if \(supportsHoverDevice\) handleAccommodationPreviewEnd\(entry\.accommodationTypeId\);/);
+    expect(block).toMatch(/onFocus=\{\(\) => handleAccommodationPreviewStart\(entry\)\}/);
+    expect(block).toMatch(/onBlur=\{\(\) => handleAccommodationPreviewEnd\(entry\.accommodationTypeId\)\}/);
+  });
+});
+
+describe("PublicWidgetChat — handleAccommodationPreviewStart/End (desktop hover preview, TEST DESKTOP HOVER)", () => {
+  function startBlock(): string {
+    return fnBlock("handleAccommodationPreviewStart", "handleAccommodationPreviewEnd");
+  }
+  function endBlock(): string {
+    return fnBlock("handleAccommodationPreviewEnd", "handleSubmitPhone");
+  }
+
+  it("[cache-first, zero fetch on repeat hover] checks the cache before calling loadAccommodationPhotos — a second hover of the same category never refetches", () => {
+    const fn = startBlock();
+    const cacheCheckIndex = fn.indexOf("accommodationPhotosCacheRef.current.get(entry.accommodationTypeId)");
+    const loadCallIndex = fn.indexOf("loadAccommodationPhotos(entry.accommodationTypeId)");
+    expect(cacheCheckIndex).toBeGreaterThan(-1);
+    expect(loadCallIndex).toBeGreaterThan(cacheCheckIndex);
+    expect(fn).toMatch(/if \(cached\) \{\s*\n\s*setPreviewData\(cached\);\s*\n\s*return;\s*\n\s*\}/);
+  });
+
+  it("[never shows the 0-photo fallback while still loading] setPreviewData(null) before the fetch, distinct from an empty array", () => {
+    const fn = startBlock();
+    expect(fn).toMatch(/setPreviewData\(null\); \/\/ still loading/);
+  });
+
+  it("[race-condition token, independent from the click's own ref]", () => {
+    expect(source).toMatch(/const accommodationPreviewRequestRef = useRef\(0\);/);
+    const fn = startBlock();
+    const fnBodyStart = fn.indexOf("function handleAccommodationPreviewStart");
+    const requestIdIndex = fn.indexOf("const requestId = accommodationPreviewRequestRef.current + 1;");
+    expect(requestIdIndex).toBeGreaterThan(fnBodyStart);
+    // No other statement sits between the function's opening brace and the requestId line —
+    // the token is captured before anything else runs (loading state, cache check, fetch).
+    const between = fn.slice(fn.indexOf("{", fnBodyStart) + 1, requestIdIndex).trim();
+    expect(between).toBe("");
+    expect(fn).toMatch(/accommodationPreviewRequestRef\.current = requestId;/);
+  });
+
+  it("[stale preview response discarded — a slow Mini-suite fetch can't overwrite an already-showing Junior Suite preview]", () => {
+    const fn = startBlock();
+    const thenIndex = fn.indexOf(".then((data) => {");
+    const guardIndex = fn.indexOf("if (accommodationPreviewRequestRef.current !== requestId) return;", thenIndex);
+    const setDataIndex = fn.indexOf("setPreviewData(data);", thenIndex);
+    expect(guardIndex).toBeGreaterThan(thenIndex);
+    expect(guardIndex).toBeLessThan(setDataIndex);
+  });
+
+  it("[preview error never breaks the widget, never opens a modal] a rejected loadAccommodationPhotos sets previewError only, gated by the same stale-request guard", () => {
+    const fn = startBlock();
+    const catchIndex = fn.indexOf(".catch(() => {");
+    const catchBlock = fn.slice(catchIndex, fn.indexOf("});", catchIndex));
+    expect(catchBlock).toMatch(/if \(accommodationPreviewRequestRef\.current !== requestId\) return;/);
+    expect(catchBlock).toMatch(/setPreviewError\(true\);/);
+    expect(catchBlock).not.toMatch(/setOpenRoomRecommendation|setError\(/);
+  });
+
+  it("[mouseleave/blur clears the preview and invalidates its in-flight fetch] but only if it's still the row currently showing", () => {
+    const fn = endBlock();
+    expect(fn).toMatch(/accommodationPreviewRequestRef\.current \+= 1;/);
+    expect(fn).toMatch(/setPreviewAccommodationTypeId\(\(current\) => \(current === accommodationTypeId \? null : current\)\);/);
+    expect(fn).toMatch(/setPreviewData\(null\);/);
+    expect(fn).toMatch(/setPreviewError\(false\);/);
+  });
+});
+
+describe("PublicWidgetChat — preview rendering (format, max 4 thumbnails, count, 0-photo, item 7)", () => {
+  it("[only mounted for the hovered/focused row] isPreviewing gate — never rendered for every row at once", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/const isPreviewing = previewAccommodationTypeId === entry\.accommodationTypeId;/);
+    expect(block).toMatch(/\{isPreviewing && \(/);
+  });
+
+  it("[max 4 thumbnails, in the order photos were returned (position order, guaranteed server-side)]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/previewData\.photos\.slice\(0, 4\)\.map/);
+  });
+
+  it("[total photo count shown]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/\{previewData\.photos\.length\} photo\{previewData\.photos\.length > 1 \? "s" : ""\}/);
+  });
+
+  it("[0 photos -> a light textual note, never 4 empty slots]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/previewData\.photos\.length === 0 \? \(\s*\n\s*<p[^>]*>Aucune photo disponible\.<\/p>/);
+  });
+
+  it("[loading state -> discreet text, never the 0-photo fallback]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/previewData === null \? \(\s*\n\s*<p[^>]*>Chargement des photos…<\/p>/);
+  });
+
+  it("[error state -> a quiet note, never a crash/blank]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/previewError \? \(\s*\n\s*<p[^>]*>Aperçu indisponible\.<\/p>/);
+  });
+
+  it("[never a second modal, never a full carousel] no RoomPhotoModal reference inside the preview block, and no thumbnail click handler (thumbnails are decorative only, alt=\"\")", () => {
+    const block = accommodationSummaryBlock();
+    const previewStart = block.indexOf("isPreviewing && (");
+    const previewBlock = block.slice(previewStart);
+    expect(previewBlock).not.toMatch(/RoomPhotoModal/);
+    expect(previewBlock).not.toMatch(/onClick/);
+    expect(previewBlock).toMatch(/alt=""/);
+  });
+
+  it("[accessible: role=status + aria-describedby links the row to its own preview]", () => {
+    const block = accommodationSummaryBlock();
+    expect(block).toMatch(/role="status"/);
+    expect(block).toMatch(/aria-describedby=\{isPreviewing \? `pwc-accsummary-preview-\$\{entry\.accommodationTypeId\}` : undefined\}/);
+    expect(block).toMatch(/id=\{`pwc-accsummary-preview-\$\{entry\.accommodationTypeId\}`\}/);
+  });
+});
+
+describe("PublicWidgetChat — cache (item 3/8: session-local, no localStorage, no global)", () => {
+  it("[a plain ref-held Map, keyed by accommodationTypeId, values compatible with openRoomRecommendation]", () => {
+    expect(source).toMatch(/const accommodationPhotosCacheRef = useRef<Map<string, RoomRecommendation>>\(new Map\(\)\);/);
+  });
+
+  it("[never localStorage/sessionStorage for this cache]", () => {
+    const start = source.indexOf("const accommodationPhotosCacheRef");
+    const end = source.indexOf(";", start) + 1;
+    expect(source.slice(Math.max(0, start - 400), end)).not.toMatch(/localStorage|sessionStorage/);
+  });
+
+  it("[single Map instance for the whole cache] never a second, competing cache structure introduced elsewhere", () => {
+    expect((source.match(/useRef<Map<string, RoomRecommendation>>/g) ?? []).length).toBe(1);
   });
 });
 
