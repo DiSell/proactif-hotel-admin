@@ -89,6 +89,47 @@ describe("end-to-end: message -> findMentionedAccommodation -> resolveAuthoritat
 });
 
 /**
+ * P1-2 — a second real, confirmed bug in the same chain: "Deluxe ou Superior
+ * pour 4 personnes ?" had the model agree with itself (reply text AND
+ * recommendedAccommodationTypeId both said Deluxe), yet roomRecommendation
+ * pointed at Superior — because findMentionedAccommodation used to pick the
+ * longer of the two independently-matched names ("Superior" > "Deluxe")
+ * regardless of what the model concluded. findMentionedAccommodation now
+ * returns null for this shape (see its own doc comment), so
+ * resolveAuthoritativeAccommodationId falls through to the model's own,
+ * already-coherent choice — texte and roomRecommendation always agree,
+ * whichever category the model actually recommends.
+ */
+describe("end-to-end: independent comparison (P1-2) — texte/choix structuré always agree", () => {
+  const lookups = [
+    { id: "deluxe-id", name: "Deluxe", sourceUrl: "https://www.le1837.com/en/deluxe" },
+    { id: "superior-id", name: "Superior", sourceUrl: null },
+  ];
+
+  function resolveForMessage(message: string, modelProposedId: string | null): string | null {
+    const mentioned = findMentionedAccommodation(message, lookups);
+    return resolveAuthoritativeAccommodationId(mentioned?.id ?? null, modelProposedId);
+  }
+
+  it("[the exact reported bug, fixed] model recommends Deluxe in text and in recommendedAccommodationTypeId -> roomRecommendation follows Deluxe, never Superior", () => {
+    expect(resolveForMessage("Deluxe ou Superior pour 4 personnes ?", "deluxe-id")).toBe("deluxe-id");
+  });
+
+  it("[reversed model choice — no category is hardwired to win] model recommends Superior instead -> roomRecommendation follows Superior", () => {
+    expect(resolveForMessage("Deluxe ou Superior pour 4 personnes ?", "superior-id")).toBe("superior-id");
+  });
+
+  it("[word order never decides] 'Superior ou Deluxe' — same independent pair, reversed order in the message — still follows whatever the model proposes", () => {
+    expect(resolveForMessage("Superior ou Deluxe pour 4 personnes ?", "deluxe-id")).toBe("deluxe-id");
+    expect(resolveForMessage("Superior ou Deluxe pour 4 personnes ?", "superior-id")).toBe("superior-id");
+  });
+
+  it("[model proposes nothing for a comparison message] no deterministic override either -> no recommendation at all, never an arbitrary name-length pick", () => {
+    expect(resolveForMessage("Deluxe ou Superior pour 4 personnes ?", null)).toBeNull();
+  });
+});
+
+/**
  * Source-level wiring — buildRoomRecommendation() can't be unit-tested
  * directly here (Supabase-touching, room_photos query) — same constraint as
  * every other answer.ts test file. Confirms mentionedAccommodationId is

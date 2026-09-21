@@ -397,4 +397,45 @@ describe("findMentionedAccommodation", () => {
   it("[empty list] never matches anything", () => {
     expect(findMentionedAccommodation("la Deluxe", [])).toBeNull();
   });
+
+  it("[single mention] a message naming only Deluxe resolves to Deluxe", () => {
+    const result = findMentionedAccommodation("Que pensez-vous de la Deluxe ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe");
+  });
+
+  it("[single mention] a message naming only Superior resolves to Superior", () => {
+    const result = findMentionedAccommodation("Que pensez-vous de la Superior ?", le1837Lookups());
+    expect(result?.id).toBe("superior");
+  });
+
+  it("[independent comparison] 'Deluxe ou Superior' — two independent names, neither a substring of the other — returns null, never picks the longer name", () => {
+    expect(findMentionedAccommodation("Deluxe ou Superior pour 4 personnes ?", le1837Lookups())).toBeNull();
+  });
+
+  it("[independent comparison, reversed order] 'Superior ou Deluxe' also returns null — word order never decides", () => {
+    expect(findMentionedAccommodation("Superior ou Deluxe pour 4 personnes ?", le1837Lookups())).toBeNull();
+  });
+
+  it("[specificity collision still resolved] 'Deluxe PMR' alone, with Deluxe + Deluxe PMR both candidates, still resolves to the more specific Deluxe PMR — the historical fix is not reopened", () => {
+    const result = findMentionedAccommodation("Est-ce que la Deluxe PMR a la climatisation ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe-pmr");
+  });
+
+  it("[historical bug guard] a message naming only Deluxe must never resolve to Deluxe PMR", () => {
+    const result = findMentionedAccommodation("la Deluxe fait quelle surface ?", le1837Lookups());
+    expect(result?.id).toBe("deluxe");
+    expect(result?.id).not.toBe("deluxe-pmr");
+  });
+
+  it("[independent comparison, other categories] 'Standard ou Mini-suite' — different independent pair — also returns null, proving the rule isn't hardcoded to Deluxe/Superior", () => {
+    expect(findMentionedAccommodation("Standard ou Mini-suite, que choisir ?", le1837Lookups())).toBeNull();
+  });
+
+  it("[three independent categories] naming three unrelated categories at once still returns null", () => {
+    expect(findMentionedAccommodation("Standard, Deluxe ou Superior, laquelle choisir ?", le1837Lookups())).toBeNull();
+  });
+
+  it("[near-identical lengths] 'Junior Suite' and 'Junior PMR' (same length, neither a substring of the other) return null — length proximity doesn't change the rule", () => {
+    expect(findMentionedAccommodation("Junior Suite ou Junior PMR, laquelle est la plus grande ?", le1837Lookups())).toBeNull();
+  });
 });

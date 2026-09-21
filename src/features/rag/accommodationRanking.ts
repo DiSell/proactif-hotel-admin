@@ -377,16 +377,45 @@ export interface AccommodationNameLookup {
  * truth for "does this real name appear in this message") — but returns
  * WHICH accommodation matched, needed to resolve its source_url for scoped
  * retrieval (see retrieve.ts:fetchAccommodationSourceChunks and answer.ts's
- * own call site).
+ * own call site) AND as the deterministic authority for roomRecommendation
+ * (see answer.ts:resolveAuthoritativeAccommodationId).
  *
- * Collision handling: when several real names match the same message (e.g.
- * "Deluxe" is a substring-word of "Deluxe PMR" — "la Deluxe PMR a la clim ?"
- * matches BOTH), the MOST SPECIFIC one wins — simply the longest matching
- * name. A generic, hotel-agnostic tie-break: never a hardcoded pair like
+ * Two different multi-match shapes have to be told apart here — collapsing
+ * them into one rule is the exact bug this function used to have (a real,
+ * confirmed "Deluxe ou Superior pour 4 personnes ?" mix-up: the model's own
+ * text and recommendedAccommodationTypeId agreed on Deluxe, but this
+ * function unconditionally returned Superior — the longer of the two names
+ * — which then silently overrode the model's already-coherent choice via
+ * resolveAuthoritativeAccommodationId):
+ *
+ * - SPECIFICITY COLLISION: one matched name is textually a superstring of
+ *   every other matched name (e.g. "Deluxe" is a substring-word of "Deluxe
+ *   PMR" — "la Deluxe PMR a la clim ?" matches BOTH). These aren't two
+ *   independent mentions, they're one physical mention read at two
+ *   granularities — the MOST SPECIFIC one (the superstring) still wins, so
+ *   the historical Deluxe/Deluxe PMR fix stays exactly as it was.
+ * - INDEPENDENT MENTIONS: two or more matched names where at least one is
+ *   NOT contained in the longest match (e.g. "Deluxe" and "Superior" —
+ *   neither is a substring of the other) — a genuine comparison between
+ *   distinct categories, not a specificity collision. No name-based
+ *   heuristic can pick the "right" one here (name length has no relationship
+ *   to which the user or the model actually prefers), so this returns null
+ *   — ambiguous, deliberately — letting resolveAuthoritativeAccommodationId
+ *   fall through to the model's own recommendedAccommodationTypeId instead,
+ *   which is already validated against rankedCandidates and, unlike this
+ *   purely textual match, is free to reason about capacity, amenities and
+ *   the actual question asked.
+ *
+ * Generic and hotel-agnostic either way: never a hardcoded pair like
  * "Deluxe"/"Deluxe PMR", works for any hotel's own category names.
  */
 export function findMentionedAccommodation<T extends AccommodationNameLookup>(message: string, accommodations: T[]): T | null {
   const matches = accommodations.filter((a) => accommodationNameMatchesMessage(a.name, message));
   if (matches.length === 0) return null;
-  return matches.reduce((best, current) => (current.name.length > best.name.length ? current : best));
+  if (matches.length === 1) return matches[0];
+
+  const longest = matches.reduce((best, current) => (current.name.length > best.name.length ? current : best));
+  const longestLower = longest.name.trim().toLowerCase();
+  const isSpecificityCollision = matches.every((m) => longestLower.includes(m.name.trim().toLowerCase()));
+  return isSpecificityCollision ? longest : null;
 }
