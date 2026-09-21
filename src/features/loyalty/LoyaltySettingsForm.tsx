@@ -53,7 +53,17 @@ export function LoyaltySettingsForm({ settings }: { settings: LoyaltySettings | 
       </div>
       <label className="text-xs">
         Délai après départ
-        <input type="number" min="0" max="365" value={delayDays} onChange={(event) => setDelayDays(Number(event.target.value))} className="mt-2 h-10 w-full rounded-lg border border-border px-3" />
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            max="365"
+            value={delayDays}
+            onChange={(event) => setDelayDays(Number(event.target.value))}
+            className="h-10 w-24 rounded-lg border border-border px-3"
+          />
+          <span className="text-xs text-body">{delayDays > 1 ? "jours" : "jour"} après le départ</span>
+        </div>
       </label>
 
       {/* Belongs to the email as a whole, not to the "Remerciement" block below — it stays the email's own subject even when thank_you_enabled=false (review-only). Kept outside both block cards for exactly that reason. */}
