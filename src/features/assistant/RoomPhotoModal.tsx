@@ -8,6 +8,31 @@ interface RoomPhotoModalProps {
   pageUrl: string | null;
   bookingUrl: string | null;
   onClose: () => void;
+  /**
+   * RACCORDER host_widget chantier — when provided, takes priority over
+   * bookingUrl for the "Réserver" action: a real <button> calling this
+   * callback instead of the plain <a href={bookingUrl}> link. Lets a
+   * caller (PublicWidgetChat, for a hotel configured with
+   * booking_action_mode="host_widget") trigger its own existing
+   * host-booking mechanism (requestHostBooking/postMessage) without this
+   * component ever knowing what "host_widget" means — it only ever sees an
+   * opaque callback, exactly like onClose. ChatPreview never passes this
+   * (no host page to trigger anything on), so bookingUrl keeps working
+   * there exactly as before. Never both a callback button AND a bookingUrl
+   * link at once — see the render logic below.
+   */
+  onBooking?: () => void;
+  /** Disables the Réserver button and marks it aria-busy while a triggered onBooking request is still in flight — prevents a second concurrent click, never affects the bookingUrl link path. */
+  bookingPending?: boolean;
+  /**
+   * A caller-supplied, ready-to-display message (e.g.
+   * PublicWidgetChat's own HOST_BOOKING_UNAVAILABLE_MESSAGE) shown next to
+   * Réserver when a triggered onBooking request failed. This component
+   * never hardcodes or imports that string itself — it stays agnostic to
+   * whatever mechanism onBooking represents, same principle as onBooking
+   * itself. null/undefined renders nothing.
+   */
+  bookingErrorMessage?: string | null;
 }
 
 /**
@@ -27,7 +52,7 @@ interface RoomPhotoModalProps {
  * exactly like switching to a different modal). 0 or 1 photo needs no
  * thumbnail strip at all — that's not a real carousel, just noise.
  */
-export function RoomPhotoModal({ name, photos, pageUrl, bookingUrl, onClose }: RoomPhotoModalProps) {
+export function RoomPhotoModal({ name, photos, pageUrl, bookingUrl, onClose, onBooking, bookingPending, bookingErrorMessage }: RoomPhotoModalProps) {
   return (
     <RoomPhotoModalInner
       key={photos.map((p) => p.url).join("|")}
@@ -36,11 +61,14 @@ export function RoomPhotoModal({ name, photos, pageUrl, bookingUrl, onClose }: R
       pageUrl={pageUrl}
       bookingUrl={bookingUrl}
       onClose={onClose}
+      onBooking={onBooking}
+      bookingPending={bookingPending}
+      bookingErrorMessage={bookingErrorMessage}
     />
   );
 }
 
-function RoomPhotoModalInner({ name, photos, pageUrl, bookingUrl, onClose }: RoomPhotoModalProps) {
+function RoomPhotoModalInner({ name, photos, pageUrl, bookingUrl, onClose, onBooking, bookingPending, bookingErrorMessage }: RoomPhotoModalProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const selectedPhoto = photos[selectedIndex] ?? null;
 
@@ -93,23 +121,39 @@ function RoomPhotoModalInner({ name, photos, pageUrl, bookingUrl, onClose }: Roo
           )}
         </div>
 
-        {(pageUrl || bookingUrl) && (
-          <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
-            {pageUrl && (
-              <a href={pageUrl} target="_blank" rel="noreferrer" className="text-xs font-medium text-body underline hover:text-ink">
-                Voir la page
-              </a>
-            )}
-            {bookingUrl && (
-              <a
-                href={bookingUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full bg-ink px-4 py-2 text-xs font-medium text-canvas hover:opacity-90"
-              >
-                Réserver
-              </a>
-            )}
+        {(pageUrl || bookingUrl || onBooking) && (
+          <div className="border-t border-border px-5 py-3">
+            <div className="flex items-center justify-end gap-2">
+              {pageUrl && (
+                <a href={pageUrl} target="_blank" rel="noreferrer" className="text-xs font-medium text-body underline hover:text-ink">
+                  Voir la page
+                </a>
+              )}
+              {/* onBooking always wins over bookingUrl — never both a callback button and a link at once, see this component's own doc comment. */}
+              {onBooking ? (
+                <button
+                  type="button"
+                  onClick={onBooking}
+                  disabled={bookingPending}
+                  aria-busy={bookingPending}
+                  className="rounded-full bg-ink px-4 py-2 text-xs font-medium text-canvas hover:opacity-90 disabled:cursor-default disabled:opacity-60"
+                >
+                  Réserver
+                </button>
+              ) : (
+                bookingUrl && (
+                  <a
+                    href={bookingUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full bg-ink px-4 py-2 text-xs font-medium text-canvas hover:opacity-90"
+                  >
+                    Réserver
+                  </a>
+                )
+              )}
+            </div>
+            {bookingErrorMessage && <p className="mt-2 text-right text-2xs text-danger">{bookingErrorMessage}</p>}
           </div>
         )}
       </div>

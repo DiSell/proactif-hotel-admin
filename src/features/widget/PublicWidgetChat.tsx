@@ -323,11 +323,19 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [phoneSubmitting, setPhoneSubmitting] = useState(false);
   const [phoneError, setPhoneError] = useState<string | null>(null);
   // Tracks the one host-booking request in flight, if any, and which
-  // message's button triggered it — never a booking, never a reservation,
-  // just "did widget.js manage to open the site's existing module".
-  const [hostBookingState, setHostBookingState] = useState<{ messageIndex: number; status: "pending" | "unavailable" } | null>(null);
+  // trigger requested it — never a booking, never a reservation, just "did
+  // widget.js manage to open the site's existing module". messageIndex is
+  // a real chat-message array index for the generic per-message CTA, or
+  // the literal string "modal" for a request originating from
+  // RoomPhotoModal's own Réserver button (see its onBooking prop below) —
+  // a self-documenting sentinel, never a fabricated numeric index, since
+  // the modal isn't attached to any one message. The postMessage protocol
+  // itself never carries this value at all — it exists purely to route the
+  // "unavailable" UI feedback (the message's own inline note vs. the
+  // modal's own bookingErrorMessage) back to whichever trigger asked.
+  const [hostBookingState, setHostBookingState] = useState<{ messageIndex: number | "modal"; status: "pending" | "unavailable" } | null>(null);
 
-  function requestHostBooking(messageIndex: number) {
+  function requestHostBooking(messageIndex: number | "modal") {
     if (hostBookingState?.status === "pending") return; // one in flight at a time
     if (!hostOrigin) {
       // No validated host origin (e.g. this page opened outside a real
@@ -344,6 +352,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   // around for the component's whole lifetime.
   useEffect(() => {
     if (!hostBookingState || hostBookingState.status !== "pending" || !hostOrigin) return;
+    const requestSource = hostBookingState.messageIndex;
 
     function handleMessage(event: MessageEvent) {
       if (event.source !== window.parent) return;
@@ -354,7 +363,13 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
         setHostBookingState((current) => (current && current.status === "pending" ? { ...current, status: "unavailable" } : current));
       } else {
         // "triggered": widget.js already reduced/closed the whole Proactif
-        // panel on the host page — nothing left to reflect here.
+        // panel on the host page (display:none on the iframe) — but that
+        // never unmounts this React tree, so its own state (including a
+        // still-open RoomPhotoModal) would otherwise silently survive and
+        // reappear stale the next time the visitor reopens the bubble.
+        // Only the modal-originated request needs this extra reset — the
+        // generic per-message CTA has no modal of its own to close.
+        if (requestSource === "modal") setOpenRoomRecommendation(null);
         setHostBookingState(null);
       }
     }
@@ -1182,6 +1197,20 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           pageUrl={openRoomRecommendation.pageUrl}
           bookingUrl={openRoomRecommendation.bookingUrl}
           onClose={() => setOpenRoomRecommendation(null)}
+          /*
+           * RACCORDER host_widget chantier — config.bookingActionMode is
+           * already the server-computed, trusted signal (see
+           * publicHotel.ts's buildPublicWidgetConfig); no client-side
+           * bookingCtaKind recomputation, no new RAG/contract field.
+           * requestHostBooking already exists for the generic per-message
+           * CTA — reused verbatim here with the "modal" sentinel, never a
+           * duplicated implementation.
+           */
+          onBooking={config.bookingActionMode === "host_widget" ? () => requestHostBooking("modal") : undefined}
+          bookingPending={hostBookingState?.messageIndex === "modal" && hostBookingState.status === "pending"}
+          bookingErrorMessage={
+            hostBookingState?.messageIndex === "modal" && hostBookingState.status === "unavailable" ? HOST_BOOKING_UNAVAILABLE_MESSAGE : null
+          }
         />
       )}
     </div>
