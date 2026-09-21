@@ -47,3 +47,45 @@ describe("ChatPreview — apiPath", () => {
     expect(formSource).toMatch(/apiPath=\{`\/api\/client\/hotels\/\$\{hotelId\}\/chat`\}/);
   });
 });
+
+/**
+ * INFORMATION DÉTERMINISTE chantier — item F/9 of the mission: ChatPreview
+ * gains accommodationSummary support so INFORMATION can be previewed
+ * correctly (chatEndpoint.ts, shared by both /api/hotels/[id]/chat and
+ * /api/client/hotels/[id]/chat, already serializes it). Deliberately does
+ * NOT add roomCatalogue support — that gap is pre-existing and explicitly
+ * out of scope for this chantier.
+ */
+describe("ChatPreview — accommodationSummary", () => {
+  it("[type present] ChatMessage and ChatApiResponse both declare accommodationSummary via a locally-named AccommodationSummaryEntry (never named after roomCatalogue, which this component doesn't support)", () => {
+    expect(source).toMatch(/interface ChatMessage \{[\s\S]*?accommodationSummary\?: AccommodationSummaryEntry\[\];[\s\S]*?\}/);
+    expect(source).toMatch(/interface ChatApiResponse \{[\s\S]*?accommodationSummary: AccommodationSummaryEntry\[\];[\s\S]*?\}/);
+  });
+
+  it("[same four fields as the server type, no price] accommodationTypeId/name/pageUrl/maxGuests only", () => {
+    const ifaceStart = source.indexOf("interface AccommodationSummaryEntry");
+    const ifaceEnd = source.indexOf("}", ifaceStart);
+    const iface = source.slice(ifaceStart, ifaceEnd);
+    expect(iface).toMatch(/accommodationTypeId: string;/);
+    expect(iface).toMatch(/name: string;/);
+    expect(iface).toMatch(/pageUrl: string \| null;/);
+    expect(iface).toMatch(/maxGuests: number \| null;/);
+    expect(iface).not.toMatch(/price/i);
+  });
+
+  it("[actually read from the API response] data.accommodationSummary is stored on the new assistant message", () => {
+    const sendStart = source.indexOf("const data: ChatApiResponse = await response.json();");
+    const sendEnd = source.indexOf("} catch (err)", sendStart);
+    const sendBlock = source.slice(sendStart, sendEnd);
+    expect(sendBlock).toMatch(/accommodationSummary: data\.accommodationSummary,/);
+  });
+
+  it("[rendered as a guaranteed list] maps over message.accommodationSummary, gated on length > 0, keyed by accommodationTypeId", () => {
+    expect(source).toMatch(/message\.role === "assistant" && message\.accommodationSummary && message\.accommodationSummary\.length > 0/);
+    expect(source).toMatch(/message\.accommodationSummary\.map\(\(entry\) => \(/);
+  });
+
+  it("[roomCatalogue stays entirely unsupported] no actual roomCatalogue field/type/rendering was added by this chantier — the pre-existing gap remains, unchanged, out of scope (doc comments may still mention the name to explain the deliberate choice not to reuse it)", () => {
+    expect(source).not.toMatch(/message\.roomCatalogue|data\.roomCatalogue|interface RoomCatalogueEntry|roomCatalogue\??:\s*(RoomCatalogueEntry)?\[\]/);
+  });
+});

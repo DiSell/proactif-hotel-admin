@@ -10,6 +10,7 @@ import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValid
 import {
   filterAndRankAccommodations,
   findMentionedAccommodation,
+  isAccommodationInformationIntent,
   isAccommodationRecommendationIntent,
   isRoomDiscoveryIntent,
   type AccommodationCandidate,
@@ -431,6 +432,21 @@ export async function answerQuestion({
     !roomDiscoveryIntentDetected &&
     (isAccommodationRecommendationIntent(message) || (recommendationContinuationSignal && !isBookingIntent(message)));
 
+  // INFORMATION DÉTERMINISTE chantier — the third, previously-unwired
+  // signal: isAccommodationInformationIntent existed since the 3-INTENTIONS
+  // chantier (accommodationRanking.ts) but was never actually called here —
+  // INFORMATION was purely an emergent "neither catalogue nor recommendation"
+  // fallthrough. Drives accommodationSummary below (see its own doc
+  // comment) and, in prompt.ts, suppresses the model's own duty to
+  // re-enumerate every category name/capacity in prose once that
+  // deterministic field exists. No continuation marker: unlike
+  // RECOMMENDATION, an INFORMATION turn never asks a question and never
+  // waits for a reply, so there is nothing to persist across turns.
+  // Mutually exclusive with the other two by construction (never both a
+  // catalogue/recommendation turn AND an information turn the same turn).
+  const informationIntentDetected =
+    !roomDiscoveryIntentDetected && !recommendationIntentDetected && isAccommodationInformationIntent(message);
+
   // Computed once, independent of groundingMode — drives the generic
   // booking CTA (see buildBookingAction) in both branches below. Two
   // independent signals, deliberately combined with OR: isBookingIntent
@@ -849,6 +865,30 @@ export async function answerQuestion({
         }))
       : [];
 
+  // INFORMATION DÉTERMINISTE chantier — mirrors roomCatalogue's own
+  // "server computes truth, model narrates around it" precedent (see
+  // RoomCatalogueEntry's own doc comment, types.ts), reusing the EXACT same
+  // entry shape (never a second, parallel id/name/pageUrl/maxGuests type).
+  // Deliberately built from `candidates` directly — never through
+  // filterAndRankAccommodations/catalogueRankedCandidates — because
+  // INFORMATION answers "what categories does this establishment have",
+  // independent of any party size or capacity fit: capacity FILTERING is
+  // CATALOGUE's/RECOMMENDATION's job, never INFORMATION's. Every active
+  // accommodation_types row is always listed, exhaustively, whenever this
+  // turn is genuinely an INFORMATION turn — this is what makes the 5/5
+  // real-invocation omission (a confirmed, proven LLM generation-time
+  // non-determinism — see this chantier's own audit) structurally
+  // impossible going forward: the visitor no longer depends on the model's
+  // own prose to see every category and its real capacity.
+  const accommodationSummary: RoomCatalogueEntry[] = informationIntentDetected
+    ? candidates.map((c) => ({
+        accommodationTypeId: c.id,
+        name: c.name,
+        pageUrl: accommodationTypesById.get(c.id)?.source_url ?? null,
+        maxGuests: c.maxGuests,
+      }))
+    : [];
+
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
   // every single turn, most of which have nothing to do with a local
@@ -995,11 +1035,13 @@ export async function answerQuestion({
       missingBookingParty,
       roomDiscoveryIntentDetected,
       recommendationIntentDetected,
+      informationIntentDetected,
       mentionsPreciseAccommodation,
       mentionedAccommodationId: mentionedAccommodation?.id ?? null,
       allowPriceCommunication,
       authorizedPriceAmounts,
       roomCatalogue,
+      accommodationSummary,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -1032,10 +1074,12 @@ export async function answerQuestion({
     missingBookingParty,
     roomDiscoveryIntentDetected,
     recommendationIntentDetected,
+    informationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
     roomCatalogue,
+    accommodationSummary,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1278,6 +1322,8 @@ async function answerGrounded(
     roomDiscoveryIntentDetected: boolean;
     /** See accommodationRanking.ts:isAccommodationRecommendationIntent's own doc comment — distinct from roomDiscoveryIntentDetected above (CATALOGUE), drives buildHotelInstructions's askPartySizeOnly and its own continuation marker below. */
     recommendationIntentDetected: boolean;
+    /** See accommodationRanking.ts:isAccommodationInformationIntent's own doc comment — distinct from the other two, drives accommodationSummary below and buildHotelInstructions's suppression of the model's own category re-enumeration duty. */
+    informationIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     /**
      * A precise accommodation already resolved DETERMINISTICALLY from the
@@ -1293,6 +1339,8 @@ async function answerGrounded(
     authorizedPriceAmounts: number[];
     /** Deterministic, server-computed — see RoomCatalogueEntry's own doc comment (types.ts) and answer.ts's own roomCatalogue computation. */
     roomCatalogue: RoomCatalogueEntry[];
+    /** Deterministic, server-computed — see AnswerQuestionResult.accommodationSummary's own doc comment (types.ts) and answer.ts's own accommodationSummary computation. Same entry shape as roomCatalogue, independent field, independent gate. */
+    accommodationSummary: RoomCatalogueEntry[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1327,11 +1375,13 @@ async function answerGrounded(
     missingBookingParty,
     roomDiscoveryIntentDetected,
     recommendationIntentDetected,
+    informationIntentDetected,
     mentionsPreciseAccommodation,
     mentionedAccommodationId,
     allowPriceCommunication,
     authorizedPriceAmounts,
     roomCatalogue,
+    accommodationSummary,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1357,6 +1407,7 @@ async function answerGrounded(
     missingBookingDates,
     missingBookingParty,
     recommendationIntentDetected,
+    informationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     partnerIntentDetected,
@@ -1540,7 +1591,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary };
 }
 
 /**
@@ -1587,12 +1638,16 @@ async function answerNoContext(
     roomDiscoveryIntentDetected: boolean;
     /** See answerGrounded's identical field — same recommendationContinuation marker, same meaning, independent of groundingMode. */
     recommendationIntentDetected: boolean;
+    /** See answerGrounded's identical field — drives accommodationSummary below, independent of groundingMode. */
+    informationIntentDetected: boolean;
     mentionsPreciseAccommodation: boolean;
     allowPriceCommunication: boolean;
     /** See answerGrounded's identical field for the full doc comment — answerNoContext never builds a roomRecommendation at all, but still needs this for the output-side lock's authorizedPriceAmounts, threaded alongside. */
     authorizedPriceAmounts: number[];
     /** See answerGrounded's identical field — roomCatalogue is independent of groundingMode, so a no_context turn still needs it threaded through. */
     roomCatalogue: RoomCatalogueEntry[];
+    /** See answerGrounded's identical field — accommodationSummary is independent of groundingMode, so a no_context turn still needs it threaded through. */
+    accommodationSummary: RoomCatalogueEntry[];
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1625,10 +1680,12 @@ async function answerNoContext(
     missingBookingParty,
     roomDiscoveryIntentDetected,
     recommendationIntentDetected,
+    informationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     authorizedPriceAmounts,
     roomCatalogue,
+    accommodationSummary,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1654,6 +1711,7 @@ async function answerNoContext(
     missingBookingDates,
     missingBookingParty,
     recommendationIntentDetected,
+    informationIntentDetected,
     mentionsPreciseAccommodation,
     allowPriceCommunication,
     partnerIntentDetected,
@@ -1769,7 +1827,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -1830,5 +1888,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [] };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [], accommodationSummary: [] };
 }

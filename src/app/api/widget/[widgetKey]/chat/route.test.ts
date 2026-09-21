@@ -67,6 +67,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
     partnerRequestPhonePrompt: null,
     spaBookingPhonePrompt: null,
     roomCatalogue: [],
+    accommodationSummary: [],
     ...overrides,
   };
 }
@@ -378,7 +379,7 @@ describe("POST /api/widget/[widgetKey]/chat — conversation possession (session
 });
 
 describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
-  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations/partnerRequestPhonePrompt/spaBookingPhonePrompt/roomCatalogue — never sources", async () => {
+  it("[success] returns exactly conversationId/reply/answerStatus/roomRecommendation/action/partnerRecommendations/partnerRequestPhonePrompt/spaBookingPhonePrompt/roomCatalogue/accommodationSummary — never sources", async () => {
     const deps = makeDeps({
       answerQuestion: vi.fn(async () =>
         makeAnswerResult({ action: { type: "booking", label: "Réserver", url: "https://booking.example.com" } })
@@ -399,9 +400,33 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
         "reply",
         "roomRecommendation",
         "roomCatalogue",
+        "accommodationSummary",
       ].sort()
     );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });
+  });
+
+  /** INFORMATION DÉTERMINISTE chantier — item D: the new field must reach the client verbatim, never dropped/renamed by the route. */
+  it("[accommodationSummary passthrough] present verbatim, independent of roomCatalogue (own field, never merged)", async () => {
+    const deps = makeDeps({
+      answerQuestion: vi.fn(async () =>
+        makeAnswerResult({
+          roomCatalogue: [],
+          accommodationSummary: [
+            { accommodationTypeId: "a", name: "Mini-suite", pageUrl: null, maxGuests: 2 },
+            { accommodationTypeId: "b", name: "Junior PMR", pageUrl: null, maxGuests: 6 },
+          ],
+        })
+      ),
+    });
+    const handler = createChatHandler(deps);
+    const response = await handler(makeRequest({ conversationId: null, message: "hello", sessionToken: VALID_TOKEN }), context);
+    const body = await response.json();
+    expect(body.accommodationSummary).toEqual([
+      { accommodationTypeId: "a", name: "Mini-suite", pageUrl: null, maxGuests: 2 },
+      { accommodationTypeId: "b", name: "Junior PMR", pageUrl: null, maxGuests: 6 },
+    ]);
+    expect(body.roomCatalogue).toEqual([]);
   });
 
   it("[partnerRequestPhonePrompt passthrough] present when answerQuestion signals it, never inferred from reply text", async () => {

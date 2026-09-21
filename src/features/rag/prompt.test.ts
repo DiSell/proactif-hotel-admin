@@ -700,6 +700,85 @@ describe("buildHotelInstructions — accommodation recommendation guidance", () 
   });
 });
 
+/**
+ * TEST G (mission item 12) — INFORMATION DÉTERMINISTE chantier: the model
+ * must stop reconstructing the exhaustive name/capacity enumeration itself
+ * once accommodationSummary is rendered deterministically. Generic
+ * instruction only — never a per-category or per-hotel branch.
+ */
+describe("buildHotelInstructions — informationIntentDetected suppresses the model's own category re-enumeration duty", () => {
+  function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
+    return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));
+  }
+
+  it("[TEST G] adds the no-re-enumeration instruction only when informationIntentDetected is true", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "Superior", maxGuests: 4, fit: "unknown" }]),
+      party: { adults: null, children: null, total: null },
+      informationIntentDetected: true,
+    });
+    expect(instructions).toMatch(/la liste complète des noms et capacités sera affichée séparément, directement par l'interface/);
+    expect(instructions).toMatch(/Ne reconstruis PAS toi-même cette énumération/);
+  });
+
+  it("[never fires otherwise] absent when informationIntentDetected is false/omitted, even with the exact same candidates", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "Superior", maxGuests: 4, fit: "unknown" }]),
+      party: { adults: null, children: null, total: null },
+    });
+    expect(instructions).not.toMatch(/Ne reconstruis PAS toi-même cette énumération/);
+  });
+
+  it("[never a hardcoded category/hotel name] the instruction stays entirely generic", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "Junior PMR", maxGuests: 6, fit: "unknown" }]),
+      party: { adults: null, children: null, total: null },
+      informationIntentDetected: true,
+    });
+    const noteIndex = instructions.indexOf("Ne reconstruis PAS toi-même cette énumération");
+    const noteLineStart = instructions.lastIndexOf("\n", noteIndex);
+    const noteLineEnd = instructions.indexOf("\n", noteIndex);
+    const noteLine = instructions.slice(noteLineStart, noteLineEnd === -1 ? undefined : noteLineEnd);
+    expect(noteLine).not.toMatch(/Le 1837|Junior PMR|Superior|Deluxe|Mini-suite|Standard/);
+  });
+
+  it("[does not touch buildAccommodationGuidance's other rules] name authority, capacity facts and the uncertainty note stay present and unchanged alongside it", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "Superior", maxGuests: 4, fit: "unknown" }]),
+      party: { adults: null, children: null, total: null },
+      informationIntentDetected: true,
+    });
+    expect(instructions).toMatch(/capacité maximale : 4 personnes/);
+    expect(instructions).toMatch(/proviennent des données structurées de l'établissement et font autorité/);
+  });
+
+  it("[compatible with recommendationIntentDetected being false/absent — never both true the same turn in practice, mirrors answer.ts's own mutual exclusivity] no crash, no conflicting guidance, when both flags are explicitly false", () => {
+    const instructions = buildHotelInstructions({
+      hotel: makeHotel(),
+      settings: makeSettings(),
+      groundingMode: "grounded",
+      rankedCandidates: candidates([{ id: "a", name: "Superior", maxGuests: 4, fit: "unknown" }]),
+      party: { adults: null, children: null, total: null },
+      informationIntentDetected: true,
+      recommendationIntentDetected: false,
+    });
+    expect(instructions).not.toMatch(/DÉCOUVERTE DES HÉBERGEMENTS/);
+    expect(instructions).toMatch(/Ne reconstruis PAS toi-même cette énumération/);
+  });
+});
+
 describe("buildHotelInstructions — RECOMMENDATION guidance (3-INTENTIONS chantier — renamed from ROOM_DISCOVERY: this guidance now fires exclusively for a genuine recommendation request, never a plain INFORMATION/CATALOGUE turn — see accommodationRanking.ts:isAccommodationRecommendationIntent)", () => {
   function candidates(overrides: Partial<RankedCandidate>[] = []): RankedCandidate[] {
     return overrides.map((o, i) => ({ id: `acc-${i}`, name: `Accommodation ${i}`, maxGuests: null, maxAdults: null, maxChildren: null, fit: "unknown", ...o }));

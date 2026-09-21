@@ -244,6 +244,11 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // when not applicable. Render this directly rather than parsing
         // `reply` for room names: see features/rag/types.ts:RoomCatalogueEntry.
         roomCatalogue: result.roomCatalogue,
+        // INFORMATION DÉTERMINISTE chantier — the exhaustive, guaranteed
+        // list of accommodation categories for a genuine INFORMATION turn.
+        // Independent of roomCatalogue (own gate, own intention, never both
+        // non-empty the same turn) — see features/rag/types.ts:AnswerQuestionResult.accommodationSummary.
+        accommodationSummary: result.accommodationSummary,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

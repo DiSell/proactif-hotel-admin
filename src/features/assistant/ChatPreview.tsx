@@ -49,6 +49,22 @@ interface ChatAction {
   url: string;
 }
 
+/**
+ * INFORMATION DÉTERMINISTE chantier — mirrors features/rag/types.ts's
+ * RoomCatalogueEntry field-for-field (id/name/pageUrl/maxGuests, no price),
+ * reused here ONLY for AnswerQuestionResult.accommodationSummary. Named
+ * independently of "RoomCatalogueEntry" deliberately: ChatPreview does not
+ * support the CATALOGUE parcours at all (out of scope for this chantier —
+ * see this file's own history), so a name evoking a catalogue would be
+ * misleading here.
+ */
+interface AccommodationSummaryEntry {
+  accommodationTypeId: string;
+  name: string;
+  pageUrl: string | null;
+  maxGuests: number | null;
+}
+
 interface ChatMessage {
   role: "assistant" | "user";
   content: string;
@@ -57,6 +73,7 @@ interface ChatMessage {
   roomRecommendation?: RoomRecommendation | null;
   action?: ChatAction | null;
   partnerRecommendations?: PartnerRecommendation[];
+  accommodationSummary?: AccommodationSummaryEntry[];
 }
 
 interface ChatApiResponse {
@@ -67,6 +84,7 @@ interface ChatApiResponse {
   roomRecommendation: RoomRecommendation | null;
   action: ChatAction | null;
   partnerRecommendations: PartnerRecommendation[];
+  accommodationSummary: AccommodationSummaryEntry[];
 }
 
 interface ChatPreviewProps {
@@ -134,6 +152,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
           roomRecommendation: data.roomRecommendation,
           action: data.action,
           partnerRecommendations: data.partnerRecommendations,
+          accommodationSummary: data.accommodationSummary,
         },
       ]);
     } catch (err) {
@@ -199,6 +218,28 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
               >
                 {message.action.label}
               </a>
+            )}
+            {/*
+             * INFORMATION DÉTERMINISTE chantier — mirrors
+             * PublicWidgetChat.tsx's own accommodationSummary rendering
+             * (light list, no border/background per entry — never styled
+             * like a catalogue card). roomCatalogue itself stays
+             * unsupported in this component, unchanged, out of scope.
+             */}
+            {message.role === "assistant" && message.accommodationSummary && message.accommodationSummary.length > 0 && (
+              <div className="flex max-w-[78%] flex-col gap-2 text-2xs">
+                {message.accommodationSummary.map((entry) => (
+                  <div key={entry.accommodationTypeId} className="flex items-baseline gap-1.5">
+                    <span aria-hidden="true" className="text-accent">•</span>
+                    <span>
+                      <span className="font-medium text-ink">{entry.name}</span>
+                      {entry.maxGuests !== null && (
+                        <span className="text-body/60"> — Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
             {message.role === "assistant" && message.partnerRecommendations && message.partnerRecommendations.length > 0 && (
               <div className="flex max-w-[78%] flex-col gap-2">

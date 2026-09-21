@@ -56,6 +56,8 @@ interface ChatMessage {
   action?: ChatAction | null;
   partnerRecommendations?: PartnerRecommendation[];
   roomCatalogue?: RoomCatalogueEntry[];
+  /** INFORMATION DÉTERMINISTE chantier — see features/rag/types.ts:AnswerQuestionResult.accommodationSummary's own doc comment. Same entry shape as roomCatalogue, independent field/gate, never both non-empty the same turn. */
+  accommodationSummary?: RoomCatalogueEntry[];
 }
 
 /** Mirrors features/rag/types.ts's PendingPartnerRequestFields/PartnerRequestPhonePrompt — see those types' own doc comments. */
@@ -107,6 +109,7 @@ interface ChatApiResponse {
   partnerRequestPhonePrompt: PartnerRequestPhonePrompt | null;
   spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
   roomCatalogue: RoomCatalogueEntry[];
+  accommodationSummary: RoomCatalogueEntry[];
 }
 
 interface PublicWidgetChatProps {
@@ -417,6 +420,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           action: data.action,
           partnerRecommendations: data.partnerRecommendations,
           roomCatalogue: data.roomCatalogue,
+          accommodationSummary: data.accommodationSummary,
         },
       ]);
       if (data.partnerRequestPhonePrompt) {
@@ -642,6 +646,33 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
                         Voir la page
                       </a>
                     )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {/*
+             * INFORMATION DÉTERMINISTE chantier — the exhaustive, guaranteed
+             * list of accommodation categories for a genuine INFORMATION
+             * turn (see features/rag/types.ts:AnswerQuestionResult.accommodationSummary's
+             * own doc comment). Deliberately NOT styled like roomCatalogue's
+             * cards above (no border, no background per entry) — INFORMATION
+             * must stay visually a light, conversational list, never become
+             * indistinguishable from the CATALOGUE parcours. Values come
+             * exclusively from the structured field, never hardcoded.
+             */}
+            {message.role === "assistant" && message.accommodationSummary && message.accommodationSummary.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: "82%", fontSize: 12 }}>
+                {message.accommodationSummary.map((entry) => (
+                  <div key={entry.accommodationTypeId} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    <span aria-hidden="true" style={{ color: "#8A6A3E" }}>•</span>
+                    <span>
+                      <span style={{ fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</span>
+                      {entry.maxGuests !== null && (
+                        <span style={{ color: "#6b6b6b" }}>
+                          {" "}— Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 ))}
               </div>

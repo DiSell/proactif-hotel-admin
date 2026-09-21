@@ -175,6 +175,22 @@ export interface BuildHotelInstructionsParams {
    */
   recommendationIntentDetected?: boolean;
   /**
+   * INFORMATION DÉTERMINISTE chantier — true whenever answer.ts's own
+   * informationIntentDetected fires (accommodationRanking.ts's
+   * isAccommodationInformationIntent, wired into the pipeline for the first
+   * time by this chantier). Suppresses buildAccommodationGuidance's
+   * instruction to enumerate every candidate name/capacity in prose (see
+   * that function's own doc comment): the visitor already gets the
+   * complete, guaranteed list via AnswerQuestionResult.accommodationSummary,
+   * rendered directly by the widget — asking the model to reconstruct the
+   * same enumeration in free text would either duplicate it or, per this
+   * chantier's own proven evidence (5/5 real invocations), risk silently
+   * omitting an entry. The model still introduces/comments using whatever
+   * real RAG content is available — only the DUTY to list every name and
+   * capacity itself is lifted, never the surrounding descriptive rédaction.
+   */
+  informationIntentDetected?: boolean;
+  /**
    * True when the CURRENT message already names one of the hotel's real
    * accommodation_types by name (see answer.ts's own
    * mentionsKnownAccommodationName call, fed by the actual DB rows for this
@@ -308,6 +324,7 @@ export function buildHotelInstructions({
   spaAvailability,
   resolvedSpaBookingRequest,
   recommendationIntentDetected,
+  informationIntentDetected,
   mentionsPreciseAccommodation,
   allowPriceCommunication,
 }: BuildHotelInstructionsParams): string {
@@ -416,7 +433,7 @@ export function buildHotelInstructions({
   // ANYTHING ELSE (amenities, policies, pricing…) is untouched.
   const accommodationGuidance =
     rankedCandidates && rankedCandidates.length > 0 && !askPartySizeOnly && !reservationCollectionActive
-      ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null })
+      ? buildAccommodationGuidance(rankedCandidates, party ?? { adults: null, children: null, total: null }, Boolean(informationIntentDetected))
       : "";
   // Orthogonal to groundingMode — a no_context turn (e.g. a hotel with no
   // accommodation_types data at all) must still be able to ask for the group
@@ -964,7 +981,7 @@ function buildBookingCollectionGuidance(missingDates: boolean, missingParty: boo
  * hotel/category name is ever hardcoded here, this must hold for any
  * hotel's own naming.
  */
-function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: PartySize): string {
+function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: PartySize, informationIntentDetected: boolean): string {
   const lines = rankedCandidates.map((c) => {
     const capacityFact = c.maxGuests !== null ? `capacité maximale : ${c.maxGuests} personnes` : "capacité maximale non renseignée";
     return `- id="${c.id}" — ${c.name} (${capacityFact})`;
@@ -984,6 +1001,24 @@ function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: 
     ? "La capacité maximale d'aucun de ces hébergements n'est enregistrée dans les données de l'établissement : ne prétends jamais connaître ou avoir déterminé une capacité, et ne prétends jamais avoir déterminé le mieux adapté. Réponds en substance que tu peux présenter les hébergements disponibles, mais que tu n'as pas d'information de capacité vérifiée à leur sujet."
     : "";
 
+  // INFORMATION DÉTERMINISTE chantier — generic, never a per-category or
+  // per-hotel branch: whenever this turn is a genuine INFORMATION turn, the
+  // visitor already gets the complete, guaranteed list via
+  // AnswerQuestionResult.accommodationSummary (rendered directly by the
+  // widget, never derived from this prose) — the model must not also
+  // reconstruct that same enumeration itself, which would either duplicate
+  // it verbatim or, per this chantier's own proven evidence (5/5 real
+  // invocations still omitted an entry despite complete guidance every
+  // time), risk silently dropping one. The model keeps every other duty
+  // unchanged: introducing the answer, using real RAG descriptive content
+  // when available, and — for a DIFFERENT turn where a precise category is
+  // named or a recommendation is requested — still describing/recommending
+  // normally (this instruction only ever fires when informationIntentDetected
+  // is true, which is mutually exclusive with those cases).
+  const informationNoEnumerationNote = informationIntentDetected
+    ? "Ce tour est une question d'information générale sur les catégories d'hébergement : la liste complète des noms et capacités sera affichée séparément, directement par l'interface, de façon garantie. Ne reconstruis PAS toi-même cette énumération (n'énumère pas chaque nom avec sa capacité un par un) — rédige seulement une courte introduction, et mentionne des éléments descriptifs réels si les connaissances fournies le permettent, sans dupliquer la liste."
+    : "";
+
   return [
     "HÉBERGEMENTS — candidats déjà pré-filtrés par capacité :",
     partyNote,
@@ -993,6 +1028,7 @@ function buildAccommodationGuidance(rankedCandidates: RankedCandidate[], party: 
     "Tu ne peux renseigner recommendedAccommodationTypeId qu'avec l'un de ces id EXACTS ci-dessus, ou le laisser null si aucun ne se distingue clairement ou si la question ne porte pas sur le choix d'un hébergement. Ne recommande JAMAIS un hébergement absent de cette liste, même s'il t'est déjà connu par ailleurs — un hébergement absent d'ici a été exclu pour une bonne raison (capacité insuffisante) et ne doit jamais être réintroduit.",
     "Tu peux en revanche arbitrer entre les candidats de cette liste selon d'autres critères exprimés par le visiteur (cuisine équipée, chambres séparées, accès PMR, terrasse, budget…) si les connaissances fournies le permettent — mais uniquement parmi cette liste.",
     uncertaintyNote,
+    informationNoEnumerationNote,
   ]
     .filter(Boolean)
     .join("\n");

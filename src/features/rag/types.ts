@@ -275,6 +275,32 @@ export interface AnswerQuestionResult {
    * complete source of truth.
    */
   roomCatalogue: RoomCatalogueEntry[];
+  /**
+   * INFORMATION DÉTERMINISTE chantier — the deterministic, exhaustive list
+   * of the establishment's accommodation categories for a genuine
+   * INFORMATION turn (see accommodationRanking.ts:isAccommodationInformationIntent
+   * and answer.ts's own informationIntentDetected). Independent field, own
+   * gate, own semantics — deliberately NOT the same field as roomCatalogue
+   * (CATALOGUE's own field stays exclusively CATALOGUE's, unchanged, never
+   * repurposed): reuses RoomCatalogueEntry's exact shape (no second,
+   * parallel id/name/pageUrl/maxGuests type) since the data need is
+   * identical, but the two fields are populated by different intentions and
+   * are never both non-empty the same turn. Always an array, never null;
+   * empty on every turn that isn't a genuine INFORMATION turn.
+   *
+   * Unlike roomCatalogue, never filtered by capacity/party: INFORMATION
+   * answers "what categories does this establishment have" independent of
+   * any stated group size — every active accommodation_types row is always
+   * listed. Fixes a real, confirmed bug (proven by 5/5 real invocations,
+   * see this chantier's own audit): the model's own free-text INFORMATION
+   * reply can non-deterministically omit a category or its capacity even
+   * though buildAccommodationGuidance already gave it the complete,
+   * correct data every single time — this field is the guaranteed-complete
+   * source of truth the widget should render directly, exactly the same
+   * "server computes truth, model narrates around it" discipline as
+   * roomCatalogue/RoomRecommendation.
+   */
+  accommodationSummary: RoomCatalogueEntry[];
 }
 
 /**
@@ -294,6 +320,11 @@ export interface AnswerQuestionResult {
  *
  * Deliberately carries no price field at all — this structure can never
  * leak a tariff, by construction, regardless of allow_price_communication.
+ *
+ * Also reused, unchanged, as accommodationSummary's own entry shape (see
+ * AnswerQuestionResult.accommodationSummary's doc comment) — the exact same
+ * proven bug class, hit by a different intention (INFORMATION rather than
+ * CATALOGUE) — never a second, parallel type with the same four fields.
  */
 export interface RoomCatalogueEntry {
   accommodationTypeId: string;

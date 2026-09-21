@@ -204,14 +204,14 @@ describe("answer.ts — generic booking CTA (action)", () => {
   it("[no_context — works with no RoomRecommendation at all] answerNoContext attaches action from bookingIntentDetected (minus an active reservation collection) + the hotel's own booking config directly, and returns it", () => {
     const fn = sliceFn("answerNoContext", "loadHistory");
     expect(fn).toMatch(/const action = buildBookingAction\(bookingIntentDetected && !reservationCollectionActive, hotel\);/);
-    expect(fn).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue \};/);
+    expect(fn).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary \};/);
   });
 
   it("[grounded — dedup with RoomRecommendation] answerGrounded suppresses the generic action ONLY when a RoomRecommendation already renders its own working booking link (booking_action_mode === \"url\") — never when the hotel is in host_widget mode, where RoomPhotoModal has no button of its own", () => {
     const fn = sliceFn("answerGrounded", "answerNoContext");
     expect(fn).toMatch(/const hasDuplicateBookingLink = Boolean\(roomRecommendation\) && bookingCtaKind\(hotel\) === "url";/);
     expect(fn).toMatch(/const action = hasDuplicateBookingLink \? null : buildBookingAction\(bookingIntentDetected && !reservationCollectionActive, hotel\);/);
-    expect(fn).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue \};/);
+    expect(fn).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary \};/);
   });
 
   it("[BOOKING TUNNEL chantier] reservationCollectionActive never suppresses the CTA for a bare price/availability question — only for a genuine reservation attempt still missing dates/party", () => {
