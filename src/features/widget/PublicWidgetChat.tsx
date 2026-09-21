@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RoomPhotoModal } from "@/features/assistant/RoomPhotoModal";
 import { AssistantMessageContent } from "@/components/ui/AssistantMessageContent";
 import type { PublicWidgetConfig } from "./publicHotel";
@@ -260,6 +260,22 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+  // CATÉGORIES INFORMATION CLIQUABLES chantier — which accommodationSummary
+  // entry (by accommodationTypeId) currently has a photo fetch in flight, if
+  // any. Drives the discreet per-row loading affordance and disables that
+  // row against a second trigger while its request is pending — never a
+  // second modal/state, the fetched result feeds the SAME openRoomRecommendation
+  // state RoomRecommendation already uses (see handleAccommodationSummaryClick).
+  const [loadingAccommodationTypeId, setLoadingAccommodationTypeId] = useState<string | null>(null);
+  // Race-condition guard for rapid successive clicks (see
+  // handleAccommodationSummaryClick's own doc comment): a monotonically
+  // increasing token, captured at the START of each click, compared again
+  // once that specific request resolves — a stale response (an earlier
+  // click that resolves AFTER a later one) is silently discarded rather
+  // than reopening/overwriting the modal for the wrong category. A plain
+  // ref, not state: this value is never rendered, only read/written inside
+  // the click handler and its own async continuation.
+  const accommodationSummaryRequestRef = useRef(0);
   // The structured phone-collection form — a deterministic backend signal
   // (chat response's own partnerRequestPhonePrompt field), never something
   // inferred by parsing `reply`. Cleared explicitly on successful submit;
@@ -438,6 +454,58 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   }
 
   /**
+   * CATÉGORIES INFORMATION CLIQUABLES chantier — fetches photos on demand
+   * for an accommodationSummary entry, then reuses the EXACT SAME modal
+   * state/component as RoomRecommendation (openRoomRecommendation +
+   * RoomPhotoModal below) — never a second modal, never a second state.
+   * accommodationSummary itself is never extended with a photos field: this
+   * is the only place that data is ever fetched, and only once the visitor
+   * actually asks for it.
+   *
+   * Race-condition guard: accommodationSummaryRequestRef is incremented at
+   * the START of every call, and the value captured here (`requestId`) is
+   * compared again once the fetch resolves. Clicking Mini-suite then
+   * Junior Suite before the first request finishes invalidates Mini-suite's
+   * own in-flight request the instant Junior Suite's click runs — its
+   * eventual response (success OR failure) is silently discarded (never
+   * opens a modal, never clears a loading indicator that no longer belongs
+   * to it), so a slow, stale response can never overwrite/reopen the modal
+   * for a category the visitor already moved on from. A plain incrementing
+   * ref is enough here (no AbortController): the fetch itself is cheap and
+   * harmless to let finish, only its EFFECT on state needs to be gated.
+   */
+  async function handleAccommodationSummaryClick(entry: RoomCatalogueEntry) {
+    const requestId = accommodationSummaryRequestRef.current + 1;
+    accommodationSummaryRequestRef.current = requestId;
+    setLoadingAccommodationTypeId(entry.accommodationTypeId);
+
+    try {
+      const response = await fetch(
+        `/api/widget/${encodeURIComponent(widgetKey)}/room-photos?accommodationTypeId=${encodeURIComponent(entry.accommodationTypeId)}`
+      );
+      if (accommodationSummaryRequestRef.current !== requestId) return; // superseded by a later click — discard silently
+
+      if (!response.ok) {
+        setError("Impossible de charger les photos de cet hébergement. Réessayez.");
+        return;
+      }
+
+      const data: RoomRecommendation = await response.json();
+      if (accommodationSummaryRequestRef.current !== requestId) return; // superseded while awaiting response.json()
+      // SUCCÈS + 0 photo (data.photos = []) still opens the modal normally —
+      // RoomPhotoModal's own existing "Aucune photo disponible" fallback
+      // handles that case unchanged. Only a genuine fetch/HTTP failure
+      // above skips opening it at all.
+      setOpenRoomRecommendation(data);
+    } catch {
+      if (accommodationSummaryRequestRef.current !== requestId) return;
+      setError("Impossible de charger les photos de cet hébergement. Réessayez.");
+    } finally {
+      if (accommodationSummaryRequestRef.current === requestId) setLoadingAccommodationTypeId(null);
+    }
+  }
+
+  /**
    * The structured phone form's own submit — deliberately NOT handleSend:
    * the phone is never sent as a normal chat message (never persisted to
    * messages.content, never seen by the model) — see
@@ -494,6 +562,19 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
         background: "#FBFAF7",
       }}
     >
+      {/*
+       * CATÉGORIES INFORMATION CLIQUABLES chantier — the only hover/focus
+       * pseudo-class rules in this file (everything else here is plain
+       * inline styles, which can't express :hover/:focus-visible). Scoped
+       * to a single, uniquely-named class used exclusively by the
+       * accommodationSummary row buttons below — never a global reset,
+       * never affects any other element in this widget.
+       */}
+      <style>{`
+        .pwc-accsummary-row:hover:not(:disabled) { background: #F1EDE3; }
+        .pwc-accsummary-row:focus-visible { outline: 2px solid #8A6A3E; outline-offset: 2px; }
+        .pwc-accsummary-row:disabled { cursor: default; opacity: 0.6; }
+      `}</style>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", background: config.primaryColor, flexShrink: 0 }}>
         <div
           style={{
@@ -651,30 +732,69 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
               </div>
             )}
             {/*
-             * INFORMATION DÉTERMINISTE chantier — the exhaustive, guaranteed
-             * list of accommodation categories for a genuine INFORMATION
-             * turn (see features/rag/types.ts:AnswerQuestionResult.accommodationSummary's
+             * INFORMATION DÉTERMINISTE + CATÉGORIES INFORMATION CLIQUABLES
+             * chantiers — the exhaustive, guaranteed list of accommodation
+             * categories for a genuine INFORMATION turn (see
+             * features/rag/types.ts:AnswerQuestionResult.accommodationSummary's
              * own doc comment). Deliberately NOT styled like roomCatalogue's
              * cards above (no border, no background per entry) — INFORMATION
              * must stay visually a light, conversational list, never become
              * indistinguishable from the CATALOGUE parcours. Values come
              * exclusively from the structured field, never hardcoded.
+             *
+             * Each row is a real <button>: the whole row is the tappable/
+             * clickable/keyboard-focusable target (native Tab/Enter/Space
+             * support, no custom key handling needed), never just the name
+             * text. A click fetches that category's photos on demand (see
+             * handleAccommodationSummaryClick's own doc comment — nothing is
+             * ever preloaded, accommodationSummary itself never carries a
+             * photos field) and reuses the exact same openRoomRecommendation
+             * state/RoomPhotoModal already used by RoomRecommendation below —
+             * never a second modal.
              */}
             {message.role === "assistant" && message.accommodationSummary && message.accommodationSummary.length > 0 && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: "82%", fontSize: 12 }}>
-                {message.accommodationSummary.map((entry) => (
-                  <div key={entry.accommodationTypeId} style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                    <span aria-hidden="true" style={{ color: "#8A6A3E" }}>•</span>
-                    <span>
-                      <span style={{ fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</span>
-                      {entry.maxGuests !== null && (
-                        <span style={{ color: "#6b6b6b" }}>
-                          {" "}— Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
-                        </span>
-                      )}
-                    </span>
-                  </div>
-                ))}
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: "82%", fontSize: 12 }}>
+                {message.accommodationSummary.map((entry) => {
+                  const isLoading = loadingAccommodationTypeId === entry.accommodationTypeId;
+                  return (
+                    <button
+                      key={entry.accommodationTypeId}
+                      type="button"
+                      className="pwc-accsummary-row"
+                      onClick={() => handleAccommodationSummaryClick(entry)}
+                      disabled={isLoading}
+                      aria-label={`Voir les photos de ${entry.name}`}
+                      aria-busy={isLoading}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        width: "100%",
+                        border: "none",
+                        borderRadius: 8,
+                        background: "transparent",
+                        padding: "8px 6px",
+                        textAlign: "left",
+                        font: "inherit",
+                        color: "inherit",
+                        cursor: isLoading ? "default" : "pointer",
+                      }}
+                    >
+                      <span>
+                        <span style={{ fontWeight: 500, color: "#1A1D1A" }}>{entry.name}</span>
+                        {entry.maxGuests !== null && (
+                          <span style={{ display: "block", color: "#6b6b6b", marginTop: 1 }}>
+                            Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
+                          </span>
+                        )}
+                      </span>
+                      <span aria-hidden="true" style={{ color: "#8A6A3E", flexShrink: 0 }}>
+                        {isLoading ? "…" : "›"}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             )}
             {/* Server guarantees roomRecommendation and a "booking" action are never both present for the same turn (a duplicate link would result) — but "host_booking" CAN coexist with a roomRecommendation, precisely when the hotel is in host_widget mode and RoomPhotoModal has no button of its own to offer (see answer.ts's answerGrounded). */}

@@ -146,11 +146,17 @@ describe("buildRoomRecommendation — bookingUrl", () => {
  * PHOTOS / CARROUSEL chantier — a deselected photo (room_photos.is_selected
  * = false, the client's or the superadmin's own curation choice, see
  * features/photos/actions.ts) must never reach the public widget just
- * because this query used to ignore the flag entirely. Source-level check —
- * buildRoomRecommendation touches Supabase directly, same constraint as
- * every other query in this file.
+ * because this query used to ignore the flag entirely.
+ *
+ * CATÉGORIES INFORMATION CLIQUABLES chantier: the query itself moved into
+ * roomPhotos.ts:loadSelectedRoomPhotos (a pure extraction, reused by the new
+ * /api/widget/[widgetKey]/room-photos route) — buildRoomRecommendation now
+ * just calls it. The exact filters/order are asserted at their new home
+ * below; this describe block instead confirms the call site itself, so a
+ * future edit can never silently reintroduce a second, diverging inline
+ * query in answer.ts.
  */
-describe("buildRoomRecommendation — is_selected filter", () => {
+describe("buildRoomRecommendation — is_selected filter (via the shared loadSelectedRoomPhotos helper)", () => {
   function sliceFn(name: string, nextName: string): string {
     const start = source.indexOf(`async function ${name}`);
     const end = source.indexOf(`async function ${nextName}`);
@@ -159,11 +165,14 @@ describe("buildRoomRecommendation — is_selected filter", () => {
     return source.slice(start, end);
   }
 
-  it("[deselected photos excluded] the room_photos query filters is_selected = true, in addition to the existing hotel_id/accommodation_type_id scoping and position ordering", () => {
+  it("[calls the shared helper, never a second inline query] buildRoomRecommendation delegates to loadSelectedRoomPhotos(supabase, hotelId, matched.id) — no duplicated room_photos query in this file", () => {
     const fn = sliceFn("buildRoomRecommendation", "answerGrounded");
-    expect(fn).toMatch(
-      /\.from\("room_photos"\)\s*\n\s*\.select\("photo_url, alt_text"\)\s*\n\s*\.eq\("hotel_id", hotelId\)\s*\n\s*\.eq\("accommodation_type_id", matched\.id\)\s*\n\s*\.eq\("is_selected", true\)\s*\n\s*\.order\("position", \{ ascending: true \}\);/
-    );
+    expect(fn).toMatch(/const photos = await loadSelectedRoomPhotos\(supabase, hotelId, matched\.id\);/);
+    expect(fn).not.toMatch(/\.from\("room_photos"\)/);
+  });
+
+  it("[imported from roomPhotos.ts]", () => {
+    expect(source).toMatch(/import \{ loadSelectedRoomPhotos \} from "\.\/roomPhotos";/);
   });
 });
 

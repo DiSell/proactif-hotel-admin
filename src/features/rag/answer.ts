@@ -6,6 +6,7 @@ import { getOpenAIClient } from "@/lib/openai/client";
 import { openaiChatModel } from "@/lib/openai/env";
 import { fetchAccommodationSourceChunks, mergeGuaranteedChunks, retrieveKnowledgeHybrid, selectHybridRelevantChunks } from "./retrieve";
 import { buildHotelInstructions, buildKnowledgeReferenceBlock } from "./prompt";
+import { loadSelectedRoomPhotos } from "./roomPhotos";
 import { extractPartySize, extractPartySizeFromHistory, isPartyKnown, mergeValidatedStayRequestIntoParty, type PartySize } from "./partySize";
 import {
   filterAndRankAccommodations,
@@ -1259,23 +1260,17 @@ async function buildRoomRecommendation(
   const accommodationType = accommodationTypesById.get(matched.id);
   if (!accommodationType || accommodationType.hotel_id !== hotelId) return null;
 
-  // PHOTOS / CARROUSEL chantier: is_selected is the client's (or, when
-  // hotels.photo_management = 'proactif', the superadmin's) own curation
-  // flag — see room_photos.is_selected's own migration comment and
-  // features/photos/actions.ts. A deselected photo must never reach the
-  // public widget just because this query previously ignored the flag.
-  const { data: photos } = await supabase
-    .from("room_photos")
-    .select("photo_url, alt_text")
-    .eq("hotel_id", hotelId)
-    .eq("accommodation_type_id", matched.id)
-    .eq("is_selected", true)
-    .order("position", { ascending: true });
+  // CATÉGORIES INFORMATION CLIQUABLES chantier: extracted into
+  // roomPhotos.ts:loadSelectedRoomPhotos, now also reused by
+  // /api/widget/[widgetKey]/room-photos — same table, same filters
+  // (hotel_id/accommodation_type_id/is_selected), same order (position),
+  // never touched by this extraction.
+  const photos = await loadSelectedRoomPhotos(supabase, hotelId, matched.id);
 
   return {
     accommodationTypeId: matched.id,
     name: matched.name,
-    photos: (photos ?? []).map((p) => ({ url: p.photo_url as string, alt: p.alt_text as string | null })),
+    photos,
     pageUrl: accommodationType.source_url,
     bookingUrl,
   };
