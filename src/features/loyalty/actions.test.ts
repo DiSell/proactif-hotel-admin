@@ -60,3 +60,21 @@ describe("every other action already returned ActionResult — unchanged shape, 
     }
   });
 });
+
+describe("saveLoyaltySettings — hotel A can never write hotel B's post-stay settings", () => {
+  it("[hotelId is resolved only from the authenticated session, never taken from the parsed input]", () => {
+    const fn = sliceFunction("saveLoyaltySettings");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    // The upsert's hotel_id must come from that session-resolved binding,
+    // never from parsed.data (which only ever carries the settings fields —
+    // loyaltySettingsSchema has no hotelId key at all, see campaignSchema.ts).
+    expect(fn).toMatch(/hotel_id:\s*hotelId,/);
+    expect(fn).not.toMatch(/hotel_id:\s*parsed\.data/);
+  });
+
+  it("[server-side validation via loyaltySettingsSchema.safeParse, never trusts the raw form input]", () => {
+    const fn = sliceFunction("saveLoyaltySettings");
+    expect(fn).toMatch(/loyaltySettingsSchema\.safeParse\(input\)/);
+    expect(fn).toMatch(/if \(!parsed\.success\) return \{ ok: false,/);
+  });
+});

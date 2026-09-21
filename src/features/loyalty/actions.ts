@@ -132,12 +132,25 @@ export async function saveLoyaltySettings(input: unknown): Promise<ActionResult<
   const { hotelId } = await requireClientAccess();
 
   const parsed = loyaltySettingsSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: "Réglages invalides." };
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Réglages invalides.", fieldErrors: fieldErrorsFrom(parsed.error.issues) };
 
   const supabase = await createClientPortalClient();
-  const { error } = await supabase
-    .from("loyalty_settings")
-    .upsert({ hotel_id: hotelId, enabled: parsed.data.enabled, delay_days: parsed.data.delayDays, subject: parsed.data.subject, content: parsed.data.content, channel: "email" }, { onConflict: "hotel_id" });
+  const { error } = await supabase.from("loyalty_settings").upsert(
+    {
+      hotel_id: hotelId,
+      enabled: parsed.data.enabled,
+      delay_days: parsed.data.delayDays,
+      thank_you_enabled: parsed.data.thankYouEnabled,
+      subject: parsed.data.subject,
+      content: parsed.data.content,
+      review_enabled: parsed.data.reviewEnabled,
+      review_content: parsed.data.reviewContent,
+      review_url: parsed.data.reviewUrl || null,
+      review_button_label: parsed.data.reviewButtonLabel,
+      channel: "email",
+    },
+    { onConflict: "hotel_id" }
+  );
   if (error) return { ok: false, error: error.message };
 
   revalidatePath("/client/loyalty");

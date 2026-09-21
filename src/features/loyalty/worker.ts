@@ -5,10 +5,48 @@ import { campaignDeliveryKey, evaluateAtSend, postStayDeliveryKey } from "./proc
 import { generateUnsubscribeToken } from "./unsubscribeToken";
 
 type RowCustomer = { id: string; hotel_id: string; email: string | null; marketing_allowed: boolean; hotel_excluded: boolean; customer_unsubscribed: boolean };
+type RowStay = { status: string };
+type RowPostStaySettings = {
+  enabled: boolean;
+  subject: string;
+  content: string;
+  thank_you_enabled: boolean;
+  review_enabled: boolean;
+  review_content: string;
+  review_url: string | null;
+  review_button_label: string;
+};
 
-/** Escapes the two characters that build the plain-text/HTML body — never full HTML escaping, only enough to stop a "<" from opening a tag. */
+/** Full HTML escaping — every hotelier-controlled string (content, offer text, review text, review button label, and the review URL when placed in an href attribute) goes through this before reaching the email HTML body. */
 function escapeForHtml(value: string): string {
-  return value.replace(/</g, "&lt;");
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/**
+ * Composes the single post-stay email from whichever blocks are currently
+ * active — thank-you (subject/content) and/or review request — never both
+ * required, but at least one is guaranteed by the DB constraint
+ * loyalty_settings_at_least_one_block (0044_loyalty_post_stay_review.sql).
+ * The review block is only rendered when review_url is actually present
+ * (defense in depth: the DB also requires this whenever review_enabled).
+ */
+function buildPostStayMessage(settings: RowPostStaySettings): { subject: string; text: string; html: string } {
+  const textParts: string[] = [];
+  const htmlParts: string[] = [];
+
+  if (settings.thank_you_enabled) {
+    textParts.push(settings.content);
+    htmlParts.push(`<p>${escapeForHtml(settings.content).replace(/\n/g, "<br>")}</p>`);
+  }
+  if (settings.review_enabled && settings.review_url) {
+    textParts.push(`${settings.review_content}\n${settings.review_button_label} : ${settings.review_url}`);
+    htmlParts.push(
+      `<p>${escapeForHtml(settings.review_content).replace(/\n/g, "<br>")}</p>` +
+        `<p><a href="${escapeForHtml(settings.review_url)}">${escapeForHtml(settings.review_button_label)}</a></p>`
+    );
+  }
+
+  return { subject: settings.subject, text: textParts.join("\n\n"), html: htmlParts.join("") };
 }
 
 /**
@@ -35,8 +73,16 @@ export async function reserveAndSend(params: {
   campaignId?: string;
   stayId?: string;
   type: "marketing" | "post_stay";
-  subject: string;
-  content: string;
+  /**
+   * Required for "marketing" (campaign subject/content/offer, captured by
+   * the caller at selection time — campaigns are untouched by this phase).
+   * Ignored for "post_stay": that message is composed from a FRESH
+   * loyalty_settings read below, immediately before transport, so it always
+   * reflects the current enabled/thank_you_enabled/review_enabled state and
+   * current text — never a stale snapshot taken at batch-selection time.
+   */
+  subject?: string;
+  content?: string;
   offerText?: string | null;
 }): Promise<{ status: "sent" | "failed" | "skipped" | "duplicate" }> {
   const key = params.type === "marketing" ? campaignDeliveryKey(params.campaignId!, params.customerId) : postStayDeliveryKey(params.stayId!);
@@ -107,15 +153,64 @@ export async function reserveAndSend(params: {
     }
   }
 
+  let subject: string;
+  let text: string;
+  let html: string;
+
+  if (params.type === "post_stay") {
+    // Revalidate immediately before transport: a stay that got cancelled,
+    // or settings that got disabled (either the whole feature or every
+    // remaining block), between batch-selection and this exact moment must
+    // never produce a stale send.
+    //
+    // Unlike the two permanent skips above (customer_not_found / a real
+    // customer-level ineligibility — customer_unsubscribed, hotel_excluded:
+    // stable facts about the CUSTOMER, correctly excluded forever by
+    // 0038_customer_loyalty_stay_tracking.sql's queued_at mechanism), "not
+    // due right now" is a fact about the STAY/SETTINGS at this instant, not
+    // about the customer — it can very plausibly become true again later
+    // (the stay gets corrected back to completed, the setting gets
+    // re-enabled). Finalizing it as a terminal "skipped" row would consume
+    // the one-per-stay idempotency key AND leave loyalty_delivery_queued_at
+    // set forever, permanently excluding a stay that never actually had a
+    // message composed or sent for it. So this branch instead UNDOES the
+    // reservation it just made — deletes the delivery row, clears
+    // loyalty_delivery_queued_at — freeing the stay for a future cron run
+    // to pick back up and genuinely retry exactly once, never twice (the
+    // idempotency key still fully protects against a real double-send: only
+    // one reservation can ever be "live" for a given stay at a time, and
+    // this cleanup only ever runs for the one instance that actually held
+    // it). Best-effort, same as the original queued_at marking above: a
+    // failure here just means one extra harmless re-scan next run, not a
+    // duplicate send.
+    const [{ data: stay }, { data: settings }] = await Promise.all([
+      params.supabase.from("customer_stays").select("status").eq("id", params.stayId!).eq("hotel_id", params.hotelId).maybeSingle<RowStay>(),
+      params.supabase.from("loyalty_settings").select("*").eq("hotel_id", params.hotelId).maybeSingle<RowPostStaySettings>(),
+    ]);
+    if (!stay || stay.status !== "completed" || !settings || !settings.enabled || !(settings.thank_you_enabled || settings.review_enabled)) {
+      await Promise.all([
+        params.supabase.from("loyalty_deliveries").delete().eq("id", delivery.id).eq("hotel_id", params.hotelId),
+        params.supabase.from("customer_stays").update({ loyalty_delivery_queued_at: null }).eq("id", params.stayId!).eq("hotel_id", params.hotelId),
+      ]);
+      return { status: "skipped" };
+    }
+    const message = buildPostStayMessage(settings);
+    subject = message.subject;
+    text = message.text;
+    html = message.html;
+  } else {
+    subject = params.subject!;
+    text = [params.offerText ? `${params.content}\n\n${params.offerText}` : params.content, footer?.text ?? ""].join("");
+    html = [
+      `<p>${escapeForHtml(params.content!).replace(/\n/g, "<br>")}</p>`,
+      params.offerText ? `<p><strong>${escapeForHtml(params.offerText)}</strong></p>` : "",
+      footer?.html ?? "",
+    ].join("");
+  }
+
   await params.supabase.from("loyalty_deliveries").update({ status: "sending", attempted_at: new Date().toISOString() }).eq("id", delivery.id).eq("hotel_id", params.hotelId);
 
-  const text = [params.offerText ? `${params.content}\n\n${params.offerText}` : params.content, footer?.text ?? ""].join("");
-  const html = [
-    `<p>${escapeForHtml(params.content).replace(/\n/g, "<br>")}</p>`,
-    params.offerText ? `<p><strong>${escapeForHtml(params.offerText)}</strong></p>` : "",
-    footer?.html ?? "",
-  ].join("");
-  const result = await sendEmail({ to: customer.email!, subject: params.subject, text, html });
+  const result = await sendEmail({ to: customer.email!, subject, text, html });
 
   await params.supabase
     .from("loyalty_deliveries")
@@ -181,14 +276,16 @@ export async function runLoyaltyJobs(supabase: SupabaseClient, now = new Date())
       .limit(200);
 
     for (const stay of stays ?? []) {
+      // subject/content (and the review block) are deliberately NOT passed
+      // here — reserveAndSend re-reads loyalty_settings itself, right
+      // before transport, so the message always reflects the current
+      // config rather than this snapshot taken at batch-selection time.
       const result = await reserveAndSend({
         supabase,
         hotelId: setting.hotel_id,
         customerId: stay.customer_id,
         stayId: stay.id,
         type: "post_stay",
-        subject: setting.subject,
-        content: setting.content,
       });
       processed += 1;
       if (result.status === "sent") sent += 1;

@@ -420,7 +420,11 @@ export interface CustomerStay {
   created_at: string; updated_at: string;
 }
 export interface LoyaltySettings {
-  id: string; hotel_id: string; enabled: boolean; delay_days: number; subject: string; content: string;
+  id: string; hotel_id: string; enabled: boolean; delay_days: number;
+  /** Remerciement block — subject/content are used whenever thank_you_enabled is true. */
+  thank_you_enabled: boolean; subject: string; content: string;
+  /** Demande d'avis block — review_url is guaranteed non-null whenever review_enabled is true (DB constraint). */
+  review_enabled: boolean; review_content: string; review_url: string | null; review_button_label: string;
   channel: "email"; created_at: string; updated_at: string;
 }
 export type LoyaltyCampaignAudience = "general" | "targeted";
