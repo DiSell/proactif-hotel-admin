@@ -1,10 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { requireHotelAccess } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { AuthScope } from "@/lib/supabase/cookieScope";
 import type { ActionResult } from "@/lib/actionResult";
+import { loadSelectedRoomPhotos, type RoomPhoto } from "@/features/rag/roomPhotos";
+import type { AccommodationType, Hotel } from "@/types/database";
 
 /**
  * Guarded by requireHotelAccess(hotelId, scope) — the SAME check the chat
@@ -102,4 +105,95 @@ export async function setAccommodationPhotosSelectionClient(
   isSelected: boolean
 ): Promise<ActionResult<null>> {
   return setAccommodationPhotosSelectionInternal(hotelId, accommodationTypeId, isSelected, "client");
+}
+
+/**
+ * The read-only counterpart to buildRoomRecommendation
+ * (features/rag/answer.ts) and GET /api/widget/[widgetKey]/room-photos —
+ * same shape, same fields, same loadSelectedRoomPhotos helper — but for the
+ * two AUTHENTICATED "mode test" contexts (back-office, client portal)
+ * instead of the public widget. Deliberately never that route itself: this
+ * has no widgetKey, resolves hotelId from the caller's own already-
+ * authorized session via requireHotelAccess, exactly like every other
+ * action in this file.
+ */
+export interface SelectedRoomPhotosResult {
+  accommodationTypeId: string;
+  name: string;
+  photos: RoomPhoto[];
+  pageUrl: string | null;
+  bookingUrl: string | null;
+}
+
+const accommodationTypeIdSchema = z.string().uuid();
+
+/**
+ * Same authorization discipline as setPhotoSelectionInternal above —
+ * requireHotelAccess(hotelId, scope) first, scope never taken from the
+ * caller. accommodationTypeId is validated as a UUID, then re-verified
+ * against THIS hotelId and active=true before any photo is loaded — an
+ * unknown id, an inactive category, or one belonging to a different hotel
+ * are all collapsed into the same "not found" error, never distinguished,
+ * so this action can never be used to probe which ids exist for another
+ * hotel (same discipline as the widget room-photos route's own cross-hotel
+ * guard).
+ */
+async function getSelectedRoomPhotosInternal(
+  hotelId: string,
+  accommodationTypeId: string,
+  scope: AuthScope
+): Promise<ActionResult<SelectedRoomPhotosResult>> {
+  await requireHotelAccess(hotelId, scope);
+
+  const parsedId = accommodationTypeIdSchema.safeParse(accommodationTypeId);
+  if (!parsedId.success) {
+    return { ok: false, error: "Identifiant d'hébergement invalide." };
+  }
+
+  const supabase = createAdminClient();
+  const { data: accommodationType, error } = await supabase
+    .from("accommodation_types")
+    .select("id, name, source_url")
+    .eq("id", parsedId.data)
+    .eq("hotel_id", hotelId)
+    .eq("active", true)
+    .maybeSingle<Pick<AccommodationType, "id" | "name" | "source_url">>();
+  if (error) {
+    console.error("getSelectedRoomPhotos: accommodation_types lookup failed", { hotelId, message: error.message });
+    return { ok: false, error: "Impossible de charger les photos de cet hébergement." };
+  }
+  if (!accommodationType) {
+    return { ok: false, error: "Hébergement introuvable." };
+  }
+
+  const { data: hotel, error: hotelError } = await supabase
+    .from("hotels")
+    .select("booking_url")
+    .eq("id", hotelId)
+    .maybeSingle<Pick<Hotel, "booking_url">>();
+  if (hotelError) {
+    console.error("getSelectedRoomPhotos: hotels lookup failed", { hotelId, message: hotelError.message });
+    return { ok: false, error: "Impossible de charger les photos de cet hébergement." };
+  }
+
+  const photos = await loadSelectedRoomPhotos(supabase, hotelId, accommodationType.id);
+
+  return {
+    ok: true,
+    data: {
+      accommodationTypeId: accommodationType.id,
+      name: accommodationType.name,
+      photos,
+      pageUrl: accommodationType.source_url,
+      bookingUrl: hotel?.booking_url ?? null,
+    },
+  };
+}
+
+export async function getSelectedRoomPhotosBackoffice(hotelId: string, accommodationTypeId: string): Promise<ActionResult<SelectedRoomPhotosResult>> {
+  return getSelectedRoomPhotosInternal(hotelId, accommodationTypeId, "backoffice");
+}
+
+export async function getSelectedRoomPhotosClient(hotelId: string, accommodationTypeId: string): Promise<ActionResult<SelectedRoomPhotosResult>> {
+  return getSelectedRoomPhotosInternal(hotelId, accommodationTypeId, "client");
 }

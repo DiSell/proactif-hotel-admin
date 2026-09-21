@@ -3,6 +3,7 @@ import { getHotel } from "@/features/hotels/queries";
 import { getChatbotSettings } from "@/features/assistant/queries";
 import { AssistantSettingsForm } from "@/features/assistant/AssistantSettingsForm";
 import { ChatPreview } from "@/features/assistant/ChatPreview";
+import { getSelectedRoomPhotosBackoffice } from "@/features/photos/actions";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 
@@ -29,6 +30,7 @@ export default async function AssistantPage({ params }: PageProps<"/etablissemen
             hotelId={hotel.id}
             assistantName={hotel.assistant_name || "Assistant"}
             welcomeMessage={settings?.welcome_message || "Bonjour, comment puis-je vous aider ?"}
+            getRoomPhotosAction={getSelectedRoomPhotosBackoffice}
           />
         </div>
       </div>

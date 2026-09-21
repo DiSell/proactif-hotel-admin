@@ -6,6 +6,7 @@ import { FormField, inputClassName, textareaClassName } from "@/components/ui/Fo
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { ChatPreview } from "@/features/assistant/ChatPreview";
+import { getSelectedRoomPhotosClient } from "@/features/photos/actions";
 import { updateChatbotPersonalization } from "./actions";
 import { DEFAULT_ASSISTANT_NAME } from "./schema";
 import { DEFAULT_WELCOME_MESSAGE } from "@/features/widget/publicHotel";
@@ -95,6 +96,7 @@ export function ChatbotPersonalizationForm({ hotelId, initialAssistantName, init
           fullScreen
           showSources={false}
           apiPath={`/api/client/hotels/${hotelId}/chat`}
+          getRoomPhotosAction={getSelectedRoomPhotosClient}
         />
       </div>
     </div>

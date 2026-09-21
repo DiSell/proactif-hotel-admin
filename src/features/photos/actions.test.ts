@@ -1,10 +1,216 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(here, "actions.ts"), "utf8");
+
+/**
+ * PARITÉ PHOTOS ChatPreview chantier — getSelectedRoomPhotosBackoffice/Client
+ * are READ-ONLY (no revalidatePath, unlike every write action above), so
+ * unlike them these two CAN be real-invocation tested (same discipline as
+ * features/partners/actions.test.ts's own requireHotelAccess mock, and as
+ * app/api/widget/[widgetKey]/room-photos/route.test.ts's fake Supabase for
+ * the exact same query shape this reuses via loadSelectedRoomPhotos).
+ */
+const mockRequireHotelAccess = vi.fn<(hotelId: string, scope: string) => Promise<{ userId: string; profile: { id: string; role: string }; supabase: unknown }>>(
+  async () => ({ userId: "user-1", profile: { id: "user-1", role: "superadmin" }, supabase: null })
+);
+vi.mock("@/lib/auth/session", () => ({
+  requireHotelAccess: (hotelId: string, scope: string) => mockRequireHotelAccess(hotelId, scope),
+}));
+
+const mockCreateAdminClient = vi.fn<() => SupabaseClient>();
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => mockCreateAdminClient(),
+}));
+
+afterEach(() => {
+  mockRequireHotelAccess.mockClear();
+  mockCreateAdminClient.mockReset();
+});
+
+/** Chainable fake — .eq() returns itself any number of times, .maybeSingle()/.order() resolve the given result, regardless of chain length/shape (same helper shape as room-photos/route.test.ts's own). */
+function chainable(result: unknown) {
+  const node = {
+    eq: () => node,
+    order: async () => result,
+    maybeSingle: async () => result,
+  };
+  return node;
+}
+
+const HOTEL_ID = "hotel-1";
+const VALID_ACCOMMODATION_TYPE_ID = "22222222-2222-4222-a222-222222222222";
+const OTHER_HOTEL_ACCOMMODATION_TYPE_ID = "11111111-1111-4111-a111-111111111111";
+
+function fakeSupabase(options: {
+  accommodationTypeLookup?: { data: { id: string; name: string; source_url: string | null } | null; error: { message: string } | null };
+  hotelLookup?: { data: { booking_url: string | null } | null; error: { message: string } | null };
+  roomPhotos?: { data: { photo_url: string; alt_text: string | null }[] | null; error: { message: string } | null };
+}): SupabaseClient {
+  return {
+    from(table: string) {
+      if (table === "accommodation_types") return { select: () => chainable(options.accommodationTypeLookup ?? { data: null, error: null }) };
+      if (table === "hotels") return { select: () => chainable(options.hotelLookup ?? { data: { booking_url: null }, error: null }) };
+      if (table === "room_photos") return { select: () => chainable(options.roomPhotos ?? { data: [], error: null }) };
+      throw new Error(`unexpected table in fake: ${table}`);
+    },
+  } as unknown as SupabaseClient;
+}
+
+function defaultFakeSupabase(): SupabaseClient {
+  return fakeSupabase({
+    accommodationTypeLookup: { data: { id: VALID_ACCOMMODATION_TYPE_ID, name: "Junior Suite", source_url: "https://le1837.example.com/junior-suite" }, error: null },
+    hotelLookup: { data: { booking_url: "https://booking.example.com" }, error: null },
+    roomPhotos: { data: [{ photo_url: "https://cdn.example.com/1.jpg", alt_text: "Chambre" }], error: null },
+  });
+}
+
+describe("getSelectedRoomPhotosBackoffice / getSelectedRoomPhotosClient — authorization", () => {
+  it("[hardcoded scope, no fallback] each variant calls requireHotelAccess with its own hardcoded scope, never received from a caller", async () => {
+    const { getSelectedRoomPhotosBackoffice, getSelectedRoomPhotosClient } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(defaultFakeSupabase());
+
+    await getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(mockRequireHotelAccess).toHaveBeenLastCalledWith(HOTEL_ID, "backoffice");
+
+    await getSelectedRoomPhotosClient(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(mockRequireHotelAccess).toHaveBeenLastCalledWith(HOTEL_ID, "client");
+  });
+
+  it("[hôtel autorisé -> succès] backoffice, requireHotelAccess resolves normally -> the accommodation lookup proceeds and succeeds", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(defaultFakeSupabase());
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(true);
+  });
+
+  it("[hôtel autorisé -> succès] client, requireHotelAccess resolves normally -> the accommodation lookup proceeds and succeeds", async () => {
+    const { getSelectedRoomPhotosClient } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(defaultFakeSupabase());
+
+    const result = await getSelectedRoomPhotosClient(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(true);
+  });
+
+  it("[hôtel non autorisé -> refus] a rejected requireHotelAccess (unauthorized/redirect) propagates — the accommodation_types lookup is never reached", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockRequireHotelAccess.mockRejectedValueOnce(new Error("not authorized"));
+    const accommodationTypesSpy = vi.fn();
+    mockCreateAdminClient.mockReturnValue({ from: accommodationTypesSpy } as unknown as SupabaseClient);
+
+    await expect(getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID)).rejects.toThrow();
+    expect(accommodationTypesSpy).not.toHaveBeenCalled();
+  });
+
+  it("[autre hôtel -> refus] client scope, requireHotelAccess rejects for a hotelId this session isn't linked to — no data ever loaded", async () => {
+    const { getSelectedRoomPhotosClient } = await import("./actions");
+    mockRequireHotelAccess.mockRejectedValueOnce(new Error("not authorized"));
+    const accommodationTypesSpy = vi.fn();
+    mockCreateAdminClient.mockReturnValue({ from: accommodationTypesSpy } as unknown as SupabaseClient);
+
+    await expect(getSelectedRoomPhotosClient("other-hotel", VALID_ACCOMMODATION_TYPE_ID)).rejects.toThrow();
+    expect(accommodationTypesSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("getSelectedRoomPhotosBackoffice / getSelectedRoomPhotosClient — accommodationTypeId validation", () => {
+  it("[UUID invalide -> refus] rejected before any DB lookup, never reaches accommodation_types", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    const accommodationTypesSpy = vi.fn();
+    mockCreateAdminClient.mockReturnValue({ from: accommodationTypesSpy } as unknown as SupabaseClient);
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, "not-a-uuid");
+    expect(result.ok).toBe(false);
+    expect(accommodationTypesSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("getSelectedRoomPhotosBackoffice / getSelectedRoomPhotosClient — cross-hotel / inactive guard (TEST security)", () => {
+  it("[catégorie d'un autre hôtel -> refus, sans fuite d'information] the lookup is scoped by hotel_id — a not-found row (simulating a different hotel's id) fails, never leaks photos", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(fakeSupabase({ accommodationTypeLookup: { data: null, error: null } }));
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, OTHER_HOTEL_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Hébergement introuvable.");
+  });
+
+  it("[catégorie inactive -> refus] active=true is part of the lookup filter — same 404-equivalent as an unknown/foreign id, never distinguished", () => {
+    expect(source).toMatch(/\.eq\("id", parsedId\.data\)\s*\n\s*\.eq\("hotel_id", hotelId\)\s*\n\s*\.eq\("active", true\)/);
+  });
+
+  it("[accommodation_types lookup throws] fails with a clean error, never falls through to loading photos", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(fakeSupabase({ accommodationTypeLookup: { data: null, error: { message: "db error" } } }));
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("getSelectedRoomPhotosBackoffice / getSelectedRoomPhotosClient — photos (reuses loadSelectedRoomPhotos)", () => {
+  it("[reuses the shared helper, never a duplicated room_photos query] imports loadSelectedRoomPhotos from features/rag/roomPhotos", () => {
+    expect(source).toMatch(/import \{ loadSelectedRoomPhotos, type RoomPhoto \} from "@\/features\/rag\/roomPhotos";/);
+    expect(source).toMatch(/const photos = await loadSelectedRoomPhotos\(supabase, hotelId, accommodationType\.id\);/);
+  });
+
+  it("[real photos, correct shape] returns accommodationTypeId/name/photos/pageUrl/bookingUrl", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(
+      fakeSupabase({
+        accommodationTypeLookup: { data: { id: VALID_ACCOMMODATION_TYPE_ID, name: "Junior Suite", source_url: "https://le1837.example.com/junior-suite" }, error: null },
+        hotelLookup: { data: { booking_url: "https://booking.example.com" }, error: null },
+        roomPhotos: {
+          data: [
+            { photo_url: "https://cdn.example.com/2.jpg", alt_text: "Chambre 2" },
+            { photo_url: "https://cdn.example.com/1.jpg", alt_text: "Chambre 1" },
+          ],
+          error: null,
+        },
+      })
+    );
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({
+      accommodationTypeId: VALID_ACCOMMODATION_TYPE_ID,
+      name: "Junior Suite",
+      pageUrl: "https://le1837.example.com/junior-suite",
+      bookingUrl: "https://booking.example.com",
+      photos: [
+        { url: "https://cdn.example.com/2.jpg", alt: "Chambre 2" },
+        { url: "https://cdn.example.com/1.jpg", alt: "Chambre 1" },
+      ],
+    });
+  });
+
+  it("[0 photo = succès] photos: [] is a success, never an error", async () => {
+    const { getSelectedRoomPhotosBackoffice } = await import("./actions");
+    mockCreateAdminClient.mockReturnValue(
+      fakeSupabase({
+        accommodationTypeLookup: { data: { id: VALID_ACCOMMODATION_TYPE_ID, name: "Superior", source_url: null }, error: null },
+        hotelLookup: { data: { booking_url: null }, error: null },
+        roomPhotos: { data: [], error: null },
+      })
+    );
+
+    const result = await getSelectedRoomPhotosBackoffice(HOTEL_ID, VALID_ACCOMMODATION_TYPE_ID);
+    expect(result.ok).toBe(true);
+    expect(result.data?.photos).toEqual([]);
+    expect(result.data?.pageUrl).toBeNull();
+  });
+
+  it("[strictement read-only] never calls .insert/.update/.upsert/.delete inside these two actions", () => {
+    const start = source.indexOf("export interface SelectedRoomPhotosResult");
+    const block = source.slice(start);
+    expect(block).not.toMatch(/\.insert\(|\.update\(|\.upsert\(|\.delete\(|revalidatePath\(/);
+  });
+});
 
 /**
  * Regression guards for the client/superadmin photo-selection actions —

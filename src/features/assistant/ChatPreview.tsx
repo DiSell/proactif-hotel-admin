@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { RoomPhotoModal } from "./RoomPhotoModal";
 import { AssistantMessageContent } from "@/components/ui/AssistantMessageContent";
+import type { ActionResult } from "@/lib/actionResult";
 
 type AnswerStatus = "answered" | "fallback" | "error" | "handoff";
 
@@ -110,15 +111,54 @@ interface ChatPreviewProps {
    * in itself.
    */
   apiPath?: string;
+  /**
+   * PARITÉ PHOTOS ChatPreview chantier — the caller's own correctly-scoped
+   * Server Action (getSelectedRoomPhotosBackoffice or
+   * getSelectedRoomPhotosClient, features/photos/actions.ts), invoked
+   * directly as a function call (no fetch, no widgetKey — this component
+   * stays agnostic to which scope it's rendered under, exactly like apiPath
+   * above: the PARENT decides which scope's action to hand down). Never
+   * chosen by ChatPreview itself.
+   */
+  getRoomPhotosAction: (hotelId: string, accommodationTypeId: string) => Promise<ActionResult<RoomRecommendation>>;
 }
 
-export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen, showSources = true, apiPath }: ChatPreviewProps) {
+export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen, showSources = true, apiPath, getRoomPhotosAction }: ChatPreviewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: "assistant", content: welcomeMessage }]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+
+  // PARITÉ PHOTOS chantier — session-local only, a plain ref (mutating it
+  // must never itself trigger a re-render; previewData below is what
+  // actually drives what's shown). Never localStorage, never shared across
+  // components/tabs. Shared by the click flow and the preview flow via the
+  // single loadAccommodationPhotos below, so a category already loaded by
+  // either one resolves instantly with zero further Server Action call for
+  // the other.
+  const accommodationPhotosCacheRef = useRef<Map<string, RoomRecommendation>>(new Map());
+  // Independent from accommodationPreviewRequestRef below — a click and a
+  // hover/focus preview for the SAME category must never let one's
+  // resolution order affect the other's own guard.
+  const accommodationSummaryRequestRef = useRef(0);
+  const [loadingAccommodationTypeId, setLoadingAccommodationTypeId] = useState<string | null>(null);
+  // Real per-visitor pointer capability, computed once (lazy initializer):
+  // a floating preview only makes sense where a genuine hover gesture
+  // exists. Deliberately NOT inferred from "did onMouseEnter fire" — some
+  // touch browsers synthesize mouse events on tap, which would otherwise
+  // show a preview an instant before the tap's own click opens the modal.
+  const [supportsHoverDevice] = useState<boolean>(
+    () => typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(hover: hover) and (pointer: fine)").matches
+  );
+  // Which accommodationSummary entry's preview is currently shown (hover OR
+  // keyboard focus) — never both a preview and a stale one from another row
+  // at once.
+  const [previewAccommodationTypeId, setPreviewAccommodationTypeId] = useState<string | null>(null);
+  const [previewData, setPreviewData] = useState<RoomRecommendation | null>(null);
+  const [previewError, setPreviewError] = useState(false);
+  const accommodationPreviewRequestRef = useRef(0);
 
   async function handleSend() {
     const trimmed = input.trim();
@@ -166,6 +206,93 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
     setMessages([{ role: "assistant", content: welcomeMessage }]);
     setConversationId(null);
     setError(null);
+  }
+
+  /**
+   * PARITÉ PHOTOS chantier — cache-first (see accommodationPhotosCacheRef
+   * above), otherwise invokes the caller-supplied Server Action (never a
+   * fetch — no widgetKey, no new route: getRoomPhotosAction is already
+   * scoped to this exact authenticated hotelId by the parent). Shared by
+   * both the click flow (handleAccommodationSummaryClick) and the
+   * hover/focus preview flow (handleAccommodationPreviewStart) below, so
+   * the two can never duplicate a request for the same category. Throws on
+   * a failed ActionResult (either a thrown redirect from requireHotelAccess
+   * never reaching this catch, or an explicit `{ ok: false }`) — callers
+   * decide what "failure" means for their own UI.
+   */
+  async function loadAccommodationPhotos(accommodationTypeId: string): Promise<RoomRecommendation> {
+    const cached = accommodationPhotosCacheRef.current.get(accommodationTypeId);
+    if (cached) return cached;
+
+    const result = await getRoomPhotosAction(hotelId, accommodationTypeId);
+    if (!result.ok || !result.data) {
+      throw new Error(result.error || "getRoomPhotosAction failed");
+    }
+    accommodationPhotosCacheRef.current.set(accommodationTypeId, result.data);
+    return result.data;
+  }
+
+  /**
+   * Race-condition guard: accommodationSummaryRequestRef is incremented at
+   * the very start of every call, before the loading state or the Server
+   * Action call — a stale/superseded click's eventual result (success or
+   * failure) is silently discarded, never reopens/overwrites the modal or
+   * clears a newer click's own loading indicator.
+   */
+  async function handleAccommodationSummaryClick(entry: AccommodationSummaryEntry) {
+    const requestId = accommodationSummaryRequestRef.current + 1;
+    accommodationSummaryRequestRef.current = requestId;
+    setLoadingAccommodationTypeId(entry.accommodationTypeId);
+    try {
+      const data = await loadAccommodationPhotos(entry.accommodationTypeId);
+      if (accommodationSummaryRequestRef.current !== requestId) return; // superseded by a later click — discard silently
+      setOpenRoomRecommendation(data);
+    } catch {
+      if (accommodationSummaryRequestRef.current !== requestId) return;
+      setError("Impossible de charger les photos de cet hébergement. Réessayez.");
+    } finally {
+      if (accommodationSummaryRequestRef.current === requestId) setLoadingAccommodationTypeId(null);
+    }
+  }
+
+  /**
+   * Desktop hover / keyboard focus preview. Cache-first: an already-loaded
+   * category displays instantly with zero Server Action call. Otherwise
+   * shows a loading state (previewData === null, distinct from an empty
+   * array) while loadAccommodationPhotos resolves. Own race-condition
+   * token, independent of accommodationSummaryRequestRef — a slow preview
+   * fetch for a category the pointer/focus has already left can never
+   * overwrite a newer preview, and can never open a modal.
+   */
+  function handleAccommodationPreviewStart(entry: AccommodationSummaryEntry) {
+    const requestId = accommodationPreviewRequestRef.current + 1;
+    accommodationPreviewRequestRef.current = requestId;
+    setPreviewAccommodationTypeId(entry.accommodationTypeId);
+    setPreviewError(false);
+
+    const cached = accommodationPhotosCacheRef.current.get(entry.accommodationTypeId);
+    if (cached) {
+      setPreviewData(cached);
+      return;
+    }
+    setPreviewData(null); // still loading
+    loadAccommodationPhotos(entry.accommodationTypeId)
+      .then((data) => {
+        if (accommodationPreviewRequestRef.current !== requestId) return;
+        setPreviewData(data);
+      })
+      .catch(() => {
+        if (accommodationPreviewRequestRef.current !== requestId) return;
+        setPreviewError(true);
+      });
+  }
+
+  /** mouseleave/blur — closes the preview and invalidates its in-flight fetch, but only if it's still the row currently showing. */
+  function handleAccommodationPreviewEnd(accommodationTypeId: string) {
+    accommodationPreviewRequestRef.current += 1;
+    setPreviewAccommodationTypeId((current) => (current === accommodationTypeId ? null : current));
+    setPreviewData(null);
+    setPreviewError(false);
   }
 
   return (
@@ -220,25 +347,83 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
               </a>
             )}
             {/*
-             * INFORMATION DÉTERMINISTE chantier — mirrors
-             * PublicWidgetChat.tsx's own accommodationSummary rendering
-             * (light list, no border/background per entry — never styled
-             * like a catalogue card). roomCatalogue itself stays
-             * unsupported in this component, unchanged, out of scope.
+             * PARITÉ PHOTOS ChatPreview chantier — mirrors PublicWidgetChat.tsx's
+             * own accommodationSummary interactivity (real buttons, chevron,
+             * hover/focus preview, click -> RoomPhotoModal), adapted to this
+             * component's Tailwind styling and its authenticated
+             * getRoomPhotosAction (never a fetch/widgetKey). Still no
+             * border/background per row — never styled like a catalogue
+             * card. roomCatalogue itself stays unsupported in this
+             * component, unchanged, out of scope.
              */}
             {message.role === "assistant" && message.accommodationSummary && message.accommodationSummary.length > 0 && (
-              <div className="flex max-w-[78%] flex-col gap-2 text-2xs">
-                {message.accommodationSummary.map((entry) => (
-                  <div key={entry.accommodationTypeId} className="flex items-baseline gap-1.5">
-                    <span aria-hidden="true" className="text-accent">•</span>
-                    <span>
-                      <span className="font-medium text-ink">{entry.name}</span>
-                      {entry.maxGuests !== null && (
-                        <span className="text-body/60"> — Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}</span>
+              <div className="flex max-w-[78%] flex-col gap-1 text-2xs">
+                {message.accommodationSummary.map((entry) => {
+                  const isPreviewing = previewAccommodationTypeId === entry.accommodationTypeId;
+                  const isLoading = loadingAccommodationTypeId === entry.accommodationTypeId;
+                  return (
+                    <div key={entry.accommodationTypeId} className="relative">
+                      <button
+                        type="button"
+                        className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-canvas focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default disabled:opacity-60"
+                        onClick={() => handleAccommodationSummaryClick(entry)}
+                        onMouseEnter={() => {
+                          if (supportsHoverDevice) handleAccommodationPreviewStart(entry);
+                        }}
+                        onMouseLeave={() => {
+                          if (supportsHoverDevice) handleAccommodationPreviewEnd(entry.accommodationTypeId);
+                        }}
+                        onFocus={() => handleAccommodationPreviewStart(entry)}
+                        onBlur={() => handleAccommodationPreviewEnd(entry.accommodationTypeId)}
+                        disabled={isLoading}
+                        aria-label={`Voir les photos de ${entry.name}`}
+                        aria-busy={isLoading}
+                        aria-describedby={isPreviewing ? `chatpreview-accsummary-preview-${entry.accommodationTypeId}` : undefined}
+                      >
+                        <span>
+                          <span className="block font-medium text-ink">{entry.name}</span>
+                          {entry.maxGuests !== null && (
+                            <span className="block text-body/60">
+                              Jusqu’à {entry.maxGuests} personne{entry.maxGuests > 1 ? "s" : ""}
+                            </span>
+                          )}
+                        </span>
+                        <span aria-hidden="true" className="shrink-0 text-base font-bold text-accent">
+                          {isLoading ? "…" : "›"}
+                        </span>
+                      </button>
+
+                      {isPreviewing && (
+                        <div
+                          id={`chatpreview-accsummary-preview-${entry.accommodationTypeId}`}
+                          role="status"
+                          className="absolute left-0 top-full z-20 mt-1 w-full max-w-[220px] rounded-lg border border-border bg-surface p-2 shadow-md"
+                        >
+                          <p className="font-medium text-ink">{entry.name}</p>
+                          {previewError ? (
+                            <p className="mt-1 text-body/60">Aperçu indisponible.</p>
+                          ) : previewData === null ? (
+                            <p className="mt-1 text-body/60">Chargement des photos…</p>
+                          ) : previewData.photos.length === 0 ? (
+                            <p className="mt-1 text-body/60">Aucune photo disponible.</p>
+                          ) : (
+                            <>
+                              <div className="mt-1.5 flex gap-1">
+                                {previewData.photos.slice(0, 4).map((photo, index) => (
+                                  // eslint-disable-next-line @next/next/no-img-element -- externally-hosted storage thumbnail, not a local/optimizable asset.
+                                  <img key={`${photo.url}-${index}`} src={photo.url} alt="" className="h-11 w-11 rounded object-cover" />
+                                ))}
+                              </div>
+                              <p className="mt-1 text-body/60">
+                                {previewData.photos.length} photo{previewData.photos.length > 1 ? "s" : ""}
+                              </p>
+                            </>
+                          )}
+                        </div>
                       )}
-                    </span>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
             )}
             {message.role === "assistant" && message.partnerRecommendations && message.partnerRecommendations.length > 0 && (

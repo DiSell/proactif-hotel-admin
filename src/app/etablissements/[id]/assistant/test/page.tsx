@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getHotel } from "@/features/hotels/queries";
 import { getChatbotSettings } from "@/features/assistant/queries";
 import { ChatPreview } from "@/features/assistant/ChatPreview";
+import { getSelectedRoomPhotosBackoffice } from "@/features/photos/actions";
 
 export default async function AssistantFullscreenTestPage({
   params,
@@ -43,6 +44,7 @@ export default async function AssistantFullscreenTestPage({
           assistantName={hotel.assistant_name || "Assistant"}
           welcomeMessage={settings?.welcome_message || "Bonjour, comment puis-je vous aider ?"}
           fullScreen
+          getRoomPhotosAction={getSelectedRoomPhotosBackoffice}
         />
       </div>
     </div>
