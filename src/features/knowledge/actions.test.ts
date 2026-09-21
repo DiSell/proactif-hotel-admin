@@ -32,6 +32,115 @@ describe("importCrawledPages — [2] source_url identity", () => {
 });
 
 /**
+ * AJOUTER UNE URL chantier — addUrlSource/reindexSource are Supabase- AND
+ * network-touching (requireSuperadmin, createClient, revalidatePath via
+ * importCrawledPages), same testing constraint as every other action in
+ * this file — checked at the source level. The pure fetch+extract logic
+ * itself (fetchPageContent's own branching on safeFetch/extractPage
+ * results) is real-invocation tested separately in
+ * features/crawler/fetchPage.test.ts, where no Supabase/session/
+ * revalidatePath dependency exists.
+ */
+describe("addUrlSource — fetches for real, never a stray content=NULL row", () => {
+  function sliceFunction(exportedName: string): string {
+    const start = source.indexOf(`export async function ${exportedName}`);
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport async function", start + 1);
+    return source.slice(start, nextExport === -1 ? undefined : nextExport);
+  }
+
+  it("[fetches before writing] calls fetchPageContent before any knowledge_sources write is attempted", () => {
+    const fn = sliceFunction("addUrlSource");
+    const fetchIndex = fn.indexOf("await fetchPageContent(");
+    const importIndex = fn.indexOf("importCrawledPages(");
+    expect(fetchIndex).toBeGreaterThan(-1);
+    expect(importIndex).toBeGreaterThan(fetchIndex);
+  });
+
+  it("[no row on fetch failure] a failed fetch returns an error before importCrawledPages is ever reached — no stray content=NULL/status=error row is created for an unreachable page", () => {
+    const fn = sliceFunction("addUrlSource");
+    const fetchIndex = fn.indexOf("await fetchPageContent(");
+    const guardIndex = fn.indexOf("if (!fetched.ok)", fetchIndex);
+    const importIndex = fn.indexOf("importCrawledPages(", fetchIndex);
+    expect(guardIndex).toBeGreaterThan(fetchIndex);
+    expect(guardIndex).toBeLessThan(importIndex);
+    const guardBlock = fn.slice(guardIndex, importIndex);
+    expect(guardBlock).toMatch(/return \{ ok: false, error: FETCH_ERROR_MESSAGES\[fetched\.errorReason\] \};/);
+    expect(guardBlock).not.toMatch(/\.insert\(|\.from\("knowledge_sources"\)/);
+  });
+
+  it("[delegates the write to importCrawledPages, never a second upsert/anti-dup implementation] the real fetched content is passed straight through, never re-derived", () => {
+    const fn = sliceFunction("addUrlSource");
+    expect(fn).toMatch(/importCrawledPages\(hotelId, \{/);
+    expect(fn).toMatch(/finalUrl: fetched\.finalUrl, title: parsed\.data\.title, content: fetched\.content, language: null/);
+    // No independent .from("knowledge_sources").insert/.update anywhere in this function — insertSource is a different function, never called here.
+    expect(fn).not.toMatch(/insertSource\(/);
+  });
+
+  it("[title never silently rewritten] language is deliberately passed as null so importCrawledPages's own auto-suffix logic never edits the admin's typed title", () => {
+    const fn = sliceFunction("addUrlSource");
+    expect(fn).toMatch(/language: null/);
+  });
+
+  it("[still superadmin-gated, still session-bound] requireSuperadmin and createClient (never createAdminClient/service_role) are still used", () => {
+    const fn = sliceFunction("addUrlSource");
+    expect(fn).toMatch(/await requireSuperadmin\(\);/);
+    expect(fn).toMatch(/await createClient\(\);/);
+    expect(fn).not.toMatch(/createAdminClient|service_role/i);
+  });
+});
+
+describe("reindexSource — type \"url\" re-fetches for real, other types unchanged", () => {
+  function sliceFunction(exportedName: string): string {
+    const start = source.indexOf(`export async function ${exportedName}`);
+    expect(start).toBeGreaterThan(-1);
+    const nextExport = source.indexOf("\nexport async function", start + 1);
+    return source.slice(start, nextExport === -1 ? undefined : nextExport);
+  }
+
+  it("[type url branch] calls fetchPageContent with the EXISTING source_url, before ingestSource", () => {
+    const fn = sliceFunction("reindexSource");
+    const branchIndex = fn.indexOf('source.type === "url"');
+    const fetchIndex = fn.indexOf("await fetchPageContent(source.source_url", branchIndex);
+    const ingestIndex = fn.indexOf("await ingestSource(hotelId, sourceId);", branchIndex);
+    expect(branchIndex).toBeGreaterThan(-1);
+    expect(fetchIndex).toBeGreaterThan(branchIndex);
+    expect(fetchIndex).toBeLessThan(ingestIndex);
+  });
+
+  it("[reuses the existing row, never a duplicate] on refetch success, updates content on the SAME sourceId — no .insert( anywhere in this function", () => {
+    const fn = sliceFunction("reindexSource");
+    expect(fn).toMatch(/\.update\(\{ content: fetched\.content, status: "pending" \}\)\.eq\("id", sourceId\)/);
+    expect(fn).not.toMatch(/\.insert\(/);
+  });
+
+  it("[refetch failure marks the existing row error, keeps its previous content untouched] never silently keeps a stale 'indexed' status", () => {
+    const fn = sliceFunction("reindexSource");
+    const branchIndex = fn.indexOf('source.type === "url"');
+    const fetchFailureIndex = fn.indexOf("if (!fetched.ok)", branchIndex);
+    const errorUpdateIndex = fn.indexOf('.update({ status: "error" })', fetchFailureIndex);
+    expect(errorUpdateIndex).toBeGreaterThan(fetchFailureIndex);
+    // That error-marking update is scoped to THIS sourceId, never a bulk update.
+    const line = fn.slice(errorUpdateIndex, fn.indexOf(";", errorUpdateIndex));
+    expect(line).toMatch(/\.eq\("id", sourceId\)/);
+  });
+
+  it("[non-url types unchanged] the else branch never calls fetchPageContent — same two-line behavior as before this chantier", () => {
+    const fn = sliceFunction("reindexSource");
+    const elseIndex = fn.indexOf("} else {");
+    const ingestIndex = fn.indexOf("const ingestResult = await ingestSource", elseIndex);
+    const elseBlock = fn.slice(elseIndex, ingestIndex);
+    expect(elseBlock).not.toMatch(/fetchPageContent/);
+    expect(elseBlock).toMatch(/\.update\(\{ status: "pending" \}\)\.eq\("id", sourceId\)/);
+  });
+
+  it("[generic — no hotel-specific branch] no hardcoded hotel id, source id, or URL anywhere in this function", () => {
+    const fn = sliceFunction("reindexSource");
+    expect(fn).not.toMatch(/a675cb48|674ee588|le1837/i);
+  });
+});
+
+/**
  * Regression guards for saveAccommodationTypes — Supabase/network-touching,
  * same testing constraint as above — checked at the source level.
  */

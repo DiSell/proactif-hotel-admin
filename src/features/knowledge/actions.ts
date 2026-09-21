@@ -6,6 +6,7 @@ import { requireSuperadmin } from "@/lib/auth/session";
 import { ingestSource } from "@/features/rag/ingest";
 import { normalizeUrl } from "@/features/crawler/urlPolicy";
 import { safeFetchBinary } from "@/features/crawler/networkGuard";
+import { fetchPageContent, type FetchPageErrorReason } from "@/features/crawler/fetchPage";
 import { CURRENT_CONSENT_VERSION, SITE_ANALYSIS_CONSENT_TEXT } from "./siteAnalysisConsent";
 import {
   addUrlSourceSchema,
@@ -35,6 +36,26 @@ function fieldErrorsFrom(issues: { path: PropertyKey[]; message: string }[]) {
 export interface InsertSourceResult {
   status: KnowledgeSource["status"];
 }
+
+/**
+ * AJOUTER UNE URL chantier — user-facing translation of fetchPageContent's
+ * own errorReason, shared by addUrlSource and reindexSource (type "url")
+ * so the two never drift into two different wordings for the same failure.
+ * Never a generic "Erreur" catch-all: each reason maps to something the
+ * admin can actually act on.
+ */
+const FETCH_ERROR_MESSAGES: Record<FetchPageErrorReason, string> = {
+  invalid_url: "URL invalide.",
+  protocol_not_allowed: "Seules les URLs http/https sont autorisées.",
+  network_unsafe: "Cette adresse n’est pas autorisée pour des raisons de sécurité.",
+  timeout: "Le délai de récupération de la page a été dépassé.",
+  too_large: "La page est trop volumineuse.",
+  too_many_redirects: "Trop de redirections.",
+  http_error: "Cette page est inaccessible (erreur HTTP).",
+  network_error: "Impossible de contacter cette page.",
+  not_html: "Cette URL ne pointe pas vers une page HTML.",
+  insufficient_content: "Le contenu de cette page est insuffisant ou nécessite un rendu JavaScript non pris en charge.",
+};
 
 async function insertSource(
   hotelId: string,
@@ -71,10 +92,55 @@ async function insertSource(
   return { ok: true, data: { status: ingestResult.ok ? "indexed" : "error" } };
 }
 
+/**
+ * AJOUTER UNE URL chantier — fixes a real, generic bug: this action used to
+ * insert a knowledge_sources row with content left entirely unset, which
+ * ingestSource's own buildSourceText (features/rag/ingest.ts) can never
+ * turn into anything for type "url" ("No crawler / document extraction yet
+ * this milestone" — content must already exist) — every single call ended
+ * in status "error", for any hotel, any URL, always.
+ *
+ * Now actually fetches the page first, via the SAME primitives
+ * crawlWebsite's own processUrl uses (safeFetch + extractPage, both
+ * completely unchanged — see features/crawler/fetchPage.ts's own doc
+ * comment for why that orchestration isn't shared with crawl.ts itself:
+ * processUrl also needs the raw HTML for link-following/relevance scoring,
+ * which this single-URL path has no use for). A fetch/extraction failure
+ * returns a clean error WITHOUT ever creating a knowledge_sources row —
+ * never a stray content=NULL/status=error row for a page that was never
+ * reachable in the first place.
+ *
+ * On success, delegates the actual write (upsert-by-source_url, anti-dup,
+ * chunking, embeddings) entirely to importCrawledPages below — the exact
+ * same pipeline "Analyser le site" already uses, never a second,
+ * independent implementation of that logic. `language: null` is passed
+ * deliberately: importCrawledPages appends a " — EN"-style suffix to the
+ * title only when a language is given and differs from the hotel's
+ * default — this action's title is already whatever the admin typed
+ * themselves (this form has never auto-suffixed anything), so the detected
+ * language is discarded here to avoid silently editing their input.
+ */
 export async function addUrlSource(hotelId: string, input: AddUrlSourceInput): Promise<ActionResult<InsertSourceResult>> {
   const parsed = addUrlSourceSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Champs invalides.", fieldErrors: fieldErrorsFrom(parsed.error.issues) };
-  return insertSource(hotelId, { type: "url", title: parsed.data.title, source_url: parsed.data.source_url });
+
+  await requireSuperadmin();
+  const supabase = await createClient();
+
+  const { data: hotel } = await supabase.from("hotels").select("languages").eq("id", hotelId).maybeSingle<{ languages: string[] }>();
+
+  const fetched = await fetchPageContent(parsed.data.source_url, hotel?.languages ?? []);
+  if (!fetched.ok) {
+    console.error("addUrlSource: fetch/extraction failed", { hotelId, sourceUrl: parsed.data.source_url, reason: fetched.errorReason, message: fetched.errorMessage });
+    return { ok: false, error: FETCH_ERROR_MESSAGES[fetched.errorReason] };
+  }
+
+  const importResult = await importCrawledPages(hotelId, {
+    pages: [{ finalUrl: fetched.finalUrl, title: parsed.data.title, content: fetched.content, language: null }],
+  });
+  if (!importResult.ok || !importResult.data) return { ok: false, error: importResult.error ?? "Impossible d’ajouter cette source." };
+
+  return { ok: true, data: { status: importResult.data.errors > 0 ? "error" : "indexed" } };
 }
 
 export async function addTextSource(hotelId: string, input: AddTextSourceInput): Promise<ActionResult<InsertSourceResult>> {
@@ -101,21 +167,55 @@ export async function addDocumentSource(hotelId: string, input: AddDocumentSourc
   });
 }
 
+/**
+ * AJOUTER UNE URL chantier — for a type "url" source, re-indexing must
+ * mean re-fetching the real page, never just re-running chunking/embeddings
+ * over whatever content happened to be stored last (which is exactly what
+ * left the Superior/Deluxe-PMR-shaped sources permanently stuck: their
+ * content was never anything but NULL to begin with — re-ingesting NULL
+ * forever produces the same "error", no matter how many times it's
+ * retried). Every other source type is untouched: their content is already
+ * the source of truth (text/faq typed directly, document already uploaded)
+ * — re-fetching makes no sense for them and none is attempted.
+ *
+ * Generic for any hotel/URL — reuses fetchPageContent (the same primitive
+ * addUrlSource above now uses) and never touches source_url/title/type; a
+ * failed re-fetch marks the EXISTING row "error" (never silently keeps a
+ * stale "indexed" status) without discarding its previous content, and
+ * never creates a second row for the same source.
+ */
 export async function reindexSource(hotelId: string, sourceId: string): Promise<ActionResult<InsertSourceResult>> {
   await requireSuperadmin();
   const supabase = await createClient();
 
   const { data: source, error } = await supabase
     .from("knowledge_sources")
-    .select("id")
+    .select("id, type, source_url")
     .eq("id", sourceId)
     .eq("hotel_id", hotelId)
-    .maybeSingle();
+    .maybeSingle<Pick<KnowledgeSource, "id" | "type" | "source_url">>();
   if (error || !source) {
     return { ok: false, error: "Source introuvable." };
   }
 
-  await supabase.from("knowledge_sources").update({ status: "pending" }).eq("id", sourceId);
+  if (source.type === "url") {
+    if (!source.source_url) {
+      return { ok: false, error: "Cette source n’a pas d’URL associée." };
+    }
+
+    const { data: hotel } = await supabase.from("hotels").select("languages").eq("id", hotelId).maybeSingle<{ languages: string[] }>();
+    const fetched = await fetchPageContent(source.source_url, hotel?.languages ?? []);
+    if (!fetched.ok) {
+      console.error("reindexSource: fetch/extraction failed", { hotelId, sourceId, sourceUrl: source.source_url, reason: fetched.errorReason, message: fetched.errorMessage });
+      await supabase.from("knowledge_sources").update({ status: "error" }).eq("id", sourceId);
+      return { ok: false, error: FETCH_ERROR_MESSAGES[fetched.errorReason] };
+    }
+
+    await supabase.from("knowledge_sources").update({ content: fetched.content, status: "pending" }).eq("id", sourceId);
+  } else {
+    await supabase.from("knowledge_sources").update({ status: "pending" }).eq("id", sourceId);
+  }
+
   const ingestResult = await ingestSource(hotelId, sourceId);
 
   revalidatePath(`/etablissements/${hotelId}/connaissances`);
