@@ -163,12 +163,51 @@ describe("applyPartnerRequestCommandForChatbot", () => {
     });
   });
 
-  it("[structurally cannot call a delivery command] the TypeScript type of `command` excludes partner_delivery_succeeded/partner_delivery_failed — verified at the source level since a type-only guarantee can't be asserted at runtime", () => {
+  it("[structurally cannot call a delivery/transport command] the TypeScript type of `command` excludes partner_delivery_succeeded/partner_delivery_failed/partner_accept/partner_reject/partner_propose_alternative — verified at the source level since a type-only guarantee can't be asserted at runtime", () => {
     const typeLine = source.match(/type ChatbotPartnerRequestCommand = [^;]+;/)?.[0];
     expect(typeLine).toBeTruthy();
     expect(typeLine).toMatch(/"request_guest_confirmation" \| "guest_confirm"/);
     expect(typeLine).not.toMatch(/partner_delivery_succeeded/);
     expect(typeLine).not.toMatch(/partner_delivery_failed/);
+    expect(typeLine).not.toMatch(/"partner_accept"/);
+    expect(typeLine).not.toMatch(/"partner_reject"/);
+    expect(typeLine).not.toMatch(/partner_propose_alternative/);
+  });
+
+  it("[PHASE 2] the type DOES include guest_accept_alternative/guest_reject_alternative — legitimately guest-triggered, resolved only via the deterministic isExplicitConfirmation/isExplicitDenial safety net (features/rag/partnerRequestFlow.ts), never inferred by the model", () => {
+    const typeLine = source.match(/type ChatbotPartnerRequestCommand = [^;]+;/)?.[0];
+    expect(typeLine).toMatch(/"guest_accept_alternative"/);
+    expect(typeLine).toMatch(/"guest_reject_alternative"/);
+  });
+
+  it("[guest_accept_alternative] calls apply_partner_request_command with the exact command", async () => {
+    const { applyPartnerRequestCommandForChatbot } = await import("./chatbotService");
+    const supabase = fakeSupabase({ data: null, error: null });
+
+    await applyPartnerRequestCommandForChatbot("req-1", "hotel-a", "guest_accept_alternative", supabase as never);
+
+    expect(supabase.rpc).toHaveBeenCalledWith("apply_partner_request_command", {
+      p_partner_request_id: "req-1",
+      p_hotel_id: "hotel-a",
+      p_command: "guest_accept_alternative",
+      p_message: null,
+      p_metadata: null,
+    });
+  });
+
+  it("[guest_reject_alternative] calls apply_partner_request_command with the exact command", async () => {
+    const { applyPartnerRequestCommandForChatbot } = await import("./chatbotService");
+    const supabase = fakeSupabase({ data: null, error: null });
+
+    await applyPartnerRequestCommandForChatbot("req-1", "hotel-a", "guest_reject_alternative", supabase as never);
+
+    expect(supabase.rpc).toHaveBeenCalledWith("apply_partner_request_command", {
+      p_partner_request_id: "req-1",
+      p_hotel_id: "hotel-a",
+      p_command: "guest_reject_alternative",
+      p_message: null,
+      p_metadata: null,
+    });
   });
 
   it("[RPC error] throws", async () => {

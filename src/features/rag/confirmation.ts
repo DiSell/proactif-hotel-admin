@@ -28,3 +28,17 @@ const EXPLICIT_CONFIRMATION_PATTERNS: RegExp[] = [
 export function isExplicitConfirmation(message: string): boolean {
   return EXPLICIT_CONFIRMATION_PATTERNS.some((pattern) => pattern.test(message));
 }
+
+/**
+ * Same server-side safety-net posture as isExplicitConfirmation above, for
+ * the negative case — added for the partner-alternative flow
+ * (partnerRequestFlow.ts's own alternative_proposed branch), which must
+ * never let the model infer a "non" from ambiguous phrasing before calling
+ * guest_reject_alternative (a real, hard-to-undo state transition —
+ * alternative_proposed -> cancelled, a terminal status).
+ */
+const EXPLICIT_DENIAL_PATTERNS: RegExp[] = [/\bnon\b/i, /\bno\b/i, /\bje\s+refuse\b/i, /\bpas\s+d['’]accord\b/i, /\bannul[ée]?z?\b/i];
+
+export function isExplicitDenial(message: string): boolean {
+  return EXPLICIT_DENIAL_PATTERNS.some((pattern) => pattern.test(message));
+}

@@ -75,12 +75,24 @@ export async function createPartnerRequestForChatbot(
 /**
  * Structurally narrower than the full PartnerRequestCommand vocabulary — a
  * TYPE ERROR, not just a convention, to ever pass
- * partner_delivery_succeeded/partner_delivery_failed or any other command
- * through this chatbot-facing function. This phase never transmits
- * anything to a partner (no WhatsApp/provider wired up yet), so the
- * chatbot must be structurally incapable of calling those commands.
+ * partner_delivery_succeeded/partner_delivery_failed/partner_accept/
+ * partner_reject/partner_propose_alternative or any other command through
+ * this chatbot-facing function — those are transport/partner-side commands,
+ * reached only from a signature-verified inbound reply webhook, never
+ * something a guest chat turn can trigger directly. This file must never
+ * import the module that issues those (see this file's own doc comment
+ * above and its dedicated source-level test).
+ *
+ * guest_accept_alternative/guest_reject_alternative WERE added here (PHASE
+ * 2, the RAG partner-request flow's own alternative_proposed branch) —
+ * both are legitimately guest-triggered commands, resolved only via the
+ * SAME deterministic explicit-confirmation/explicit-denial safety net
+ * already used for the initial guest_confirm, never inferred by the model.
  */
-export type ChatbotPartnerRequestCommand = Extract<PartnerRequestCommand, "request_guest_confirmation" | "guest_confirm">;
+export type ChatbotPartnerRequestCommand = Extract<
+  PartnerRequestCommand,
+  "request_guest_confirmation" | "guest_confirm" | "guest_accept_alternative" | "guest_reject_alternative"
+>;
 
 export async function applyPartnerRequestCommandForChatbot(
   partnerRequestId: string,

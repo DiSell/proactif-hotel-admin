@@ -3,12 +3,17 @@ import type { PartnerRequest } from "@/features/partnerRequests/types";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createPartnerRequestForChatbot, applyPartnerRequestCommandForChatbot } from "@/features/partnerRequests/chatbotService";
 import { getActivePartnerRequestForConversation, getGuestPhoneForPartnerRequest, getPartnerRequestById, hasGuestConfirmedEvent } from "@/features/partnerRequests/queries";
-import { deliverPartnerRequest, getLatestPartnerRequestDelivery, reconcileStaleSendingDelivery } from "@/features/partnerRequests/deliveryService";
+import {
+  deliverPartnerRequest,
+  deliverPartnerRequestAlternativeAcceptance,
+  getLatestPartnerRequestDelivery,
+  reconcileStaleSendingDelivery,
+} from "@/features/partnerRequests/deliveryService";
 import { maskPhoneForDisplay } from "@/features/partnerRequests/phoneRedaction";
 import { formatPartnerRequestDate, formatPartnerRequestTime } from "@/features/partnerRequests/presentation";
 import { loadActiveHotelPartners } from "./partners";
 import type { PendingPartnerRequestFields, PartnerRequestPhonePrompt, RagPartner } from "./types";
-import { isExplicitConfirmation } from "./confirmation";
+import { isExplicitConfirmation, isExplicitDenial } from "./confirmation";
 
 /**
  * Extracted to features/rag/confirmation.ts (domain-agnostic, reused by
@@ -124,7 +129,15 @@ export function buildPartnerDeliveryUserMessage(state: PartnerDeliveryUserState)
   }
 }
 
-function messageForSendResult(result: Awaited<ReturnType<typeof deliverPartnerRequest>>): PartnerDeliveryUserState {
+/**
+ * Structurally typed (not tied to WhatsAppSendResult specifically) so this
+ * same mapper also serves deliverPartnerRequestAlternativeAcceptance's own
+ * result (a union of the WhatsApp AND SMS result shapes, PHASE 2) — every
+ * branch below only ever reads `.ok`/`.error` as plain values, so widening
+ * the parameter type changes nothing about the runtime logic. Verified by
+ * the full existing WhatsApp test suite staying green unchanged.
+ */
+function messageForSendResult(result: { ok: boolean; error?: string }): PartnerDeliveryUserState {
   if (result.ok) return "sent";
   if (result.error === "provider_unknown") return "unknown";
   if (result.error === "provider_error") return "failed";
@@ -138,6 +151,102 @@ function messageForPersistedDelivery(status: "queued" | "sending" | "sent" | "fa
   if (status === "failed") return "failed";
   if (status === "unknown") return "unknown";
   return "in_progress";
+}
+
+/**
+ * PHASE 2 (reconfirmation cycle) — wording deliberately distinct from
+ * buildPartnerDeliveryUserMessage above: this step is about the GUEST'S
+ * ACCEPTANCE being relayed to the partner for a final confirmation, never
+ * about the original request, and NEVER claims the reservation itself is
+ * confirmed — only the partner's own reply (accepted/rejected) does that.
+ */
+function buildAlternativeAcceptanceUserMessage(state: PartnerDeliveryUserState): string {
+  switch (state) {
+    case "sent":
+      return "Votre acceptation a été transmise au partenaire. Je vous confirmerai la réservation dès qu'il aura répondu.";
+    case "failed":
+      return "Votre acceptation est bien enregistrée, mais nous n’avons pas pu la transmettre au partenaire pour le moment.";
+    case "unknown":
+      return "Votre acceptation est enregistrée. La transmission est en cours de vérification.";
+    case "in_progress":
+      return "Votre acceptation est enregistrée. Sa transmission au partenaire est en cours.";
+    case "unavailable":
+      return "Votre acceptation est enregistrée, mais le service de transmission au partenaire n’est pas encore disponible.";
+    case "ineligible":
+      return "Votre acceptation est enregistrée, mais nous ne pouvons pas la transmettre au partenaire pour le moment.";
+  }
+}
+
+/**
+ * PHASE 2 — closes the "chatbot silently ignores alternative_proposed" gap
+ * confirmed earlier this session: getActivePartnerRequestForConversation
+ * already re-fetches partner_response/status every turn (queries.ts), but
+ * nothing previously read them. Never lets the model infer a transition —
+ * only isExplicitConfirmation/isExplicitDenial (the SAME deterministic
+ * safety net already used for the initial guest_confirm) may trigger
+ * guest_accept_alternative/guest_reject_alternative.
+ *
+ * RECONFIRMATION CYCLE (closes the PREVIOUSLY reported gap): after
+ * guest_accept_alternative succeeds, partner_requests.status stays at
+ * "alternative_proposed" (0020_partner_requests.sql's own rule) until the
+ * acceptance is RETRANSMITTED to the partner and THAT delivery succeeds
+ * (partner_delivery_succeeded -> sent_to_partner). This function now
+ * triggers that retransmission via deliverPartnerRequestAlternativeAcceptance
+ * — which selects meta/twilio_sms from the ORIGINAL delivery's own
+ * `provider` column, never guessed — mirroring EXACTLY the existing
+ * "check for an existing delivery first, reconcile if stale, only then
+ * attempt a new one" pattern already used below for pending_confirmation
+ * (same idempotence guarantee, same purpose-scoped uniqueness index, no new
+ * mechanism). The reply wording never claims the reservation is confirmed
+ * — only the partner's own final 1/2 reply does that (features/partnerRequests/
+ * deliveryService.ts's own resolvePartnerReplySms, already built, unchanged).
+ */
+async function handleAlternativeProposedTurn(
+  request: PartnerRequest,
+  message: string,
+  hotelId: string,
+  supabase: SupabaseClient | undefined
+): Promise<PartnerRequestTurnOutcome> {
+  if (isExplicitConfirmation(message)) {
+    const serverSupabase = supabase ?? createAdminClient();
+    const existingDelivery = await getLatestPartnerRequestDelivery(request.id, hotelId, "alternative_acceptance", serverSupabase);
+
+    // guest_accept_alternative is safe to (re)apply: it never changes
+    // status by itself (0020's own rule — see this function's header
+    // comment), so a replayed "oui" logs at most a redundant audit event,
+    // never an inconsistent one.
+    await applyPartnerRequestCommandForChatbot(request.id, hotelId, "guest_accept_alternative", supabase);
+
+    if (existingDelivery) {
+      // A reconfirmation attempt is already queued/sending/sent/unknown for
+      // THIS request (same idempotence guarantee as the initial_request
+      // path below) — never a second SMS/WhatsApp send for a replayed
+      // "oui" or a re-processed chatbot turn.
+      const status = await reconcileStaleSendingDelivery(existingDelivery, request.id, hotelId, { supabase: serverSupabase, purpose: "alternative_acceptance" });
+      return { replySuffix: buildAlternativeAcceptanceUserMessage(messageForPersistedDelivery(status)), phonePrompt: null, replaceReply: true };
+    }
+
+    const deliveryResult = await deliverPartnerRequestAlternativeAcceptance(request.id, hotelId, { supabase: serverSupabase });
+    return { replySuffix: buildAlternativeAcceptanceUserMessage(messageForSendResult(deliveryResult)), phonePrompt: null, replaceReply: true };
+  }
+  if (isExplicitDenial(message)) {
+    await applyPartnerRequestCommandForChatbot(request.id, hotelId, "guest_reject_alternative", supabase);
+    return { replySuffix: "Votre demande a été annulée.", phonePrompt: null, replaceReply: true };
+  }
+  // Ambiguous reply — present the proposal again without touching any
+  // state, and WITHOUT triggering any reconfirmation delivery. Never a
+  // transition without an explicit yes/no from the guest.
+  return { replySuffix: buildAlternativeProposalText(request), phonePrompt: null };
+}
+
+function buildAlternativeProposalText(request: PartnerRequest): string {
+  const original = request.requested_time
+    ? formatPartnerRequestTime(request.requested_time)
+    : request.requested_date
+      ? formatPartnerRequestDate(request.requested_date)
+      : "votre demande initiale";
+  const proposal = request.partner_response ?? "une alternative";
+  return `Le partenaire n'est pas disponible pour ${original}. Il vous propose : ${proposal}. Souhaitez-vous accepter cette proposition ?`;
 }
 
 interface FinalizePartnerRequestCreationParams {
@@ -260,10 +369,14 @@ export async function processPartnerRequestTurn(params: ProcessPartnerRequestTur
       return { replySuffix: buildPartnerDeliveryUserMessage("sent"), phonePrompt: null, replaceReply: true };
     }
 
+    if (activePartnerRequest.status === "alternative_proposed") {
+      return handleAlternativeProposedTurn(activePartnerRequest, message, hotelId, supabase);
+    }
+
     if (activePartnerRequest.status !== "pending_confirmation") {
-      // sent_to_partner/alternative_proposed: out of scope for this phase
-      // (nothing transmits yet, so these can only exist via a manual
-      // back-office action, never via this flow).
+      // sent_to_partner: out of scope for this phase beyond the explicit
+      // reconfirmation check above (nothing else transmits yet, so this can
+      // only exist via a manual back-office action, never via this flow).
       return NO_OUTCOME;
     }
     // Always re-read from the DB projection, never assumed from a prior

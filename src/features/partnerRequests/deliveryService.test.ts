@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WhatsAppSendResult } from "@/lib/notifications/whatsapp/types";
 import { hashPartnerReplyToken } from "@/lib/notifications/whatsapp/replyToken";
+import type { SmsSendResult } from "@/lib/notifications/sms/types";
+import { hashSmsReplyCode } from "@/lib/notifications/sms/smsReplyCode";
 
 const mockPrepare = vi.fn<(requestId: string, hotelId: string, deps?: unknown) => Promise<unknown>>();
 const mockSendPrepared = vi.fn<
@@ -11,6 +13,13 @@ vi.mock("@/lib/notifications/whatsapp/sendPartnerRequest", () => ({
   sendPreparedPartnerRequestTemplate: (...args: Parameters<typeof mockSendPrepared>) => mockSendPrepared(...args),
 }));
 
+const mockPrepareSms = vi.fn<(requestId: string, hotelId: string, deps?: unknown) => Promise<unknown>>();
+const mockSendPreparedSms = vi.fn<(prepared: unknown, code: string, deps?: unknown) => Promise<SmsSendResult>>();
+vi.mock("@/lib/notifications/sms/sendPartnerRequestSms", () => ({
+  prepareSmsPartnerRequest: (...args: Parameters<typeof mockPrepareSms>) => mockPrepareSms(...args),
+  sendPreparedPartnerRequestSms: (...args: Parameters<typeof mockSendPreparedSms>) => mockSendPreparedSms(...args),
+}));
+
 beforeEach(() => {
   process.env.WHATSAPP_PROVIDER = "meta";
   process.env.WHATSAPP_META_ACCESS_TOKEN = "test-token";
@@ -18,12 +27,17 @@ beforeEach(() => {
   process.env.WHATSAPP_META_VERIFY_TOKEN = "verify";
   process.env.WHATSAPP_META_APP_SECRET = "secret";
   process.env.WHATSAPP_META_API_VERSION = "v21.0";
+  process.env.TWILIO_ACCOUNT_SID = "ACtest";
+  process.env.TWILIO_AUTH_TOKEN = "test-auth-token";
+  process.env.TWILIO_SMS_FROM = "+15005550006";
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   mockPrepare.mockReset();
   mockSendPrepared.mockReset();
+  mockPrepareSms.mockReset();
+  mockSendPreparedSms.mockReset();
 });
 
 const OK_PREPARED = {
@@ -461,5 +475,512 @@ describe("deliverPartnerRequest — production wiring boundary", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const actionsSource = readFileSync(join(here, "actions.ts"), "utf8");
     expect(actionsSource).not.toMatch(/deliveryService|deliverPartnerRequest|sendPartnerRequest/);
+  });
+});
+
+const OK_PREPARED_SMS = {
+  ok: true as const,
+  prepared: {
+    purpose: "initial_request" as const,
+    requestPhoneE164: "+33612345678",
+    hotelName: "Le 1837",
+    requestCategory: "Restaurant",
+    requestedDate: null,
+    requestedTime: "20h30",
+    partySize: 4,
+    guestFirstName: "Marie",
+  },
+};
+
+describe("deliverPartnerRequestViaSms — PHASE 2, full lifecycle, NOT wired to any production trigger", () => {
+  it("[provider not configured] returns before creating or starting a delivery", async () => {
+    mockPrepareSms.mockResolvedValueOnce(OK_PREPARED_SMS);
+    delete process.env.TWILIO_ACCOUNT_SID;
+    delete process.env.TWILIO_AUTH_TOKEN;
+    delete process.env.TWILIO_SMS_FROM;
+    const supabase = fakeSupabaseRpc({});
+    const { deliverPartnerRequestViaSms } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestViaSms("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: false, error: "provider_not_configured" });
+    expect(supabase.rpc).not.toHaveBeenCalled();
+    expect(mockSendPreparedSms).not.toHaveBeenCalled();
+  });
+
+  it("[not eligible] prepareSmsPartnerRequest fails -> returns immediately, no delivery row created", async () => {
+    mockPrepareSms.mockResolvedValueOnce({ ok: false, error: "missing_phone" });
+    const supabase = fakeSupabaseRpc({});
+    const { deliverPartnerRequestViaSms } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestViaSms("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: false, error: "missing_phone" });
+    expect(supabase.rpc).not.toHaveBeenCalledWith("create_partner_request_delivery", expect.anything());
+  });
+
+  it("[concurrent delivery already in progress] 23505 -> delivery_already_in_progress, provider never called", async () => {
+    mockPrepareSms.mockResolvedValueOnce(OK_PREPARED_SMS);
+    const supabase = fakeSupabaseRpc({ create_partner_request_delivery: [{ data: null, error: { code: "23505", message: "duplicate" } }] });
+    const { deliverPartnerRequestViaSms } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestViaSms("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: false, error: "delivery_already_in_progress" });
+    expect(mockSendPreparedSms).not.toHaveBeenCalled();
+  });
+
+  it("[success] create(provider=twilio_sms) -> start_partner_request_delivery_sms (ONE code hash, not three) -> send -> complete('sent') -> partner_delivery_succeeded", async () => {
+    mockPrepareSms.mockResolvedValueOnce(OK_PREPARED_SMS);
+    mockSendPreparedSms.mockResolvedValueOnce({ ok: true, providerMessageId: "SM_real" });
+    const supabase = fakeSupabaseRpc({
+      create_partner_request_delivery: [{ data: "delivery-1" }],
+      start_partner_request_delivery_sms: [{ data: null }],
+      complete_partner_request_delivery: [{ data: null }],
+      apply_partner_request_command: [{ data: null }],
+    });
+    const { deliverPartnerRequestViaSms } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestViaSms("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: true, providerMessageId: "SM_real" });
+
+    const createArgs = supabase.rpc.mock.calls[0][1] as Record<string, unknown>;
+    expect(createArgs.p_provider).toBe("twilio_sms");
+
+    const startArgs = supabase.rpc.mock.calls[1][1] as Record<string, unknown>;
+    expect(startArgs.p_delivery_id).toBe("delivery-1");
+    expect(typeof startArgs.p_sms_reply_code_hash).toBe("string");
+    expect(startArgs).not.toHaveProperty("p_accept_token_hash");
+
+    const sendCallArgs = mockSendPreparedSms.mock.calls[0] as [unknown, string];
+    expect(hashSmsReplyCode(sendCallArgs[1])).toBe(startArgs.p_sms_reply_code_hash);
+
+    const commandArgs = supabase.rpc.mock.calls[3][1] as Record<string, unknown>;
+    expect(commandArgs).toMatchObject({ p_partner_request_id: "req-1", p_hotel_id: "hotel-1", p_command: "partner_delivery_succeeded" });
+  });
+
+  it("[certain failure] provider_error -> complete('failed') -> partner_delivery_failed", async () => {
+    mockPrepareSms.mockResolvedValueOnce(OK_PREPARED_SMS);
+    mockSendPreparedSms.mockResolvedValueOnce({ ok: false, error: "provider_error", attempted: true, certainty: "not_sent" });
+    const supabase = fakeSupabaseRpc({
+      create_partner_request_delivery: [{ data: "delivery-1" }],
+      start_partner_request_delivery_sms: [{ data: null }],
+      complete_partner_request_delivery: [{ data: null }],
+      apply_partner_request_command: [{ data: null }],
+    });
+    const { deliverPartnerRequestViaSms } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestViaSms("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: false, error: "provider_error", attempted: true, certainty: "not_sent" });
+    const commandArgs = supabase.rpc.mock.calls[3][1] as Record<string, unknown>;
+    expect(commandArgs.p_command).toBe("partner_delivery_failed");
+  });
+});
+
+describe("resolvePartnerReplySms — PHASE 2, parse -> hash -> lookup -> From-check, hotel_id NEVER from the SMS itself", () => {
+  function fakeSupabaseForSmsResolve(config: {
+    deliveryByHash?: Record<string, { id: string; hotel_id: string; partner_request_id: string }>;
+    requestPartnerId?: Record<string, string>;
+    partnerPhone?: Record<string, string | null>;
+  }) {
+    const from = vi.fn((table: string) => {
+      if (table === "partner_request_deliveries") {
+        return {
+          select: () => ({
+            eq: (_col1: string, hash: string) => ({
+              eq: () => ({
+                in: () => ({
+                  maybeSingle: async () => ({ data: config.deliveryByHash?.[hash] ?? null, error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "partner_requests") {
+        return {
+          select: () => ({
+            eq: (_col1: string, requestId: string) => ({
+              eq: () => ({
+                maybeSingle: async () => {
+                  const partnerId = config.requestPartnerId?.[requestId];
+                  return { data: partnerId ? { partner_id: partnerId } : null, error: null };
+                },
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === "hotel_partners") {
+        return {
+          select: () => ({
+            eq: (_col1: string, partnerId: string) => ({
+              eq: () => ({
+                maybeSingle: async () => {
+                  const phone = config.partnerPhone?.[partnerId];
+                  return { data: phone !== undefined ? { request_phone_e164: phone } : null, error: null };
+                },
+              }),
+            }),
+          }),
+        };
+      }
+      throw new Error(`unexpected table ${table}`);
+    });
+    return { from };
+  }
+
+  it("[unparseable body] returns unparseable WITHOUT any DB call", async () => {
+    const from = vi.fn();
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("bonjour", "+33612345678", { from } as never);
+
+    expect(result).toEqual({ ok: false, reason: "unparseable" });
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("[digit 3, no free text] returns missing_alternative_text WITHOUT any DB call — the request is never touched", async () => {
+    const from = vi.fn();
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("3 K7M4PZ", "+33612345678", { from } as never);
+
+    expect(result).toEqual({ ok: false, reason: "missing_alternative_text" });
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("[code unknown] returns code_not_found", async () => {
+    const supabase = fakeSupabaseForSmsResolve({});
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", supabase as never);
+
+    expect(result).toEqual({ ok: false, reason: "code_not_found" });
+  });
+
+  it("[code found, wrong From] returns wrong_sender, no command derived", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33698765432" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("1 K7M4PZ", "+33600000000", supabase as never);
+
+    expect(result).toEqual({ ok: false, reason: "wrong_sender" });
+  });
+
+  it("[digit 1, correct From] resolves partner_accept with the DB-derived ids, message null", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", supabase as never);
+
+    expect(result).toEqual({
+      ok: true,
+      resolved: { deliveryId: "d1", hotelId: "hotel-1", partnerRequestId: "req-1", command: "partner_accept", message: null },
+    });
+  });
+
+  it("[digit 2] resolves partner_reject", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("2 K7M4PZ", "+33612345678", supabase as never);
+
+    expect(result.ok && result.resolved.command).toBe("partner_reject");
+  });
+
+  it("[digit 3 with free text '21h00'] resolves partner_propose_alternative with the sanitized message", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("3 K7M4PZ 21h00", "+33612345678", supabase as never);
+
+    expect(result).toEqual({
+      ok: true,
+      resolved: { deliveryId: "d1", hotelId: "hotel-1", partnerRequestId: "req-1", command: "partner_propose_alternative", message: "21h00" },
+    });
+  });
+
+  it("[digit 3, free text containing a phone number] the message is sanitized via the SAME redactPhoneNumbers rule as partner_request_events.message, never the raw number", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("3 K7M4PZ Rappelez-moi au 06 12 34 56 78", "+33612345678", supabase as never);
+
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.resolved.message).not.toContain("06 12 34 56 78");
+  });
+
+  it("[two simultaneous deliveries, different codes, same partner phone] each code resolves ONLY to its own delivery/request — no ambiguity", async () => {
+    const hashA = hashSmsReplyCode("AAAAAA");
+    const hashB = hashSmsReplyCode("BBBBBB");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: {
+        [hashA]: { id: "d-a", hotel_id: "hotel-1", partner_request_id: "req-A" },
+        [hashB]: { id: "d-b", hotel_id: "hotel-1", partner_request_id: "req-B" },
+      },
+      requestPartnerId: { "req-A": "partner-1", "req-B": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const resultA = await resolvePartnerReplySms("1 AAAAAA", "+33612345678", supabase as never);
+    const resultB = await resolvePartnerReplySms("2 BBBBBB", "+33612345678", supabase as never);
+
+    expect(resultA.ok && resultA.resolved.partnerRequestId).toBe("req-A");
+    expect(resultB.ok && resultB.resolved.partnerRequestId).toBe("req-B");
+  });
+
+  it("[tenant isolation] a delivery's hotel_id is read exclusively from the resolved row, never supplied or guessable from the call", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-tenant-A", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", supabase as never);
+
+    expect(result.ok && result.resolved.hotelId).toBe("hotel-tenant-A");
+  });
+
+  it("[replay — code re-used after already resolved once] resolvePartnerReplySms itself has no memory; a second identical inbound reply resolves to the SAME delivery again — the RPC's own row lock + status guard is what actually blocks a real replay, unchanged by SMS", async () => {
+    const hash = hashSmsReplyCode("K7M4PZ");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d1", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const first = await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", supabase as never);
+    const second = await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", supabase as never);
+
+    expect(first).toEqual(second);
+  });
+
+  it("[digit 1 on an alternative_acceptance delivery] resolves partner_accept — resolvePartnerReplySms is purpose-agnostic by construction (no .eq('purpose', ...) filter), same mechanism reused for the reconfirmation step", async () => {
+    const hash = hashSmsReplyCode("ABC123");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d-reconfirm", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("1 ABC123", "+33612345678", supabase as never);
+
+    expect(result).toEqual({
+      ok: true,
+      resolved: { deliveryId: "d-reconfirm", hotelId: "hotel-1", partnerRequestId: "req-1", command: "partner_accept", message: null },
+    });
+  });
+
+  it("[digit 2 on an alternative_acceptance delivery] resolves partner_reject", async () => {
+    const hash = hashSmsReplyCode("ABC123");
+    const supabase = fakeSupabaseForSmsResolve({
+      deliveryByHash: { [hash]: { id: "d-reconfirm", hotel_id: "hotel-1", partner_request_id: "req-1" } },
+      requestPartnerId: { "req-1": "partner-1" },
+      partnerPhone: { "partner-1": "+33612345678" },
+    });
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+
+    const result = await resolvePartnerReplySms("2 ABC123", "+33612345678", supabase as never);
+
+    expect(result.ok && result.resolved.command).toBe("partner_reject");
+  });
+
+  it("[queries the correct table for the code lookup] partner_request_deliveries, filtered by provider=twilio_sms", async () => {
+    const eqSpy = vi.fn(() => ({ in: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }));
+    const from = vi.fn((table: string) => {
+      if (table === "partner_request_deliveries") return { select: () => ({ eq: () => ({ eq: eqSpy }) }) };
+      return { select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) };
+    });
+
+    const { resolvePartnerReplySms } = await import("./deliveryService");
+    await resolvePartnerReplySms("1 K7M4PZ", "+33612345678", { from } as never);
+
+    expect(from).toHaveBeenCalledWith("partner_request_deliveries");
+  });
+});
+
+describe("deliverPartnerRequestAlternativeAcceptance — PHASE 2, transport selected from the PERSISTED initial_request delivery, never from client input", () => {
+  function fakeSupabaseWithTransport(provider: string | null, rpcResponses: Record<string, { data?: unknown; error?: { code?: string; message: string } | null }[]>) {
+    const callCounts: Record<string, number> = {};
+    const rpc = vi.fn(async (fn: string, params: Record<string, unknown>) => {
+      void params; // kept in the signature only so .mock.calls[n][1] is typed and assertable by callers
+      const queue = rpcResponses[fn] ?? [];
+      const index = callCounts[fn] ?? 0;
+      callCounts[fn] = index + 1;
+      const response = queue[index] ?? { data: null, error: null };
+      return { data: response.data ?? null, error: response.error ?? null };
+    });
+    const from = vi.fn((table: string) => {
+      if (table !== "partner_request_deliveries") throw new Error(`unexpected table ${table}`);
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              eq: () => ({
+                order: () => ({
+                  limit: () => ({ maybeSingle: async () => ({ data: provider ? { provider } : null, error: null }) }),
+                }),
+              }),
+            }),
+          }),
+        }),
+      };
+    });
+    return { rpc, from };
+  }
+
+  it("[original transport was meta] reuses deliverPartnerRequest UNCHANGED — the WhatsApp template send path is invoked, never the SMS one", async () => {
+    mockPrepare.mockResolvedValueOnce({
+      ok: true,
+      prepared: { purpose: "alternative_acceptance", requestPhoneE164: "+33612345678", templateName: "t", languageCode: "fr", bodyParams: [] },
+    });
+    mockSendPrepared.mockResolvedValueOnce({ ok: true, providerMessageId: "wamid.reconfirm" });
+    const supabase = fakeSupabaseWithTransport("meta", {
+      create_partner_request_delivery: [{ data: "delivery-2" }],
+      start_partner_request_delivery: [{ data: null }],
+      complete_partner_request_delivery: [{ data: null }],
+      apply_partner_request_command: [{ data: null }],
+    });
+    const { deliverPartnerRequestAlternativeAcceptance } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestAlternativeAcceptance("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: true, providerMessageId: "wamid.reconfirm" });
+    expect(mockSendPrepared).toHaveBeenCalledTimes(1);
+    expect(mockSendPreparedSms).not.toHaveBeenCalled();
+  });
+
+  it("[original transport was twilio_sms] uses deliverPartnerRequestViaSms — a NEW code is generated (never the previous delivery's code)", async () => {
+    mockPrepareSms.mockResolvedValueOnce({
+      ok: true,
+      prepared: {
+        purpose: "alternative_acceptance",
+        requestPhoneE164: "+33612345678",
+        hotelName: "Le 1837",
+        requestCategory: "Restaurant",
+        requestedDate: null,
+        requestedTime: "20h30",
+        partySize: 4,
+        guestFirstName: "Marie",
+        partnerResponse: "21h00",
+      },
+    });
+    mockSendPreparedSms.mockResolvedValueOnce({ ok: true, providerMessageId: "SM_reconfirm" });
+    const supabase = fakeSupabaseWithTransport("twilio_sms", {
+      create_partner_request_delivery: [{ data: "delivery-2" }],
+      start_partner_request_delivery_sms: [{ data: null }],
+      complete_partner_request_delivery: [{ data: null }],
+      apply_partner_request_command: [{ data: null }],
+    });
+    const { deliverPartnerRequestAlternativeAcceptance } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestAlternativeAcceptance("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: true, providerMessageId: "SM_reconfirm" });
+    expect(mockSendPreparedSms).toHaveBeenCalledTimes(1);
+    expect(mockSendPrepared).not.toHaveBeenCalled();
+
+    const startArgs = supabase.rpc.mock.calls.find((c) => c[0] === "start_partner_request_delivery_sms")?.[1] as Record<string, unknown>;
+    const sentCode = (mockSendPreparedSms.mock.calls[0] as [unknown, string])[1];
+    expect(hashSmsReplyCode(sentCode)).toBe(startArgs.p_sms_reply_code_hash);
+    expect(sentCode).not.toBe("K7M4PZ"); // the original request's own code, never reused
+  });
+
+  it("[transport undetermined — no prior delivery found] returns a clean error, calls no RPC, never guesses a transport", async () => {
+    const supabase = fakeSupabaseWithTransport(null, {});
+    const { deliverPartnerRequestAlternativeAcceptance } = await import("./deliveryService");
+
+    const result = await deliverPartnerRequestAlternativeAcceptance("req-1", "hotel-1", { supabase: supabase as never });
+
+    expect(result).toEqual({ ok: false, error: "transport_undetermined" });
+    expect(supabase.rpc).not.toHaveBeenCalled();
+    expect(mockSendPrepared).not.toHaveBeenCalled();
+    expect(mockSendPreparedSms).not.toHaveBeenCalled();
+  });
+});
+
+describe("reconcileStaleSendingDelivery — purpose parameter (PHASE 2)", () => {
+  it("[purpose defaults to initial_request] existing WhatsApp call sites keep their exact prior behavior — re-reads the initial_request delivery, unchanged", async () => {
+    const fromCalls: string[][] = [];
+    const rpc = vi.fn(async (fn: string) => (fn === "complete_partner_request_delivery" ? { data: null, error: { message: "delivery not in sending status (found unknown)" } } : { data: null, error: null }));
+    const from = vi.fn(() => ({
+      select: () => ({
+        eq: (col: string, val: string) => {
+          fromCalls.push([col, val]);
+          return {
+            eq: () => ({ eq: (c2: string, v2: string) => { fromCalls.push([c2, v2]); return { order: () => ({ limit: () => ({ maybeSingle: async () => ({ data: { id: "delivery-1", status: "unknown", updated_at: "2026-08-29T11:50:00.000Z" }, error: null }) }) }) }; } }),
+          };
+        },
+      }),
+    }));
+    const { reconcileStaleSendingDelivery } = await import("./deliveryService");
+
+    await reconcileStaleSendingDelivery(
+      { id: "delivery-1", status: "sending", updatedAt: "2026-08-29T11:50:00.000Z" },
+      "req-1",
+      "hotel-1",
+      { supabase: { rpc, from } as never, nowMs: Date.parse("2026-08-29T12:00:00.000Z") }
+    );
+
+    expect(fromCalls.some(([col, val]) => col === "purpose" && val === "initial_request")).toBe(true);
+  });
+
+  it("[purpose='alternative_acceptance' explicitly passed] re-reads the CORRECT (alternative_acceptance) delivery, not initial_request — the bug this session's own audit caught before it could ship", async () => {
+    const fromCalls: string[][] = [];
+    const rpc = vi.fn(async (fn: string) => (fn === "complete_partner_request_delivery" ? { data: null, error: { message: "delivery not in sending status" } } : { data: null, error: null }));
+    const from = vi.fn(() => ({
+      select: () => ({
+        eq: (col: string, val: string) => {
+          fromCalls.push([col, val]);
+          return {
+            eq: () => ({ eq: (c2: string, v2: string) => { fromCalls.push([c2, v2]); return { order: () => ({ limit: () => ({ maybeSingle: async () => ({ data: { id: "delivery-2", status: "unknown", updated_at: "2026-08-29T11:50:00.000Z" }, error: null }) }) }) }; } }),
+          };
+        },
+      }),
+    }));
+    const { reconcileStaleSendingDelivery } = await import("./deliveryService");
+
+    await reconcileStaleSendingDelivery(
+      { id: "delivery-2", status: "sending", updatedAt: "2026-08-29T11:50:00.000Z" },
+      "req-1",
+      "hotel-1",
+      { supabase: { rpc, from } as never, nowMs: Date.parse("2026-08-29T12:00:00.000Z"), purpose: "alternative_acceptance" }
+    );
+
+    expect(fromCalls.some(([col, val]) => col === "purpose" && val === "alternative_acceptance")).toBe(true);
+    expect(fromCalls.some(([col, val]) => col === "purpose" && val === "initial_request")).toBe(false);
   });
 });

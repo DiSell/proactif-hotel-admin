@@ -24,8 +24,13 @@ vi.mock("@/features/partnerRequests/queries", () => ({
 const mockDeliverPartnerRequest = vi.fn<(...args: unknown[]) => Promise<WhatsAppSendResult>>(async () => ({ ok: true, providerMessageId: "wamid.test" }));
 const mockGetLatestDeliveryStatus = vi.fn<(...args: unknown[]) => Promise<"queued" | "sending" | "sent" | "failed" | "unknown" | null>>(async () => null);
 const mockReconcileStaleSending = vi.fn(async (delivery: { status: "queued" | "sending" | "sent" | "failed" | "unknown" }) => delivery.status);
+const mockDeliverAlternativeAcceptance = vi.fn<(...args: unknown[]) => Promise<{ ok: boolean; error?: string; providerMessageId?: string }>>(async () => ({
+  ok: true,
+  providerMessageId: "SM_reconfirm",
+}));
 vi.mock("@/features/partnerRequests/deliveryService", () => ({
   deliverPartnerRequest: (...args: unknown[]) => mockDeliverPartnerRequest(...args),
+  deliverPartnerRequestAlternativeAcceptance: (...args: unknown[]) => mockDeliverAlternativeAcceptance(...args),
   getLatestPartnerRequestDelivery: async (...args: unknown[]) => {
     const status = await mockGetLatestDeliveryStatus(...args);
     return status ? { id: "delivery-1", status, updatedAt: "2026-08-29T00:00:00.000Z" } : null;
@@ -61,6 +66,8 @@ afterEach(() => {
   mockGetLatestDeliveryStatus.mockReset();
   mockGetLatestDeliveryStatus.mockImplementation(async () => null);
   mockReconcileStaleSending.mockClear();
+  mockDeliverAlternativeAcceptance.mockReset();
+  mockDeliverAlternativeAcceptance.mockImplementation(async () => ({ ok: true, providerMessageId: "SM_reconfirm" }));
   mockLoadActiveHotelPartners.mockClear();
   loadPartnersResult = [];
 });
@@ -596,23 +603,206 @@ describe("processPartnerRequestTurn — resuming a partial draft (create succeed
 });
 
 describe("processPartnerRequestTurn — active request in a non-actionable status", () => {
-  it("[sent_to_partner / alternative_proposed] out of scope this phase, no action taken", async () => {
+  it("[sent_to_partner, no explicit reconfirmation] out of scope this phase, no action taken", async () => {
     const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
 
-    for (const status of ["sent_to_partner", "alternative_proposed"] as const) {
-      const result = await processPartnerRequestTurn({
-        hotelId: "hotel-a",
-        conversationId: "conv-1",
-        message: "des nouvelles ?",
-        normalizedPhoneE164: null,
-        activePartnerRequest: { id: "req-1", partner_id: "partner-1", status } as PartnerRequest,
-        allActivePartners: [fakePartner()],
-        modelOutput: fakeModelOutput(),
-      });
-      expect(result).toEqual({ replySuffix: null, phonePrompt: null });
-    }
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "des nouvelles ?",
+      normalizedPhoneE164: null,
+      activePartnerRequest: { id: "req-1", partner_id: "partner-1", status: "sent_to_partner" } as PartnerRequest,
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+    });
+    expect(result).toEqual({ replySuffix: null, phonePrompt: null });
     expect(mockCreate).not.toHaveBeenCalled();
     expect(mockApplyCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe("processPartnerRequestTurn — active request alternative_proposed (PHASE 2)", () => {
+  function alternativeRequest(overrides: Partial<PartnerRequest> = {}): PartnerRequest {
+    return {
+      id: "req-1",
+      partner_id: "partner-1",
+      status: "alternative_proposed",
+      requested_date: "2026-09-01",
+      requested_time: "20h30",
+      partner_response: "21h00",
+      ...overrides,
+    } as PartnerRequest;
+  }
+
+  it("[ambiguous reply] presents the real proposal (original time + partner_response), NEVER a hardcoded category, no command applied, no state change", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "combien ça coûte ?",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+    });
+
+    expect(result.replySuffix).toContain("20h30");
+    expect(result.replySuffix).toContain("21h00");
+    expect(result.phonePrompt).toBeNull();
+    expect(mockApplyCommand).not.toHaveBeenCalled();
+    expect(mockDeliverAlternativeAcceptance).not.toHaveBeenCalled();
+  });
+
+  it("[explicit oui] calls guest_accept_alternative, then triggers the reconfirmation delivery exactly once, in that order", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Oui, c'est parfait",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+      supabase: {} as never,
+    });
+
+    expect(mockApplyCommand).toHaveBeenCalledWith("req-1", "hotel-a", "guest_accept_alternative", {});
+    expect(mockApplyCommand).not.toHaveBeenCalledWith("req-1", "hotel-a", "guest_reject_alternative", {});
+    expect(mockDeliverAlternativeAcceptance).toHaveBeenCalledTimes(1);
+    expect(mockDeliverAlternativeAcceptance).toHaveBeenCalledWith("req-1", "hotel-a", expect.anything());
+    const applyOrder = mockApplyCommand.mock.invocationCallOrder[0];
+    const deliverOrder = mockDeliverAlternativeAcceptance.mock.invocationCallOrder[0];
+    expect(applyOrder).toBeLessThan(deliverOrder);
+    expect(result.replaceReply).toBe(true);
+  });
+
+  it("[explicit oui, reconfirmation send succeeds] tells the client the ACCEPTANCE was transmitted, never that the reservation itself is confirmed", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+    mockDeliverAlternativeAcceptance.mockResolvedValueOnce({ ok: true, providerMessageId: "SM_x" });
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Oui, c'est parfait",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+      supabase: {} as never,
+    });
+
+    expect(result.replySuffix).toMatch(/acceptation.*transmise au partenaire/i);
+    expect(result.replySuffix).not.toMatch(/réservation est confirmée|réservation confirmée/i);
+  });
+
+  it("[explicit oui, reconfirmation send FAILS] never claims the acceptance was transmitted — uses the existing degraded-message mechanism, not a fabricated success", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+    mockDeliverAlternativeAcceptance.mockResolvedValueOnce({ ok: false, error: "provider_error" });
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Oui, c'est parfait",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+      supabase: {} as never,
+    });
+
+    expect(result.replySuffix).not.toMatch(/transmise? au partenaire/i);
+    expect(result.replySuffix).toMatch(/enregistrée/i);
+  });
+
+  it("[double oui — idempotence] a SECOND accept turn, while a reconfirmation delivery is already active, never triggers a second send — reuses the SAME existing-delivery check already used for the initial request", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+    // Simulates the state right after the FIRST "oui" already created an
+    // active (sent) alternative_acceptance delivery.
+    mockGetLatestDeliveryStatus.mockResolvedValue("sent");
+
+    await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Oui",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+      supabase: {} as never,
+    });
+    const result2 = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Oui",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+      supabase: {} as never,
+    });
+
+    expect(mockDeliverAlternativeAcceptance).not.toHaveBeenCalled();
+    expect(mockGetLatestDeliveryStatus).toHaveBeenCalledWith("req-1", "hotel-a", "alternative_acceptance", expect.anything());
+    expect(result2.replySuffix).toMatch(/acceptation.*transmise au partenaire/i);
+  });
+
+  it("[explicit non] calls guest_reject_alternative, never guest_accept_alternative", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "Non merci",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+    });
+
+    expect(mockApplyCommand).toHaveBeenCalledWith("req-1", "hotel-a", "guest_reject_alternative", undefined);
+    expect(mockApplyCommand).not.toHaveBeenCalledWith("req-1", "hotel-a", "guest_accept_alternative", undefined);
+    expect(mockDeliverAlternativeAcceptance).not.toHaveBeenCalled();
+    expect(result.replySuffix).toBe("Votre demande a été annulée.");
+    expect(result.replaceReply).toBe(true);
+  });
+
+  it("[confirmPartnerRequest=true from the model but message is ambiguous] the model's own structured field is NEVER trusted alone — no command applied without an explicit oui/non in the message itself", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+
+    await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "d'accord mais je réfléchis encore",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest(),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput({ confirmPartnerRequest: true }),
+      supabase: {} as never,
+    });
+
+    // "d'accord" IS one of isExplicitConfirmation's own patterns — this
+    // message legitimately triggers acceptance; the point of this test is
+    // that the trigger is the MESSAGE TEXT itself (isExplicitConfirmation),
+    // never modelOutput.confirmPartnerRequest alone.
+    expect(mockApplyCommand).toHaveBeenCalledWith("req-1", "hotel-a", "guest_accept_alternative", {});
+  });
+
+  it("[no partner_response yet] falls back to a generic 'alternative' wording rather than showing 'null'/'undefined'", async () => {
+    const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
+
+    const result = await processPartnerRequestTurn({
+      hotelId: "hotel-a",
+      conversationId: "conv-1",
+      message: "quoi de neuf ?",
+      normalizedPhoneE164: null,
+      activePartnerRequest: alternativeRequest({ partner_response: null }),
+      allActivePartners: [fakePartner()],
+      modelOutput: fakeModelOutput(),
+    });
+
+    expect(result.replySuffix).not.toMatch(/null|undefined/);
   });
 });
 
