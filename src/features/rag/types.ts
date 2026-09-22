@@ -231,6 +231,39 @@ export interface SpaBookingPhonePrompt {
   pendingBooking: PendingSpaBookingFields;
 }
 
+/**
+ * HUMAN HANDOVER / RAPPEL SMS chantier — everything the structured widget
+ * phone form needs to render itself AND to echo back, unmodified, to
+ * POST /api/widget/[widgetKey]/service-request/phone once the visitor
+ * submits a number. Mirrors PartnerRequestPhonePrompt/SpaBookingPhonePrompt's
+ * own doc comment exactly: no hotel_service_requests row exists yet at this
+ * point (see features/rag/humanHandoverFlow.ts — creation is deliberately
+ * deferred until the phone itself is known).
+ *
+ * guestMessage is the triggering message, verbatim — never re-summarized by
+ * an LLM (see this chantier's own spec, section 4: "sans hallucination
+ * LLM"). mayAskRoomNumber is a deterministic signal
+ * (features/rag/humanHandover.ts:isLikelyCurrentGuestMessage) telling the
+ * widget whether to ALSO show an optional room-number field — never asked of
+ * every visitor, never deduced/invented when absent (section 3).
+ */
+export interface PendingHandoverFields {
+  guestMessage: string;
+  mayAskRoomNumber: boolean;
+}
+
+/**
+ * Present exactly when the widget must show the dedicated, structured phone
+ * form for a human-handover (callback) request — same deterministic-backend-
+ * signal discipline as PartnerRequestPhonePrompt/SpaBookingPhonePrompt.
+ * Independent of those two: see answer.ts's own short-circuit, which never
+ * fires while a partner-request or spa-booking flow already has priority
+ * this turn.
+ */
+export interface HandoverPhonePrompt {
+  pendingHandover: PendingHandoverFields;
+}
+
 export interface AnswerQuestionResult {
   reply: string;
   sources: RetrievedChunk[];
@@ -318,6 +351,14 @@ export interface AnswerQuestionResult {
    * names don't match any hotel_media category keyword.
    */
   hotelMediaGallery: HotelMediaGallery | null;
+  /**
+   * HUMAN HANDOVER / RAPPEL SMS chantier — additive field, always present,
+   * null on every turn that doesn't need it — see HandoverPhonePrompt's own
+   * doc comment. Never derived from `reply`'s text by the widget; always
+   * this explicit field, same discipline as partnerRequestPhonePrompt/
+   * spaBookingPhonePrompt.
+   */
+  handoverPhonePrompt: HandoverPhonePrompt | null;
 }
 
 /** See AnswerQuestionResult.hotelMediaGallery's own doc comment. */

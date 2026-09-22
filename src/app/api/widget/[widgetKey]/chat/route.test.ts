@@ -69,6 +69,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
     roomCatalogue: [],
     accommodationSummary: [],
     hotelMediaGallery: null,
+    handoverPhonePrompt: null,
     ...overrides,
   };
 }
@@ -403,6 +404,7 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
         "roomCatalogue",
         "accommodationSummary",
         "hotelMediaGallery",
+        "handoverPhonePrompt",
       ].sort()
     );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });
@@ -449,6 +451,20 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
       partnerName: "Le Bistrot",
       pendingRequest: { partnerId: "partner-1", requestedDate: null, requestedTime: null, partySize: null, details: null, guestName: null },
     });
+  });
+
+  it("[handoverPhonePrompt passthrough] present when answerQuestion signals it, never inferred from reply text", async () => {
+    const deps = makeDeps({
+      answerQuestion: vi.fn(async () =>
+        makeAnswerResult({
+          handoverPhonePrompt: { pendingHandover: { guestMessage: "Rappelez-moi", mayAskRoomNumber: false } },
+        })
+      ),
+    });
+    const handler = createChatHandler(deps);
+    const response = await handler(makeRequest({ conversationId: null, message: "hello", sessionToken: VALID_TOKEN }), context);
+    const body = await response.json();
+    expect(body.handoverPhonePrompt).toEqual({ pendingHandover: { guestMessage: "Rappelez-moi", mayAskRoomNumber: false } });
   });
 
   it("[answerQuestion throws] returns 500 with a generic message, no internal detail leaked", async () => {

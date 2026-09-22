@@ -254,6 +254,11 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // whenever no visual/category intent was detected or the detected
         // category has zero selected photos — see features/rag/types.ts:AnswerQuestionResult.hotelMediaGallery.
         hotelMediaGallery: result.hotelMediaGallery,
+        // HUMAN HANDOVER / RAPPEL SMS chantier — deterministic signal for the
+        // widget to show the structured phone-collection form for a callback
+        // request. Never something PublicWidgetChat.tsx infers by parsing
+        // `reply`. See features/rag/types.ts:HandoverPhonePrompt.
+        handoverPhonePrompt: result.handoverPhonePrompt,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

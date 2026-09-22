@@ -72,11 +72,11 @@ describe("answer.ts wiring — accommodationSummary", () => {
     const noContextCallEnd = answerQuestionFn.indexOf("});", noContextCallStart);
     expect(answerQuestionFn.slice(noContextCallStart, noContextCallEnd)).toMatch(/accommodationSummary,/);
 
-    expect(source).toMatch(/roomCatalogue, accommodationSummary, hotelMediaGallery \};/);
+    expect(source).toMatch(/roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null \};/);
   });
 
   it("[error path] the generic error fallback always returns an empty accommodationSummary, never omitted/undefined", () => {
-    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null \};/);
+    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null, handoverPhonePrompt: null \};/);
   });
 
   it("[never gated on groundingMode] computed once in answerQuestion, before the grounded/no_context branch decision — independent of retrieval, exactly like roomCatalogue", () => {

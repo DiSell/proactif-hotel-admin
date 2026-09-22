@@ -56,6 +56,7 @@ import type {
   AnswerQuestionResult,
   ChatAction,
   GroundingMode,
+  HandoverPhonePrompt,
   HotelMediaGallery,
   PartnerRecommendation,
   PartnerRequestPhonePrompt,
@@ -72,6 +73,7 @@ import type { PartnerRequest } from "@/features/partnerRequests/types";
 import { processPartnerRequestTurn, type PartnerRequestModelOutput } from "./partnerRequestFlow";
 import { detectHotelMediaCategory, isHotelMediaPhotoRequest, loadSelectedHotelMediaPhotos } from "./hotelMediaGallery";
 import { HOTEL_MEDIA_CATEGORY_LABEL } from "@/features/hotelMedia/schema";
+import { buildHandoverPhoneRequestReply, isHumanHandoverIntent, isLikelyCurrentGuestMessage } from "./humanHandover";
 
 /**
  * Phase A: no hotel-configured timezone field exists yet (see
@@ -968,6 +970,52 @@ export async function answerQuestion({
   const spaBookingFlowActive = spaBookingCandidateActive && spaAvailability.enabled;
   const partnerRequestFlowActive = activePartnerRequest !== null || (partnerIntentDetected && !spaBookingFlowActive);
 
+  // HUMAN HANDOVER / RAPPEL SMS chantier — deterministic gate, computed
+  // BEFORE any RAG retrieval or OpenAI call: see humanHandover.ts's own doc
+  // comment on why detection here is a plain regex, never an LLM
+  // classification (zero hallucination risk in what triggers a callback
+  // request at all). The reply is fixed/deterministic too, so this turn
+  // never reaches answerGrounded/answerNoContext below — same "server
+  // computes truth" discipline taken to its logical conclusion for a turn
+  // whose entire outcome is already decided server-side.
+  //
+  // Never fires while a partner-request or spa-booking flow already has
+  // priority this turn (same "an in-flight flow always wins" precedent as
+  // spaBookingCandidateActive/partnerRequestFlowActive above) — a genuine
+  // "rappelez-moi" mid-partner-flow is rare, and the existing flow's own
+  // confirmation/cancellation wording still applies first; the visitor can
+  // simply repeat the request once that flow ends.
+  if (!partnerRequestFlowActive && !spaBookingFlowActive && isHumanHandoverIntent(message)) {
+    const reply = buildHandoverPhoneRequestReply();
+    await insertAssistantMessage(supabase, {
+      hotelId,
+      conversationId,
+      content: reply,
+      answerStatus: "handoff",
+      model: null,
+      inputTokens: null,
+      outputTokens: null,
+      latencyMs: Date.now() - startedAt,
+    });
+    const handoverPhonePrompt: HandoverPhonePrompt = {
+      pendingHandover: { guestMessage: message, mayAskRoomNumber: isLikelyCurrentGuestMessage(message) },
+    };
+    return {
+      reply,
+      sources: [],
+      answerStatus: "handoff",
+      roomRecommendation: null,
+      action: null,
+      partnerRecommendations: [],
+      partnerRequestPhonePrompt: null,
+      spaBookingPhonePrompt: null,
+      roomCatalogue: [],
+      accommodationSummary: [],
+      hotelMediaGallery: null,
+      handoverPhonePrompt,
+    };
+  }
+
   let partnerCandidates: RagPartner[] = [];
   let allPartners: RagPartner[] = [];
   // What buildPartnerRequestGuidance is actually allowed to OFFER for a
@@ -1624,7 +1672,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null };
 }
 
 /**
@@ -1869,7 +1917,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -1930,5 +1978,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [], accommodationSummary: [], hotelMediaGallery: null };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [], accommodationSummary: [], hotelMediaGallery: null, handoverPhonePrompt: null };
 }

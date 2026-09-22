@@ -28,6 +28,9 @@ export function AssistantSettingsForm({ hotel, settings }: AssistantSettingsForm
     commercial_proactivity: settings?.commercial_proactivity ?? "discreet",
     custom_instructions: settings?.custom_instructions ?? "",
     allow_price_communication: settings?.allow_price_communication ?? false,
+    handover_sms_phone_primary: settings?.handover_sms_phone_primary ?? "",
+    handover_sms_phone_secondary: settings?.handover_sms_phone_secondary ?? "",
+    handover_sms_phone_backup: settings?.handover_sms_phone_backup ?? "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showAdvanced, setShowAdvanced] = useState(Boolean(settings?.custom_instructions));
@@ -167,6 +170,44 @@ export function AssistantSettingsForm({ hotel, settings }: AssistantSettingsForm
               value={state.handoff_phone}
               onChange={(event) => patch({ handoff_phone: event.target.value })}
               className={inputClassName()}
+            />
+          </FormField>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-4 border-t border-border pt-6">
+        <div>
+          <span className="text-2xs font-medium uppercase tracking-wide text-body/65">Demandes de rappel par SMS</span>
+          <p className="mt-1 text-2xs text-body/70">
+            Lorsqu’un visiteur demande à être contacté par un membre de l’établissement, la demande peut être envoyée par SMS aux numéros configurés.
+          </p>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          <FormField label="Numéro principal" htmlFor="handover_sms_phone_primary" error={errors.handover_sms_phone_primary}>
+            <input
+              id="handover_sms_phone_primary"
+              value={state.handover_sms_phone_primary}
+              onChange={(event) => patch({ handover_sms_phone_primary: event.target.value })}
+              placeholder="+33612345678"
+              className={inputClassName(Boolean(errors.handover_sms_phone_primary))}
+            />
+          </FormField>
+          <FormField label="Numéro secondaire (facultatif)" htmlFor="handover_sms_phone_secondary" error={errors.handover_sms_phone_secondary}>
+            <input
+              id="handover_sms_phone_secondary"
+              value={state.handover_sms_phone_secondary}
+              onChange={(event) => patch({ handover_sms_phone_secondary: event.target.value })}
+              placeholder="+33612345678"
+              className={inputClassName(Boolean(errors.handover_sms_phone_secondary))}
+            />
+          </FormField>
+          <FormField label="Numéro de secours (facultatif)" htmlFor="handover_sms_phone_backup" error={errors.handover_sms_phone_backup}>
+            <input
+              id="handover_sms_phone_backup"
+              value={state.handover_sms_phone_backup}
+              onChange={(event) => patch({ handover_sms_phone_backup: event.target.value })}
+              placeholder="+33612345678"
+              className={inputClassName(Boolean(errors.handover_sms_phone_backup))}
             />
           </FormField>
         </div>

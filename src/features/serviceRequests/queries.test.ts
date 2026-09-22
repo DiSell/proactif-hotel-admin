@@ -50,4 +50,8 @@ describe("authorized service request reads", () => {
     builder.maybeSingle.mockResolvedValue({ data: null, error: { message: "private" } });
     await expect(getServiceRequest(hotelId, requestId, "client")).rejects.toThrow("Impossible de charger la demande.");
   });
+  it("[HUMAN HANDOVER chantier] includes guest_phone_e164 in the selected columns, so staff can see the caller's number for a handover request", async () => {
+    await getServiceRequest(hotelId, requestId, "client");
+    expect(builder.select).toHaveBeenCalledWith(expect.stringContaining("guest_phone_e164"));
+  });
 });

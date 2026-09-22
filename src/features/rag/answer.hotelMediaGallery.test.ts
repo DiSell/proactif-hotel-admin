@@ -69,11 +69,11 @@ describe("answer.ts wiring — hotelMediaGallery", () => {
     expect(paramTypeOccurrences.length).toBe(2);
 
     // Both final returns include it.
-    expect(source).toMatch(/roomCatalogue, accommodationSummary, hotelMediaGallery \};/);
+    expect(source).toMatch(/roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null \};/);
   });
 
   it("[error path] the generic error fallback always returns hotelMediaGallery: null, never omitted/undefined", () => {
-    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null \};/);
+    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null, handoverPhonePrompt: null \};/);
   });
 
   it("[Cas E — room-specific requests never populate hotelMediaGallery] buildRoomRecommendation itself never references hotelMediaGallery — the two are computed independently, with no cross-exclusion logic needed because accommodation names never match a hotel_media category keyword", () => {

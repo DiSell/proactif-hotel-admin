@@ -274,8 +274,8 @@ describe("answer.ts wiring — roomCatalogue", () => {
     const noContextCallEnd = answerQuestionFn.indexOf("});", noContextCallStart);
     expect(answerQuestionFn.slice(noContextCallStart, noContextCallEnd)).toMatch(/roomCatalogue,/);
 
-    expect(source).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery \};/);
-    expect(source).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery \};/);
+    expect(source).toMatch(/return \{ reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null \};/);
+    expect(source).toMatch(/return \{ reply, sources: \[\], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery, handoverPhonePrompt: null \};/);
   });
 
   /**
@@ -311,7 +311,7 @@ describe("answer.ts wiring — roomCatalogue", () => {
   });
 
   it("[error path] the generic error fallback always returns an empty roomCatalogue, never omitted/undefined", () => {
-    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null \};/);
+    expect(source).toMatch(/roomCatalogue: \[\], accommodationSummary: \[\], hotelMediaGallery: null, handoverPhonePrompt: null \};/);
   });
 
   /**

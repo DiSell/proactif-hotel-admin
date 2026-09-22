@@ -207,6 +207,9 @@ function makeSettings(): ChatbotSettings {
     commercial_proactivity: "discreet",
     custom_instructions: null,
     allow_price_communication: false,
+    handover_sms_phone_primary: null,
+    handover_sms_phone_secondary: null,
+    handover_sms_phone_backup: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   };

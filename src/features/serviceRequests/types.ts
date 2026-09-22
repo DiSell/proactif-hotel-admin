@@ -32,6 +32,14 @@ export interface HotelServiceRequest {
   guest_message: string;
   location: string | null;
   assigned_route_id: string | null;
+  /**
+   * HUMAN HANDOVER / RAPPEL SMS chantier (0048, NOT YET APPLIED) — set only
+   * for a guest-created 'handover' request (see
+   * features/rag/humanHandoverFlow.ts and the guest-safe
+   * create_hotel_service_request_from_widget RPC); null for every
+   * staff-created request via 0043's own create_hotel_service_request.
+   */
+  guest_phone_e164: string | null;
   created_at: string;
   updated_at: string;
   acknowledged_at: string | null;

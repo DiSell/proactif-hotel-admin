@@ -5,7 +5,8 @@ import type { HotelServiceRequest, HotelServiceRoute, ServiceRequestEvent } from
 
 // No public widget integration. Reads authorize here and use the returned
 // session-bound client (RLS), never a service-role fallback.
-const REQUEST_COLUMNS = "id, hotel_id, conversation_id, kind, category, priority, status, guest_message, location, assigned_route_id, created_at, updated_at, acknowledged_at, resolved_at";
+const REQUEST_COLUMNS =
+  "id, hotel_id, conversation_id, kind, category, priority, status, guest_message, location, assigned_route_id, guest_phone_e164, created_at, updated_at, acknowledged_at, resolved_at";
 const ROUTE_COLUMNS = "id, hotel_id, category, label, phone_e164, is_active, created_at, updated_at";
 const EVENT_COLUMNS = "id, event_sequence, hotel_id, service_request_id, event_type, actor_type, actor_user_id, from_status, to_status, message, location, assigned_route_id, category, created_at";
 

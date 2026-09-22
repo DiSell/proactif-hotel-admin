@@ -108,6 +108,19 @@ export interface ChatbotSettings {
   custom_instructions: string | null;
   /** 0039_chatbot_price_communication_policy.sql — not null, defaults false. See features/rag/pricePolicy.ts:isPriceCommunicationAllowed for what this actually gates. */
   allow_price_communication: boolean;
+  /**
+   * HUMAN HANDOVER / RAPPEL SMS chantier (0048_hotel_service_request_handover_sms.sql,
+   * NOT YET APPLIED) — up to 3 independently nullable E.164 numbers a
+   * handover/callback request gets texted to. Deliberately SEPARATE from
+   * handoff_phone above: that one is a single, PASSIVE number only ever
+   * recited to visitors (see features/rag/prompt.ts's buildNoContextGuidance),
+   * never used to actively notify staff. primary is the only one required to
+   * activate SMS notifications at all; secondary/backup are optional. See
+   * features/rag/humanHandoverFlow.ts and lib/notifications/sms/sendServiceRequestSms.ts.
+   */
+  handover_sms_phone_primary: string | null;
+  handover_sms_phone_secondary: string | null;
+  handover_sms_phone_backup: string | null;
   created_at: string;
   updated_at: string;
 }

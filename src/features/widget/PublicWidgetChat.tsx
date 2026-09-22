@@ -106,14 +106,35 @@ interface SpaBookingPhonePrompt {
 }
 
 /**
- * The widget's own local union of the two structured-phone-form kinds this
- * component can show — never both at once (the backend guarantees
- * partnerRequestPhonePrompt/spaBookingPhonePrompt are never both non-null
- * the same turn). One shared form skeleton (JSX further below) branches on
- * `kind` for its label and submit target, rather than duplicating the whole
- * form block per kind.
+ * HUMAN HANDOVER / RAPPEL SMS chantier — mirrors features/rag/types.ts's
+ * PendingHandoverFields/HandoverPhonePrompt. guestMessage is echoed back
+ * verbatim to POST /api/widget/[widgetKey]/service-request/phone; it is
+ * never re-typed or re-summarized by the visitor or the widget.
+ * mayAskRoomNumber gates ONLY whether the optional room-number input below
+ * is shown — never asked of every visitor (see that type's own doc
+ * comment).
  */
-type ActivePhonePrompt = { kind: "partner_request"; prompt: PartnerRequestPhonePrompt } | { kind: "spa_booking"; prompt: SpaBookingPhonePrompt };
+interface PendingHandoverFields {
+  guestMessage: string;
+  mayAskRoomNumber: boolean;
+}
+
+interface HandoverPhonePrompt {
+  pendingHandover: PendingHandoverFields;
+}
+
+/**
+ * The widget's own local union of the three structured-phone-form kinds this
+ * component can show — never more than one at once (the backend guarantees
+ * partnerRequestPhonePrompt/spaBookingPhonePrompt/handoverPhonePrompt are
+ * never more than one non-null the same turn). One shared form skeleton
+ * (JSX further below) branches on `kind` for its label and submit target,
+ * rather than duplicating the whole form block per kind.
+ */
+type ActivePhonePrompt =
+  | { kind: "partner_request"; prompt: PartnerRequestPhonePrompt }
+  | { kind: "spa_booking"; prompt: SpaBookingPhonePrompt }
+  | { kind: "handover"; prompt: HandoverPhonePrompt };
 
 interface ChatApiResponse {
   conversationId: string;
@@ -127,6 +148,7 @@ interface ChatApiResponse {
   roomCatalogue: RoomCatalogueEntry[];
   accommodationSummary: RoomCatalogueEntry[];
   hotelMediaGallery: HotelMediaGallery | null;
+  handoverPhonePrompt: HandoverPhonePrompt | null;
 }
 
 interface PublicWidgetChatProps {
@@ -340,6 +362,8 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [phoneInput, setPhoneInput] = useState("");
   const [phoneSubmitting, setPhoneSubmitting] = useState(false);
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  /** HUMAN HANDOVER / RAPPEL SMS chantier — only ever read/shown when activePhonePrompt.kind === "handover" AND mayAskRoomNumber is true; never sent for the other two kinds. */
+  const [roomNumberInput, setRoomNumberInput] = useState("");
   // Tracks the one host-booking request in flight, if any, and which
   // trigger requested it — never a booking, never a reservation, just "did
   // widget.js manage to open the site's existing module". messageIndex is
@@ -514,6 +538,9 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
         setActivePhonePrompt({ kind: "partner_request", prompt: data.partnerRequestPhonePrompt });
       } else if (data.spaBookingPhonePrompt) {
         setActivePhonePrompt({ kind: "spa_booking", prompt: data.spaBookingPhonePrompt });
+      } else if (data.handoverPhonePrompt) {
+        setActivePhonePrompt({ kind: "handover", prompt: data.handoverPhonePrompt });
+        setRoomNumberInput("");
       } else {
         setActivePhonePrompt(null);
       }
@@ -642,11 +669,26 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
     setPhoneError(null);
 
     try {
-      const path = activePhonePrompt.kind === "partner_request" ? "partner-request/phone" : "spa-booking/phone";
+      const path =
+        activePhonePrompt.kind === "partner_request"
+          ? "partner-request/phone"
+          : activePhonePrompt.kind === "spa_booking"
+            ? "spa-booking/phone"
+            : "service-request/phone";
       const requestBody =
         activePhonePrompt.kind === "partner_request"
           ? { conversationId, sessionToken, phone: trimmed, pendingRequest: activePhonePrompt.prompt.pendingRequest }
-          : { conversationId, sessionToken, phone: trimmed, pendingBooking: activePhonePrompt.prompt.pendingBooking };
+          : activePhonePrompt.kind === "spa_booking"
+            ? { conversationId, sessionToken, phone: trimmed, pendingBooking: activePhonePrompt.prompt.pendingBooking }
+            : {
+                conversationId,
+                sessionToken,
+                phone: trimmed,
+                pendingHandover: {
+                  guestMessage: activePhonePrompt.prompt.pendingHandover.guestMessage,
+                  roomNumber: roomNumberInput.trim() || null,
+                },
+              };
 
       const response = await fetch(`/api/widget/${encodeURIComponent(widgetKey)}/${path}`, {
         method: "POST",
@@ -662,10 +704,13 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
       // Success: the form disappears, and the deterministic recap/resume
       // text the server just produced is appended as a new assistant-style
       // message — never the raw phone number, only ever the server's own
-      // masked-phone recap (see partnerRequestFlow.ts's buildRecapText).
+      // masked-phone recap (see partnerRequestFlow.ts's buildRecapText) or,
+      // for a handover, the deterministic confirmation/fallback text (see
+      // humanHandoverFlow.ts's buildHandoverConfirmationMessage).
       setMessages((current) => [...current, { role: "assistant", content: body.message }]);
       setActivePhonePrompt(null);
       setPhoneInput("");
+      setRoomNumberInput("");
     } catch (err) {
       setPhoneError(err instanceof Error ? err.message : "Une erreur est survenue.");
     } finally {
@@ -1145,7 +1190,9 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
             <p style={{ margin: 0, fontSize: 13, lineHeight: 1.5, color: "#1A1D1A" }}>
               {activePhonePrompt.kind === "partner_request"
                 ? `À quel numéro souhaitez-vous recevoir la réponse de ${activePhonePrompt.prompt.partnerName} ?`
-                : "Merci de communiquer votre numéro de téléphone pour confirmer votre réservation spa."}
+                : activePhonePrompt.kind === "spa_booking"
+                  ? "Merci de communiquer votre numéro de téléphone pour confirmer votre réservation spa."
+                  : "Merci d'indiquer votre numéro de téléphone pour être rappelé(e) par l'établissement."}
             </p>
             <input
               type="tel"
@@ -1172,10 +1219,36 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
                 boxSizing: "border-box",
               }}
             />
+            {/* HUMAN HANDOVER / RAPPEL SMS chantier — only shown when the server determined, from the visitor's own message, that they're likely currently on-site (features/rag/humanHandover.ts:isLikelyCurrentGuestMessage). Never shown for the other two prompt kinds; never required to submit. */}
+            {activePhonePrompt.kind === "handover" && activePhonePrompt.prompt.pendingHandover.mayAskRoomNumber && (
+              <input
+                type="text"
+                inputMode="text"
+                value={roomNumberInput}
+                onChange={(event) => setRoomNumberInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") handleSubmitPhone();
+                }}
+                placeholder="Numéro de chambre (facultatif)"
+                disabled={phoneSubmitting}
+                style={{
+                  height: 40,
+                  borderRadius: 8,
+                  border: "1px solid #E5E1D8",
+                  padding: "0 12px",
+                  fontSize: 13,
+                  outline: "none",
+                  width: "100%",
+                  boxSizing: "border-box",
+                }}
+              />
+            )}
             <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#6b6b6b" }}>
               {activePhonePrompt.kind === "partner_request"
                 ? "Votre numéro sera utilisé uniquement pour transmettre cette demande et vous communiquer la réponse du partenaire."
-                : "Votre numéro sera utilisé uniquement pour confirmer votre réservation et vous contacter si nécessaire."}
+                : activePhonePrompt.kind === "spa_booking"
+                  ? "Votre numéro sera utilisé uniquement pour confirmer votre réservation et vous contacter si nécessaire."
+                  : "Votre numéro sera utilisé uniquement pour transmettre votre demande de rappel à l'établissement."}
             </p>
             {phoneError && <p style={{ margin: 0, fontSize: 11, lineHeight: 1.5, color: "#B23B3B" }}>{phoneError}</p>}
             <button

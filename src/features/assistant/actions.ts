@@ -18,6 +18,9 @@ export interface SaveAssistantSettingsInput {
   commercial_proactivity: string;
   custom_instructions: string;
   allow_price_communication: boolean;
+  handover_sms_phone_primary: string;
+  handover_sms_phone_secondary: string;
+  handover_sms_phone_backup: string;
 }
 
 export async function saveAssistantSettings(
@@ -64,6 +67,9 @@ export async function saveAssistantSettings(
       commercial_proactivity: parsed.data.commercial_proactivity,
       custom_instructions: parsed.data.custom_instructions || null,
       allow_price_communication: parsed.data.allow_price_communication,
+      handover_sms_phone_primary: parsed.data.handover_sms_phone_primary || null,
+      handover_sms_phone_secondary: parsed.data.handover_sms_phone_secondary || null,
+      handover_sms_phone_backup: parsed.data.handover_sms_phone_backup || null,
     },
     { onConflict: "hotel_id" }
   );
