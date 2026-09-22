@@ -7,6 +7,9 @@ import { PHOTO_ACTIONS_BACKOFFICE } from "@/features/photos/actionBundles";
 import { TargetedPhotoImport } from "@/features/photos/TargetedPhotoImport";
 import { importTargetedRoomPhotos } from "@/features/photos/targetedImport";
 import { LE_1837_HOTEL_ID } from "@/features/photos/targetedImportPlan";
+import { getHotelMediaData } from "@/features/hotelMedia/queries";
+import { HotelMediaManager } from "@/features/hotelMedia/HotelMediaManager";
+import { HOTEL_MEDIA_ACTIONS_BACKOFFICE } from "@/features/hotelMedia/actionBundles";
 
 export default async function HotelPhotosPage({ params }: PageProps<"/etablissements/[id]/photos">) {
   const { id } = await params;
@@ -15,7 +18,8 @@ export default async function HotelPhotosPage({ params }: PageProps<"/etablissem
 
   // Back-office cookie scope, explicit — getPhotosManagerData is shared
   // with the client portal and has no default (lib/supabase/cookieScope.ts).
-  const data = await getPhotosManagerData(id, await createClient());
+  const supabase = await createClient();
+  const [data, hotelMediaData] = await Promise.all([getPhotosManagerData(id, supabase), getHotelMediaData(id, supabase)]);
 
   return (
     <div className="flex flex-col gap-6 pb-8">
@@ -30,6 +34,7 @@ export default async function HotelPhotosPage({ params }: PageProps<"/etablissem
       {/* PHOTOS / CARROUSEL chantier — one-off, hotel-scoped entry point (see targetedImport.ts's own doc comment). Rendered ONLY for the one hotel this specific import targets; every other hotel's photos page is completely unaffected. */}
       {id === LE_1837_HOTEL_ID && <TargetedPhotoImport hotelId={id} action={importTargetedRoomPhotos} />}
       <PhotosManager hotelId={id} accommodations={data.accommodations} actions={PHOTO_ACTIONS_BACKOFFICE} />
+      <HotelMediaManager hotelId={id} data={hotelMediaData} actions={HOTEL_MEDIA_ACTIONS_BACKOFFICE} canUpload />
     </div>
   );
 }

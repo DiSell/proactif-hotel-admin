@@ -218,6 +218,36 @@ export interface RoomPhoto {
   created_at: string;
 }
 
+export const HOTEL_MEDIA_CATEGORIES = [
+  "pool", "spa", "sauna", "hammam", "jacuzzi", "fitness", "exterior", "breakfast",
+  "restaurant", "seminar", "wedding", "chapel", "facade", "common_area", "parking", "other",
+] as const;
+export type HotelMediaCategory = (typeof HOTEL_MEDIA_CATEGORIES)[number];
+
+/**
+ * Mirrors supabase/migrations/0046_hotel_media.sql — PROPOSED, not yet
+ * applied. Photos of the ESTABLISHMENT (pool, spa, façade, common areas...),
+ * never of a specific accommodation — that remains RoomPhoto's own role,
+ * entirely unchanged and untouched by this table. Never read by the
+ * chatbot yet (Phase 1 is storage + back-office management only — see
+ * features/hotelMedia/).
+ */
+export interface HotelMedia {
+  id: string;
+  hotel_id: string;
+  category: HotelMediaCategory;
+  title: string | null;
+  source_page_url: string | null;
+  source_image_url: string | null;
+  storage_path: string;
+  photo_url: string;
+  content_hash: string;
+  alt_text: string | null;
+  position: number;
+  is_selected: boolean;
+  created_at: string;
+}
+
 /**
  * Mirrors supabase/migrations/0005_integrations_reservations.sql —
  * PROPOSED, not yet applied. See features/integrations/types.ts for the
