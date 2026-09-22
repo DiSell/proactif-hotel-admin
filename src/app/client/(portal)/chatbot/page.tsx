@@ -3,6 +3,7 @@ import { getClientChatbotInfo, getClientWidgetInfo } from "@/features/client/que
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ChatbotPersonalizationForm } from "@/features/client/ChatbotPersonalizationForm";
 import { PriceCommunicationToggle } from "@/features/client/PriceCommunicationToggle";
+import { HandoverSmsNumbersForm } from "@/features/client/HandoverSmsNumbersForm";
 import { DEFAULT_ASSISTANT_NAME } from "@/features/client/schema";
 import { DEFAULT_WELCOME_MESSAGE } from "@/features/widget/publicHotel";
 import { listHotelEvents } from "@/features/events/queries";
@@ -67,6 +68,12 @@ export default async function ClientChatbotPage() {
       />
 
       <PriceCommunicationToggle allowPriceCommunication={chatbotData.chatbotSettings?.allow_price_communication ?? false} />
+
+      <HandoverSmsNumbersForm
+        initialPrimary={chatbotData.chatbotSettings?.handover_sms_phone_primary ?? ""}
+        initialSecondary={chatbotData.chatbotSettings?.handover_sms_phone_secondary ?? ""}
+        initialBackup={chatbotData.chatbotSettings?.handover_sms_phone_backup ?? ""}
+      />
 
       <div className="flex flex-col gap-3">
         <div>

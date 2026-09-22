@@ -33,3 +33,27 @@ export type PhotoManagementMode = z.infer<typeof photoManagementModeSchema>;
  * of that broader, superadmin-reserved settings surface.
  */
 export const allowPriceCommunicationSchema = z.boolean();
+
+/**
+ * HUMAN HANDOVER / RAPPEL SMS chantier — the 3 chatbot_settings.handover_sms_phone_*
+ * columns (0048_hotel_service_request_handover_sms.sql) a hotel_admin may
+ * write themselves. Same E.164 shape as features/assistant/schema.ts's own
+ * handoverSmsPhoneSchema (superadmin) — duplicated here rather than
+ * imported, same "the client-editable subset is deliberately its own,
+ * narrow schema, never a gateway to the rest of chatbotSettingsSchema"
+ * precedent already established by clientChatbotPersonalizationSchema/
+ * allowPriceCommunicationSchema above.
+ */
+const handoverSmsPhoneSchema = z
+  .string()
+  .trim()
+  .regex(/^\+[1-9][0-9]{7,14}$/, "Format invalide (ex. +33612345678).")
+  .optional()
+  .or(z.literal(""));
+
+export const clientHandoverSmsNumbersSchema = z.object({
+  handover_sms_phone_primary: handoverSmsPhoneSchema,
+  handover_sms_phone_secondary: handoverSmsPhoneSchema,
+  handover_sms_phone_backup: handoverSmsPhoneSchema,
+});
+export type ClientHandoverSmsNumbersInput = z.infer<typeof clientHandoverSmsNumbersSchema>;

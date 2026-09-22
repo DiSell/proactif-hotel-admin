@@ -1,0 +1,39 @@
+-- =========================================================================
+-- Proactif System — same gap as 0040_chatbot_settings_price_communication_service_role_grant.sql,
+-- now for the 3 handover-SMS number columns added by
+-- 0048_hotel_service_request_handover_sms.sql.
+--
+-- service_role has NEVER had a broad UPDATE grant on chatbot_settings —
+-- only SELECT (0009_widget_service_role_permissions.sql) plus the single
+-- column-scoped UPDATE grant 0040 added for allow_price_communication. 0001's
+-- `grant select, insert, update, delete on public.chatbot_settings to
+-- authenticated;` only covers `authenticated` (the back-office session-bound
+-- client), gated in turn by chatbot_settings' only write RLS policy
+-- ("superadmin full access"). 0048 itself only ADDED the 3 new columns —
+-- it did not touch this table's grants, so without this migration,
+-- updateHandoverSmsNumbers() (features/client/actions.ts) calling
+-- createAdminClient() (service_role) would fail in production with
+-- "permission denied for column handover_sms_phone_primary", exactly the
+-- same failure mode 0040's own header describes for allow_price_communication.
+--
+-- Column-scoped, not a bare `grant update` — same discipline as 0040 /
+-- 0017_hotel_partner_consent.sql / 0018_hotel_partner_opening_hours.sql /
+-- 0019_hotel_partner_consent_address_grant.sql /
+-- 0022_partner_transactional_consent.sql: grants service_role UPDATE on
+-- exactly the 3 columns updateHandoverSmsNumbers() writes, never the whole
+-- row. chatbot_settings' other fields (tone, formality, response_length,
+-- commercial_proactivity, custom_instructions, welcome_message,
+-- fallback_message, handoff_email, handoff_phone, allow_price_communication)
+-- stay exactly as restricted as before — this grant adds nothing beyond the
+-- 3 named columns.
+--
+-- No RLS policy change, none needed: service_role bypasses RLS entirely
+-- (see src/lib/supabase/admin.ts's own doc comment) — GRANT is the only
+-- control surface that matters for this client, exactly as already true for
+-- allow_price_communication.
+--
+-- Additive only. Does NOT modify 0043, 0045, 0048. NOT applied in this phase.
+-- =========================================================================
+
+grant update (handover_sms_phone_primary, handover_sms_phone_secondary, handover_sms_phone_backup)
+  on public.chatbot_settings to service_role;

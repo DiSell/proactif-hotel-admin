@@ -6,8 +6,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import {
   allowPriceCommunicationSchema,
   clientChatbotPersonalizationSchema,
+  clientHandoverSmsNumbersSchema,
   photoManagementModeSchema,
   type ClientChatbotPersonalizationInput,
+  type ClientHandoverSmsNumbersInput,
   type PhotoManagementMode,
 } from "./schema";
 import type { ActionResult } from "@/lib/actionResult";
@@ -154,6 +156,55 @@ export async function setAllowPriceCommunication(allow: boolean): Promise<Action
   if (error) {
     console.error("setAllowPriceCommunication: chatbot_settings update failed", { message: error.message });
     return { ok: false, error: "Impossible d’enregistrer ce choix." };
+  }
+
+  revalidatePath("/client/chatbot");
+  return { ok: true, data: null };
+}
+
+/**
+ * HUMAN HANDOVER / RAPPEL SMS chantier — the 3 chatbot_settings.handover_sms_phone_*
+ * fields a hotel_admin may write themselves, mirroring
+ * setAllowPriceCommunication's own doc comment exactly:
+ *
+ * chatbot_settings has NO hotel_admin UPDATE RLS policy (only a read one,
+ * see 0011_hotel_client_portal.sql) — write access here comes from
+ * createAdminClient() (service-role, bypasses RLS) AFTER
+ * requireClientAccess() has already authorized the caller and the update is
+ * explicitly scoped to their own hotel_id. No RLS policy is added or
+ * changed by this action.
+ *
+ * service_role additionally needs its own column-scoped GRANT for this
+ * write to succeed against the real database — see
+ * 0049_chatbot_settings_handover_sms_service_role_grant.sql (mirrors 0040's
+ * own precedent for allow_price_communication). That migration is additive
+ * and NOT YET APPLIED.
+ *
+ * Plain UPDATE, not upsert — same reasoning as setAllowPriceCommunication:
+ * chatbot_settings.hotel_id is `not null unique` and a row is seeded for
+ * every hotel at hotel-creation time, so there is no "hotel with no
+ * chatbot_settings row yet" case to upsert around here.
+ */
+export async function updateHandoverSmsNumbers(input: ClientHandoverSmsNumbersInput): Promise<ActionResult<null>> {
+  const { hotelId } = await requireClientAccess();
+
+  const parsed = clientHandoverSmsNumbersSchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, error: "Champs invalides.", fieldErrors: fieldErrorsFrom(parsed.error.issues) };
+  }
+
+  const supabase = createAdminClient();
+  const { error } = await supabase
+    .from("chatbot_settings")
+    .update({
+      handover_sms_phone_primary: parsed.data.handover_sms_phone_primary || null,
+      handover_sms_phone_secondary: parsed.data.handover_sms_phone_secondary || null,
+      handover_sms_phone_backup: parsed.data.handover_sms_phone_backup || null,
+    })
+    .eq("hotel_id", hotelId);
+  if (error) {
+    console.error("updateHandoverSmsNumbers: chatbot_settings update failed", { message: error.message });
+    return { ok: false, error: "Impossible d’enregistrer ces numéros." };
   }
 
   revalidatePath("/client/chatbot");

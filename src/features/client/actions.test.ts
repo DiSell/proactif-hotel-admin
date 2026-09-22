@@ -9,6 +9,10 @@ const grantMigration = readFileSync(
   join(here, "..", "..", "..", "supabase", "migrations", "0040_chatbot_settings_price_communication_service_role_grant.sql"),
   "utf8"
 );
+const handoverSmsGrantMigration = readFileSync(
+  join(here, "..", "..", "..", "supabase", "migrations", "0049_chatbot_settings_handover_sms_service_role_grant.sql"),
+  "utf8"
+);
 
 /**
  * Regression guards for the client-only chatbot personalization actions —
@@ -181,5 +185,86 @@ describe("0040_chatbot_settings_price_communication_service_role_grant.sql", () 
     expect(grantMigration).not.toMatch(/create policy|alter policy|drop policy/);
     expect(grantMigration).not.toMatch(/alter table|create table|drop table/);
     expect(grantMigration).not.toMatch(/revoke/);
+  });
+});
+
+/**
+ * HUMAN HANDOVER / RAPPEL SMS chantier — the 3 chatbot_settings.handover_sms_phone_*
+ * fields a hotel_admin may write themselves. Mirrors setAllowPriceCommunication's
+ * own describe block exactly.
+ */
+describe("updateHandoverSmsNumbers", () => {
+  it("[hotelId never accepted as input] the exported function takes only `input`, never a hotelId parameter", () => {
+    const signatureStart = source.indexOf("export async function updateHandoverSmsNumbers(");
+    const signatureEnd = source.indexOf(")", signatureStart);
+    const signature = source.slice(signatureStart, signatureEnd);
+    expect(signature).not.toMatch(/hotelId/);
+  });
+
+  it("[client-only, resolved from the caller's own session]", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    expect(fn).not.toMatch(/requireHotelAccess/);
+    expect(fn).not.toMatch(/requireSuperadmin/);
+  });
+
+  it("[service-role client — chatbot_settings has no hotel_admin WRITE policy, only a read one]", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/const supabase = createAdminClient\(\);/);
+  });
+
+  it("[writes ONLY the 3 handover SMS columns, scoped by hotel_id via UPDATE — never an upsert/insert]", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/\.from\("chatbot_settings"\)/);
+    expect(fn).toMatch(/handover_sms_phone_primary:/);
+    expect(fn).toMatch(/handover_sms_phone_secondary:/);
+    expect(fn).toMatch(/handover_sms_phone_backup:/);
+    expect(fn).toMatch(/\.eq\("hotel_id", hotelId\)/);
+    expect(fn).not.toMatch(/\.upsert\(/);
+    expect(fn).not.toMatch(/\.insert\(/);
+    // Never touches any other chatbot_settings column — the narrow-scope guarantee.
+    expect(fn).not.toMatch(/tone:|formality:|response_length:|commercial_proactivity:|custom_instructions:|allow_price_communication:/);
+  });
+
+  it("[tenant isolation] hotelId comes from requireClientAccess(), never from any other input — a hotel_admin can only ever affect its own row (requireClientAccess's own cross-hotel guarantees are exhaustively covered in src/lib/auth/session.test.ts, not re-proven here, same convention as setAllowPriceCommunication above)", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/const \{ hotelId \} = await requireClientAccess\(\);/);
+    expect(fn).toMatch(/\.eq\("hotel_id", hotelId\)/);
+  });
+
+  it("[validated through the dedicated narrow schema, not the broader superadmin one]", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/clientHandoverSmsNumbersSchema\.safeParse\(input\)/);
+    expect(fn).not.toMatch(/chatbotSettingsSchema\.safeParse/);
+  });
+
+  it("[empty string normalized to null] an emptied optional field is written as null, never an empty string persisted", () => {
+    const fn = sliceFunction("updateHandoverSmsNumbers");
+    expect(fn).toMatch(/handover_sms_phone_secondary:\s*parsed\.data\.handover_sms_phone_secondary \|\| null/);
+    expect(fn).toMatch(/handover_sms_phone_backup:\s*parsed\.data\.handover_sms_phone_backup \|\| null/);
+  });
+});
+
+/**
+ * The migration granting service_role UPDATE on the 3 new handover SMS
+ * columns — see the migration file's own header for the full reasoning
+ * (mirrors 0040's exact precedent). Without this grant,
+ * updateHandoverSmsNumbers' UPDATE fails against the real database.
+ */
+describe("0049_chatbot_settings_handover_sms_service_role_grant.sql", () => {
+  it("[column-scoped, not a bare table-wide grant] grants UPDATE on exactly the 3 handover SMS columns", () => {
+    expect(handoverSmsGrantMigration).toMatch(
+      /grant update \(handover_sms_phone_primary, handover_sms_phone_secondary, handover_sms_phone_backup\)\s*\n\s*on public\.chatbot_settings to service_role;/
+    );
+    expect(handoverSmsGrantMigration).not.toMatch(/grant update on public\.chatbot_settings/);
+  });
+
+  it("[additive only] no other GRANT, no RLS policy change, no table/column DDL, never touches 0043/0045/0048", () => {
+    const grantStatements = handoverSmsGrantMigration.match(/^grant .*/gm) ?? [];
+    expect(grantStatements.length).toBe(1);
+    expect(handoverSmsGrantMigration).not.toMatch(/create policy|alter policy|drop policy/);
+    expect(handoverSmsGrantMigration).not.toMatch(/alter table|create table|drop table/);
+    expect(handoverSmsGrantMigration).not.toMatch(/revoke/);
+    expect(handoverSmsGrantMigration).not.toMatch(/hotel_customers/);
   });
 });
