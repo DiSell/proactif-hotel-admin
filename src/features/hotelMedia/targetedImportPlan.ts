@@ -24,13 +24,19 @@ export const TARGETED_HOTEL_MEDIA_IMPORT_PLAN: readonly TargetedHotelMediaCatego
     category: "pool",
     title: null,
     sourceUrl: "https://www.le1837.com/en/pool",
-    imageUrls: ["https://www.le1837.com/imagecache/fullwidth/residence-le-1837-4.jpg"],
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-4.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-6.jpg",
+    ],
   },
   {
     category: "spa",
     title: null,
     sourceUrl: "https://www.le1837.com/en/the-spa",
-    imageUrls: ["https://www.le1837.com/imagecache/fullwidth/residence-le-1837-21.jpg"],
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-21.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-59.jpg",
+    ],
   },
   {
     category: "restaurant",
@@ -42,13 +48,60 @@ export const TARGETED_HOTEL_MEDIA_IMPORT_PLAN: readonly TargetedHotelMediaCatego
     category: "seminar",
     title: null,
     sourceUrl: "https://www.le1837.com/en/seminar-groups",
-    imageUrls: ["https://www.le1837.com/imagecache/fullwidth/residence-le-1837-74.jpg"],
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-74.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/room-service_6.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/salles_8.jpg",
+    ],
   },
   {
     category: "wedding",
     title: null,
     sourceUrl: "https://www.le1837.com/en/weddings-receptions",
-    imageUrls: ["https://www.le1837.com/imagecache/fullwidth/salles_2.jpg"],
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/salles_2.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/salles_3.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/salles_10.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/salles_13.jpg",
+    ],
+  },
+  {
+    // No dedicated route exists for this category (confirmed by extracting
+    // the full route list from the compiled Vue router) — sourceUrl is the
+    // site's homepage, the page these were actually observed on via a real
+    // browser's Network tab (see this conversation's own report), not a
+    // guessed category-specific page.
+    category: "fitness",
+    title: null,
+    sourceUrl: "https://www.le1837.com/en",
+    imageUrls: ["https://www.le1837.com/imagecache/fullwidth/residence-le-1837-64.jpg"],
+  },
+  {
+    category: "facade",
+    title: null,
+    sourceUrl: "https://www.le1837.com/en",
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-7.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-53.jpg",
+    ],
+  },
+  {
+    category: "common_area",
+    title: null,
+    sourceUrl: "https://www.le1837.com/en",
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-12.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-14.jpg",
+    ],
+  },
+  {
+    category: "breakfast",
+    title: null,
+    sourceUrl: "https://www.le1837.com/en",
+    imageUrls: [
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-71.jpg",
+      "https://www.le1837.com/imagecache/fullwidth/residence-le-1837-72.jpg",
+    ],
   },
 ] as const;
 
