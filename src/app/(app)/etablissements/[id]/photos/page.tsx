@@ -34,7 +34,7 @@ export default async function HotelPhotosPage({ params }: PageProps<"/etablissem
       {/* PHOTOS / CARROUSEL chantier — one-off, hotel-scoped entry point (see targetedImport.ts's own doc comment). Rendered ONLY for the one hotel this specific import targets; every other hotel's photos page is completely unaffected. */}
       {id === LE_1837_HOTEL_ID && <TargetedPhotoImport hotelId={id} action={importTargetedRoomPhotos} />}
       <PhotosManager hotelId={id} accommodations={data.accommodations} actions={PHOTO_ACTIONS_BACKOFFICE} />
-      <HotelMediaManager hotelId={id} data={hotelMediaData} actions={HOTEL_MEDIA_ACTIONS_BACKOFFICE} canUpload />
+      <HotelMediaManager hotelId={id} data={hotelMediaData} actions={HOTEL_MEDIA_ACTIONS_BACKOFFICE} canUpload scope="backoffice" />
     </div>
   );
 }

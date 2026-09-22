@@ -2,22 +2,44 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
+import { createClient, createClientPortalBrowserClient } from "@/lib/supabase/client";
 import { Card } from "@/components/ui/Card";
 import { FileDrop } from "@/components/ui/FileDrop";
 import { useToast } from "@/components/ui/Toast";
 import { HOTEL_MEDIA_CATEGORY_LABEL } from "./schema";
-import { addHotelMediaPhoto } from "./actions";
 import type { HotelMediaActions } from "./actionBundles";
 import type { HotelMediaData } from "./queries";
 import type { HotelMediaCategory } from "@/types/database";
+import type { AuthScope } from "@/lib/supabase/cookieScope";
 
 interface HotelMediaManagerProps {
   hotelId: string;
   data: HotelMediaData;
   actions: HotelMediaActions;
-  /** Upload is superadmin-only everywhere (see actions.ts's own doc comment) — the client portal renders this component with canUpload={false}, selection-toggle only, same shape as PhotosManager.tsx. */
+  /** Back-office: upload always available. Client portal: only when hotels.photo_management === "client" — computed by the page from data already fetched via getPhotosManagerData, never re-derived here. */
   canUpload: boolean;
+  /**
+   * Which cookie-scoped browser Supabase client the upload form must use —
+   * see resolveHotelMediaBrowserClient below. A plain string prop (not a
+   * client-factory function prop) because this component is instantiated
+   * from a Server Component page: a function bound to browser-only APIs
+   * cannot cross that boundary as a prop. Never inferred from the current
+   * URL/environment inside this component — always explicit, from the
+   * caller, exactly like every other scope in this codebase.
+   */
+  scope: AuthScope;
+}
+
+/**
+ * The one place this module decides which cookie a Storage upload/browser
+ * write is bound to — pure, three-line, directly unit-testable, so nothing
+ * else in this file has to "guess" its environment. Mirrors
+ * requireHotelAccess's own scope -> client mapping (lib/auth/session.ts),
+ * just for the browser-side clients (lib/supabase/client.ts) instead of the
+ * server-side ones.
+ */
+export function resolveHotelMediaBrowserClient(scope: AuthScope) {
+  return scope === "client" ? createClientPortalBrowserClient() : createClient();
 }
 
 /** SHA-256 of the file's own bytes, hex-encoded — client-side equivalent of safeFetchBinary's contentHash (features/crawler/networkGuard.ts), computed here instead of server-side since this flow uploads a browser File directly rather than fetching a remote URL. */
@@ -35,7 +57,19 @@ function extensionFor(file: File): string {
   return file.type.split("/")[1] || "jpg";
 }
 
-function CategoryUploadForm({ hotelId, category, onDone }: { hotelId: string; category: HotelMediaCategory; onDone: () => void }) {
+function CategoryUploadForm({
+  hotelId,
+  category,
+  scope,
+  addPhoto,
+  onDone,
+}: {
+  hotelId: string;
+  category: HotelMediaCategory;
+  scope: AuthScope;
+  addPhoto: HotelMediaActions["addPhoto"];
+  onDone: () => void;
+}) {
   const toast = useToast();
   const [title, setTitle] = useState("");
   const [altText, setAltText] = useState("");
@@ -51,7 +85,7 @@ function CategoryUploadForm({ hotelId, category, onDone }: { hotelId: string; ca
     setIsUploading(true);
     try {
       const contentHash = await hashFile(file);
-      const supabase = createClient();
+      const supabase = resolveHotelMediaBrowserClient(scope);
       const storagePath = `${hotelId}/${crypto.randomUUID()}.${extensionFor(file)}`;
       const { error: uploadError } = await supabase.storage.from("hotel-media").upload(storagePath, file, { upsert: false, contentType: file.type });
       if (uploadError) {
@@ -60,7 +94,7 @@ function CategoryUploadForm({ hotelId, category, onDone }: { hotelId: string; ca
       }
       const { data: publicUrlData } = supabase.storage.from("hotel-media").getPublicUrl(storagePath);
 
-      const result = await addHotelMediaPhoto(hotelId, {
+      const result = await addPhoto(hotelId, {
         category,
         title,
         altText,
@@ -103,7 +137,7 @@ function CategoryUploadForm({ hotelId, category, onDone }: { hotelId: string; ca
   );
 }
 
-export function HotelMediaManager({ hotelId, data, actions, canUpload }: HotelMediaManagerProps) {
+export function HotelMediaManager({ hotelId, data, actions, canUpload, scope }: HotelMediaManagerProps) {
   const router = useRouter();
   const toast = useToast();
   const [isPending, startTransition] = useTransition();
@@ -167,7 +201,15 @@ export function HotelMediaManager({ hotelId, data, actions, canUpload }: HotelMe
             </div>
           )}
 
-          {canUpload && <CategoryUploadForm hotelId={hotelId} category={category} onDone={() => router.refresh()} />}
+          {canUpload && (
+            <CategoryUploadForm
+              hotelId={hotelId}
+              category={category}
+              scope={scope}
+              addPhoto={actions.addPhoto}
+              onDone={() => router.refresh()}
+            />
+          )}
         </Card>
       ))}
     </div>

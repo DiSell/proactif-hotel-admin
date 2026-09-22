@@ -25,8 +25,14 @@ export default async function ClientPhotosPage() {
       />
       <PhotoManagementModeToggle mode={data.photoManagement} />
       <PhotosManager hotelId={hotelId} accommodations={data.accommodations} actions={PHOTO_ACTIONS_CLIENT} />
-      {/* Upload stays superadmin-only (see hotelMedia/actions.ts) — canUpload={false} here, selection-toggle only, same restriction as the Storage bucket's own RLS policy. */}
-      <HotelMediaManager hotelId={hotelId} data={hotelMediaData} actions={HOTEL_MEDIA_ACTIONS_CLIENT} canUpload={false} />
+      {/* Upload is available to the hotelier only when they manage their own photos (photo_management === "client") — reuses the same field already driving PhotoManagementModeToggle above, never re-fetched separately. Selection/deselection stays available either way. */}
+      <HotelMediaManager
+        hotelId={hotelId}
+        data={hotelMediaData}
+        actions={HOTEL_MEDIA_ACTIONS_CLIENT}
+        canUpload={data.photoManagement === "client"}
+        scope="client"
+      />
     </div>
   );
 }

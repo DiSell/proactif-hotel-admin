@@ -1,11 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireHotelAccess, requireSuperadmin } from "@/lib/auth/session";
-import { createClient } from "@/lib/supabase/server";
+import { requireHotelAccess } from "@/lib/auth/session";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { AuthScope } from "@/lib/supabase/cookieScope";
 import type { ActionResult } from "@/lib/actionResult";
+import type { Hotel } from "@/types/database";
 import { addHotelMediaSchema } from "./schema";
 
 /**
@@ -16,36 +16,54 @@ import { addHotelMediaSchema } from "./schema";
  * solves this the same way: browser uploads directly, this action only
  * ever receives the resulting Storage path/URL plus metadata.
  *
- * Superadmin-only, matching EVERY existing photo-import path in this
- * codebase without exception (saveAccommodationTypes / targetedImport,
- * both requireSuperadmin()) — there is no precedent anywhere for a
- * hotel_admin-writable Storage bucket, and 0046_hotel_media.sql's
- * "superadmin manage hotel-media" Storage policy enforces the same
- * restriction at the Storage layer, not just here. hotelId is a plain
- * argument (not resolved from a session) because this is a back-office-only
- * action — same shape as saveAccommodationTypes(hotelId, input).
- *
- * Uses the session-bound client (createClient(), not createAdminClient())
- * so the "superadmin full access" RLS policy on hotel_media is the actual
- * gate — same discipline as saveAccommodationTypes itself.
+ * Shared between back-office (always allowed) and client portal (allowed
+ * only when hotels.photo_management = 'client' — see the two exported
+ * wrappers below). requireHotelAccess(hotelId, scope) both authorizes the
+ * caller for this exact hotelId AND returns the correctly cookie-scoped
+ * session-bound client, reused below instead of constructing a second one —
+ * same shape as setHotelMediaSelectionInternal.
  */
-export async function addHotelMediaPhoto(hotelId: string, input: unknown): Promise<ActionResult<{ id: string }>> {
-  await requireSuperadmin();
+async function addHotelMediaPhotoInternal(hotelId: string, input: unknown, scope: AuthScope): Promise<ActionResult<{ id: string }>> {
+  const { supabase } = await requireHotelAccess(hotelId, scope);
+
+  // hotels.photo_management only ever gates hotel_media for the CLIENT
+  // portal — a superadmin (the only caller requireHotelAccess ever accepts
+  // on the "backoffice" scope in practice, see AppShell's requireSuperadmin()
+  // gate on every back-office page) can always add photos regardless of
+  // this hotel's mode. Read via the session-bound client returned above —
+  // "hotel_admin can read own hotel" (0011_hotel_client_portal.sql) already
+  // permits this under RLS, no admin client needed for a plain read.
+  if (scope === "client") {
+    const { data: hotel } = await supabase
+      .from("hotels")
+      .select("photo_management")
+      .eq("id", hotelId)
+      .maybeSingle<Pick<Hotel, "photo_management">>();
+    if (hotel?.photo_management !== "client") {
+      return { ok: false, error: "L’ajout de photos est réservé à Proactif System pour cet hôtel." };
+    }
+  }
 
   const parsed = addHotelMediaSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, error: "Photo invalide." };
   }
 
-  const supabase = await createClient();
+  // Backoffice: the session-bound superadmin client itself, gated by the
+  // "superadmin full access to hotel_media" RLS policy (0046) — unchanged
+  // from before this refactor. Client: service_role (0047 grants it INSERT
+  // only), reachable here ONLY after the photo_management check above
+  // already authorized this exact write — RLS on hotel_media grants
+  // hotel_admin SELECT only, never INSERT (0046/0047), by design.
+  const writer = scope === "client" ? createAdminClient() : supabase;
 
-  const { count } = await supabase
+  const { count } = await writer
     .from("hotel_media")
     .select("id", { count: "exact", head: true })
     .eq("hotel_id", hotelId)
     .eq("category", parsed.data.category);
 
-  const { data: inserted, error } = await supabase
+  const { data: inserted, error } = await writer
     .from("hotel_media")
     .insert({
       hotel_id: hotelId,
@@ -70,13 +88,21 @@ export async function addHotelMediaPhoto(hotelId: string, input: unknown): Promi
     if (error?.code === "23505") {
       return { ok: false, error: "Cette photo a déjà été importée pour cet hôtel." };
     }
-    console.error("addHotelMediaPhoto: insert failed", { hotelId, message: error?.message });
+    console.error("addHotelMediaPhoto: insert failed", { hotelId, scope, message: error?.message });
     return { ok: false, error: "Impossible d’enregistrer cette photo." };
   }
 
   revalidatePath("/client/photos");
   revalidatePath(`/etablissements/${hotelId}/photos`);
   return { ok: true, data: { id: inserted.id } };
+}
+
+export async function addHotelMediaPhotoBackoffice(hotelId: string, input: unknown): Promise<ActionResult<{ id: string }>> {
+  return addHotelMediaPhotoInternal(hotelId, input, "backoffice");
+}
+
+export async function addHotelMediaPhotoClient(hotelId: string, input: unknown): Promise<ActionResult<{ id: string }>> {
+  return addHotelMediaPhotoInternal(hotelId, input, "client");
 }
 
 /**
