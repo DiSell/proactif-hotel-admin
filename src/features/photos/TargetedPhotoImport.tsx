@@ -18,9 +18,13 @@ interface TargetedPhotoImportProps {
  * other than the one this plan targets (see the page that mounts this
  * component: it only does so when hotel.id matches LE_1837_HOTEL_ID). A
  * purely presentational trigger: nothing executes on mount, nothing
- * executes without the explicit button click AND the native confirmation
- * that follows it (same lightweight-confirmation pattern already used for
- * "Nouvelle conversation" in the public widget — no new modal component).
+ * executes without two explicit clicks — an in-page arm/confirm toggle
+ * (isArmed), never a native confirmation dialog: that kind of dialog can be
+ * silently suppressed by the browser (repeated-dialog blocking, embedded/
+ * webview contexts with no dialog support) with zero visible feedback,
+ * which is exactly what made this button appear completely inert. The
+ * two-click state lives entirely in this component — no new shared
+ * component, no modal.
  *
  * Never claims a blanket "Import réussi" — photosFailed/photosSkippedDuplicate
  * are surfaced exactly as returned by saveAccommodationTypes (via
@@ -30,6 +34,7 @@ interface TargetedPhotoImportProps {
 export function TargetedPhotoImport({ hotelId, action }: TargetedPhotoImportProps) {
   const toast = useToast();
   const [isPending, startTransition] = useTransition();
+  const [isArmed, setIsArmed] = useState(false);
   const [result, setResult] = useState<SaveAccommodationTypesResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -37,9 +42,12 @@ export function TargetedPhotoImport({ hotelId, action }: TargetedPhotoImportProp
   const total = targetedImportTotal();
 
   function handleImportClick() {
-    const confirmed = window.confirm(`Importer les ${total} photos identifiées pour les 5 catégories concernées ? Cette action ne peut pas être annulée automatiquement.`);
-    if (!confirmed) return;
+    if (!isArmed) {
+      setIsArmed(true);
+      return;
+    }
 
+    setIsArmed(false);
     setErrorMessage(null);
     startTransition(async () => {
       const outcome = await action(hotelId);
@@ -64,8 +72,8 @@ export function TargetedPhotoImport({ hotelId, action }: TargetedPhotoImportProp
       <div>
         <h3 className="text-sm font-semibold text-ink">Import ciblé — photos officielles (chantier PHOTOS / CARROUSEL)</h3>
         <p className="mt-1 text-xs text-body">
-          Importe les photos déjà identifiées et vérifiées (inspection réelle des pages officielles) pour les 5 catégories ci-dessous. Ne
-          déclenche rien tant que vous n&rsquo;avez pas cliqué sur le bouton et confirmé.
+          Importe les photos déjà identifiées et vérifiées (inspection réelle des pages officielles) pour les 7 catégories ci-dessous. Ne
+          déclenche rien tant que vous n&rsquo;avez pas cliqué deux fois sur le bouton.
         </p>
       </div>
 
@@ -85,8 +93,15 @@ export function TargetedPhotoImport({ hotelId, action }: TargetedPhotoImportProp
       </table>
 
       <Button type="button" variant="primary" onClick={handleImportClick} disabled={isPending}>
-        {isPending ? "Import en cours…" : `Importer les ${total} photos`}
+        {isPending ? "Import en cours…" : isArmed ? `Confirmer l'import des ${total} photos` : `Importer les ${total} photos`}
       </Button>
+
+      {isArmed && !isPending && (
+        <p className="text-xs text-body">
+          Import des {total} photos pour les 7 catégories concernées — cette action ne peut pas être annulée automatiquement. Cliquez à nouveau sur
+          le bouton pour lancer l&rsquo;import.
+        </p>
+      )}
 
       {errorMessage && <p className="text-xs text-danger">{errorMessage}</p>}
 

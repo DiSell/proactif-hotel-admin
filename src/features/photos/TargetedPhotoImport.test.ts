@@ -26,19 +26,49 @@ describe("TargetedPhotoImport — no execution on mount", () => {
   });
 });
 
-describe("TargetedPhotoImport — explicit confirmation required before any call", () => {
-  it("[window.confirm gates the action] a declined confirmation returns before startTransition/action is ever reached", () => {
-    const handlerStart = source.indexOf("function handleImportClick()");
-    const fn = source.slice(handlerStart, source.indexOf("\n  return (", handlerStart));
-    const confirmIndex = fn.indexOf("window.confirm(");
-    const guardIndex = fn.indexOf("if (!confirmed) return;");
-    const transitionIndex = fn.indexOf("startTransition(");
-    expect(confirmIndex).toBeGreaterThan(-1);
-    expect(guardIndex).toBeGreaterThan(confirmIndex);
-    expect(transitionIndex).toBeGreaterThan(guardIndex);
+describe("TargetedPhotoImport — two-click in-page confirmation, no window.confirm", () => {
+  it("[no window.confirm anywhere] a native dialog can be silently suppressed by the browser with zero feedback — replaced by in-page state", () => {
+    expect(source).not.toMatch(/window\.confirm/);
   });
 
-  it("[button itself never bypasses confirmation] the visible button's onClick calls handleImportClick, never action() directly", () => {
+  it("[first click only arms, never calls the action] isArmed is set and the handler returns before startTransition is ever reached", () => {
+    const handlerStart = source.indexOf("function handleImportClick()");
+    const handlerBody = source.slice(handlerStart, source.indexOf("\n  }", handlerStart));
+    const armIndex = handlerBody.indexOf("if (!isArmed) {");
+    const setArmedIndex = handlerBody.indexOf("setIsArmed(true);", armIndex);
+    const returnIndex = handlerBody.indexOf("return;", setArmedIndex);
+    const transitionIndex = handlerBody.indexOf("startTransition(");
+    expect(armIndex).toBeGreaterThan(-1);
+    expect(setArmedIndex).toBeGreaterThan(armIndex);
+    expect(returnIndex).toBeGreaterThan(setArmedIndex);
+    expect(transitionIndex).toBeGreaterThan(returnIndex);
+  });
+
+  it("[second click disarms and calls the action] setIsArmed(false) happens before startTransition, action(hotelId) happens inside it", () => {
+    const handlerStart = source.indexOf("function handleImportClick()");
+    const handlerBody = source.slice(handlerStart, source.indexOf("\n  }", handlerStart));
+    const disarmIndex = handlerBody.indexOf("setIsArmed(false);");
+    const transitionIndex = handlerBody.indexOf("startTransition(");
+    const actionCallIndex = handlerBody.indexOf("await action(hotelId)");
+    expect(disarmIndex).toBeGreaterThan(-1);
+    expect(disarmIndex).toBeLessThan(transitionIndex);
+    expect(actionCallIndex).toBeGreaterThan(transitionIndex);
+  });
+
+  it("[button label reflects the armed/pending state]", () => {
+    expect(source).toMatch(/isPending \? "Import en cours…" : isArmed \? `Confirmer l'import des \$\{total\} photos` : `Importer les \$\{total\} photos`/);
+  });
+
+  it("[explicit in-page hint shown only while armed and not pending — states clearly that a second click is required]", () => {
+    expect(source).toMatch(/\{isArmed && !isPending && \(/);
+  });
+
+  it("[obsolete '5 catégories' text corrected to the plan's real 7 categories]", () => {
+    expect(source).not.toMatch(/5 catégories/);
+    expect(source).toMatch(/7 catégories/);
+  });
+
+  it("[button itself never bypasses the two-click gate] the visible button's onClick calls handleImportClick, never action() directly", () => {
     expect(source).toMatch(/onClick=\{handleImportClick\}/);
     expect(source).not.toMatch(/onClick=\{.*action\(hotelId\).*\}/);
   });
