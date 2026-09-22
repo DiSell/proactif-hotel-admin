@@ -354,6 +354,22 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
               </button>
             )}
             {/* hotel_media equivalent of the button above — same RoomPhotoModal, always pageUrl=null/bookingUrl=null (see the modal render below). Never both roomRecommendation and hotelMediaGallery the same turn in practice: accommodation names never match a hotel_media category keyword (features/rag/hotelMediaGallery.ts). */}
+            {message.role === "assistant" && message.hotelMediaGallery && message.hotelMediaGallery.photos.length > 0 && (
+              <div className="flex max-w-[78%] flex-wrap gap-1.5">
+                {message.hotelMediaGallery.photos.map((photo, index) => (
+                  <button
+                    key={`${photo.url}-${index}`}
+                    type="button"
+                    onClick={() => setOpenHotelMediaGallery(message.hotelMediaGallery ?? null)}
+                    aria-label={`Voir la photo ${index + 1} — ${message.hotelMediaGallery?.label ?? ""}`}
+                    className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-border hover:border-ink"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element -- externally-hosted photo URL from Supabase Storage, not a local/optimizable asset. */}
+                    <img src={photo.url} alt={photo.alt ?? message.hotelMediaGallery?.label ?? ""} className="h-full w-full object-cover" />
+                  </button>
+                ))}
+              </div>
+            )}
             {message.role === "assistant" && message.hotelMediaGallery && (
               <button
                 type="button"

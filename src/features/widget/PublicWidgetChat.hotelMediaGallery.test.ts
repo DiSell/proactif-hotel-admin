@@ -32,6 +32,43 @@ describe("PublicWidgetChat — hotelMediaGallery (Cas G)", () => {
   });
 });
 
+/**
+ * CORRECTION CIBLÉE chantier — miniatures directement sous le message,
+ * cliquables, ouvrant EXACTEMENT le même RoomPhotoModal que le bouton
+ * existant (jamais un second modal, jamais de duplication de données).
+ */
+describe("PublicWidgetChat — miniatures hotel_media (Cas A, C, D, I)", () => {
+  it("[Cas A — une miniature par photo] map sur message.hotelMediaGallery.photos, jamais une liste séparée ou recalculée", () => {
+    expect(source).toMatch(/message\.hotelMediaGallery\.photos\.map\(\(photo, index\) => \(/);
+  });
+
+  it("[gated by photos.length > 0] jamais de rangée de miniatures vide", () => {
+    expect(source).toMatch(/message\.hotelMediaGallery && message\.hotelMediaGallery\.photos\.length > 0 && \(/);
+  });
+
+  it("[Cas C — clic sur une miniature ouvre le même RoomPhotoModal] même setOpenHotelMediaGallery que le bouton, jamais un state séparé", () => {
+    const thumbStart = source.indexOf("message.hotelMediaGallery.photos.map((photo, index) => (");
+    const thumbBlock = source.slice(thumbStart, thumbStart + 900);
+    expect(thumbBlock).toMatch(/onClick=\{\(\) => setOpenHotelMediaGallery\(message\.hotelMediaGallery \?\? null\)\}/);
+  });
+
+  it("[object-fit cover, alt depuis photo.alt sinon le libellé de catégorie]", () => {
+    const thumbStart = source.indexOf("message.hotelMediaGallery.photos.map((photo, index) => (");
+    const thumbBlock = source.slice(thumbStart, thumbStart + 1300);
+    expect(thumbBlock).toMatch(/objectFit: "cover"/);
+    expect(thumbBlock).toMatch(/alt=\{photo\.alt \?\? message\.hotelMediaGallery\?\.label \?\? ""\}/);
+  });
+
+  it("[Cas D — le bouton \"Voir les photos\" existant reste présent et fonctionnel en plus des miniatures]", () => {
+    expect(source).toMatch(/Voir les photos — \{message\.hotelMediaGallery\.label\}/);
+  });
+
+  it("[aucune duplication de données] miniatures et bouton lisent tous les deux message.hotelMediaGallery.photos / .label", () => {
+    const occurrences = source.match(/message\.hotelMediaGallery\.photos/g) ?? [];
+    expect(occurrences.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
 describe("PublicWidgetChat — hotelMediaGallery gallery never carries a room/booking affordance (Cas I)", () => {
   it("[RoomPhotoModal reused as-is, pageUrl/bookingUrl always null, no onBooking] a facility gallery never triggers host_widget/URL booking, unlike the roomRecommendation modal instance", () => {
     const start = source.indexOf("{openHotelMediaGallery && (");

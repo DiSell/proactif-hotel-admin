@@ -816,6 +816,35 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
               </button>
             )}
             {/* hotel_media equivalent of the button above — same RoomPhotoModal, always pageUrl=null/bookingUrl=null (see the modal render below). Never both roomRecommendation and hotelMediaGallery the same turn in practice: accommodation names never match a hotel_media category keyword (features/rag/hotelMediaGallery.ts). */}
+            {message.role === "assistant" && message.hotelMediaGallery && message.hotelMediaGallery.photos.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, maxWidth: "82%" }}>
+                {message.hotelMediaGallery.photos.map((photo, index) => (
+                  <button
+                    key={`${photo.url}-${index}`}
+                    type="button"
+                    onClick={() => setOpenHotelMediaGallery(message.hotelMediaGallery ?? null)}
+                    aria-label={`Voir la photo ${index + 1} — ${message.hotelMediaGallery?.label ?? ""}`}
+                    style={{
+                      width: 80,
+                      height: 56,
+                      flexShrink: 0,
+                      borderRadius: 8,
+                      border: "1px solid #E5E1D8",
+                      padding: 0,
+                      overflow: "hidden",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element -- externally-hosted photo URL from the storage bucket, not a local/optimizable asset. */}
+                    <img
+                      src={photo.url}
+                      alt={photo.alt ?? message.hotelMediaGallery?.label ?? ""}
+                      style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
             {message.role === "assistant" && message.hotelMediaGallery && (
               <button
                 type="button"

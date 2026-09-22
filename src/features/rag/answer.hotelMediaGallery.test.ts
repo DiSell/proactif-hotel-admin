@@ -33,11 +33,13 @@ describe("answer.ts wiring — hotelMediaGallery", () => {
     expect(source).toMatch(/loadSelectedHotelMediaPhotos\(supabase, hotelId, requestedHotelMediaCategory\)/);
   });
 
-  it("[zero photos -> null, never an object with an empty photos array] the ternary's only truthy branch requires photos.length > 0", () => {
+  it("[zero photos -> null, never an object with an empty photos array] the ternary's only truthy branch requires hotelMediaPhotos.length > 0", () => {
     const computeStart = source.indexOf("const hotelMediaGallery: HotelMediaGallery | null =");
     const block = source.slice(computeStart, computeStart + 700);
-    expect(block).toMatch(/photos\.length > 0/);
-    expect(block).toMatch(/\? \{ category: requestedHotelMediaCategory, label: HOTEL_MEDIA_CATEGORY_LABEL\[requestedHotelMediaCategory\], photos \}\s*\n\s*: null/);
+    expect(block).toMatch(/requestedHotelMediaCategory && hotelMediaPhotos\.length > 0/);
+    expect(block).toMatch(
+      /\? \{ category: requestedHotelMediaCategory, label: HOTEL_MEDIA_CATEGORY_LABEL\[requestedHotelMediaCategory\], photos: hotelMediaPhotos \}\s*\n\s*: null;/
+    );
   });
 
   it("[label reused from HOTEL_MEDIA_CATEGORY_LABEL, never a second, parallel label map]", () => {
@@ -79,6 +81,53 @@ describe("answer.ts wiring — hotelMediaGallery", () => {
     const fnEnd = source.indexOf("\n}", fnStart);
     const block = source.slice(fnStart, fnEnd);
     expect(block).not.toMatch(/hotelMediaGallery/);
+  });
+});
+
+/**
+ * CORRECTION CIBLÉE chantier — the model must be told the deterministic
+ * truth BEFORE it writes its reply, not just handed the final gallery
+ * object for the client payload after the fact. requestedHotelMediaCategory
+ * (raw, non-null even at 0 photos) is threaded alongside hotelMediaGallery
+ * specifically so buildHotelInstructions' hotelMediaGalleryRequest can be
+ * computed for BOTH the >0 and ===0 cases — see prompt.hotelMediaGallery.test.ts
+ * for what the model actually reads.
+ */
+describe("answer.ts wiring — hotelMediaGalleryRequest fed to buildHotelInstructions BEFORE the model call", () => {
+  it("[requestedHotelMediaCategory threaded alongside hotelMediaGallery into both branches]", () => {
+    const answerQuestionFn = source.slice(source.indexOf("export async function answerQuestion"), source.indexOf("type HistoryInputItem"));
+    const groundedCallStart = answerQuestionFn.indexOf("return answerGrounded(supabase, {");
+    const groundedCallEnd = answerQuestionFn.indexOf("});", groundedCallStart);
+    expect(answerQuestionFn.slice(groundedCallStart, groundedCallEnd)).toMatch(/requestedHotelMediaCategory,/);
+
+    const noContextCallStart = answerQuestionFn.indexOf("return answerNoContext(supabase, {");
+    const noContextCallEnd = answerQuestionFn.indexOf("});", noContextCallStart);
+    expect(answerQuestionFn.slice(noContextCallStart, noContextCallEnd)).toMatch(/requestedHotelMediaCategory,/);
+
+    const paramTypeOccurrences = source.match(/requestedHotelMediaCategory: HotelMediaCategory \| null;/g) ?? [];
+    expect(paramTypeOccurrences.length).toBe(2);
+  });
+
+  it("[both buildHotelInstructions call sites pass hotelMediaGalleryRequest, derived from requestedHotelMediaCategory + hotelMediaGallery?.photos.length]", () => {
+    const occurrences = source.match(
+      /hotelMediaGalleryRequest: requestedHotelMediaCategory\s*\n\s*\? \{ label: HOTEL_MEDIA_CATEGORY_LABEL\[requestedHotelMediaCategory\], photoCount: hotelMediaGallery\?\.photos\.length \?\? 0 \}\s*\n\s*: null,/g
+    ) ?? [];
+    expect(occurrences.length).toBe(2);
+  });
+
+  it("[computed before the model call in both branches] hotelMediaGalleryRequest is built as part of the same buildHotelInstructions({...}) call whose result (instructions) is passed to the model — never assembled after the response", () => {
+    const groundedFnStart = source.indexOf("async function answerGrounded(");
+    const groundedFn = source.slice(groundedFnStart, source.indexOf("async function answerNoContext("));
+    const instructionsCallStart = groundedFn.indexOf("const instructions = buildHotelInstructions({");
+    const requestIndex = groundedFn.indexOf("hotelMediaGalleryRequest:", instructionsCallStart);
+    const responseCallIndex = groundedFn.indexOf("client.responses.parse(");
+    expect(instructionsCallStart).toBeGreaterThan(-1);
+    expect(requestIndex).toBeGreaterThan(instructionsCallStart);
+    expect(responseCallIndex).toBeGreaterThan(requestIndex);
+  });
+
+  it("[0 photos still feeds hotelMediaGalleryRequest with photoCount: 0, via the ?? 0 fallback — never left undefined for the model]", () => {
+    expect(source).toMatch(/photoCount: hotelMediaGallery\?\.photos\.length \?\? 0/);
   });
 });
 

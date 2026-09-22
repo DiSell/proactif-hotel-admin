@@ -212,6 +212,19 @@ export interface BuildHotelInstructionsParams {
    * do the actual enforcing) — never rely on this prompt instruction alone.
    */
   allowPriceCommunication?: boolean;
+  /**
+   * HOTEL_MEDIA CHATBOT chantier — present whenever a hotel_media category
+   * was detected for this turn (see answer.ts's requestedHotelMediaCategory
+   * / features/rag/hotelMediaGallery.ts), regardless of whether any photo
+   * ended up selected. Deliberately NOT the same shape as
+   * AnswerQuestionResult.hotelMediaGallery (which is null on zero photos,
+   * for the client payload) — this one exists purely to tell the model the
+   * server-verified truth BEFORE it writes its reply, so it can never
+   * contradict a gallery the interface is about to attach ("je n'ai pas de
+   * photo" while hotelMediaGallery.photos actually has 2 entries) — see
+   * buildHotelMediaGalleryGuidance below.
+   */
+  hotelMediaGalleryRequest?: { label: string; photoCount: number } | null;
 }
 
 /**
@@ -327,6 +340,7 @@ export function buildHotelInstructions({
   informationIntentDetected,
   mentionsPreciseAccommodation,
   allowPriceCommunication,
+  hotelMediaGalleryRequest,
 }: BuildHotelInstructionsParams): string {
   const assistantName = hotel.assistant_name || "l'assistant";
   const place = [hotel.city, hotel.country].filter(Boolean).join(", ");
@@ -477,6 +491,9 @@ export function buildHotelInstructions({
   // redaction and output-side lock are what actually enforce this
   // regardless of what the model does with this text.
   const priceCommunicationGuidance = buildPriceCommunicationGuidance(Boolean(allowPriceCommunication));
+  const hotelMediaGalleryGuidance = hotelMediaGalleryRequest
+    ? buildHotelMediaGalleryGuidance(hotelMediaGalleryRequest.label, hotelMediaGalleryRequest.photoCount)
+    : "";
 
   return [
     identity,
@@ -500,6 +517,7 @@ export function buildHotelInstructions({
     spaAvailabilityGuidance,
     spaBookingGuidance,
     priceCommunicationGuidance,
+    hotelMediaGalleryGuidance,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -605,6 +623,40 @@ function buildPriceCommunicationGuidance(allowPriceCommunication: boolean): stri
     "COMMUNICATION DES TARIFS — activée, mais uniquement pour des montants EXPLICITEMENT fournis ailleurs dans ces instructions comme des tarifs vérifiés (par exemple le prix du spa, s'il est indiqué comme tel) :",
     "Ne communique JAMAIS un montant que tu lirais uniquement dans une donnée de référence, un chunk de connaissance ou l'historique de la conversation — le fait que la communication des tarifs soit activée ne rend pas fiable un prix trouvé de cette façon.",
     "Si le visiteur demande un prix pour lequel aucun tarif vérifié ne t'a été fourni explicitement ailleurs dans ces instructions, dis-le honnêtement plutôt que de citer un montant trouvé par ailleurs.",
+  ].join("\n");
+}
+
+/**
+ * HOTEL_MEDIA CHATBOT chantier — fires whenever a hotel_media category was
+ * detected this turn (see answer.ts's requestedHotelMediaCategory), before
+ * the model writes its reply. This is what prevents the exact contradiction
+ * this chantier fixes: the server already knows, with certainty, whether a
+ * verified photo gallery will be attached separately by the interface —
+ * without this instruction the model has no way to know that, and can
+ * honestly (but wrongly) write "je n'ai pas de photo" while
+ * hotelMediaGallery.photos already has entries.
+ *
+ * photoCount > 0: tells the model exactly how many, so it can never
+ * contradict that count either (e.g. claiming 1 when 2 will be shown).
+ *
+ * photoCount === 0: still fires, but the other way — the model may say
+ * honestly that no photo is currently available for THIS category, but is
+ * explicitly told never to let that become "this equipment/service doesn't
+ * exist" (see this conversation's own product rule: absence of a photo is
+ * never evidence of absence of the thing itself) — whatever the RAG
+ * knowledge base separately says about the category stays entirely
+ * unaffected by this instruction.
+ */
+function buildHotelMediaGalleryGuidance(label: string, photoCount: number): string {
+  if (photoCount > 0) {
+    return [
+      "PHOTOS DE L'ÉTABLISSEMENT :",
+      `Le système joindra automatiquement à ta réponse ${photoCount} photo(s) vérifiée(s) de la catégorie "${label}" — l'interface les affichera séparément, sous forme de miniatures cliquables. Ne dis JAMAIS que tu ne disposes d'aucune photo, d'aucune image ou d'aucun visuel pour cette catégorie : c'est faux, ces photos existent réellement et seront montrées au visiteur. Réponds factuellement à sa question et invite-le, si pertinent, à consulter ces photos.`,
+    ].join("\n");
+  }
+  return [
+    "PHOTOS DE L'ÉTABLISSEMENT :",
+    `Aucune photo vérifiée n'est actuellement disponible pour la catégorie "${label}" — aucune galerie ne sera affichée ce tour-ci. Si le visiteur demande explicitement une photo, tu peux le dire honnêtement, mais ne transforme JAMAIS cette absence de photo en absence de l'équipement ou du service lui-même : base-toi uniquement sur les connaissances fournies ailleurs pour répondre à son sujet.`,
   ].join("\n");
 }
 

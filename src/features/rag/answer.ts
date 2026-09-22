@@ -65,7 +65,7 @@ import type {
   RoomRecommendation,
   SpaBookingPhonePrompt,
 } from "./types";
-import type { AccommodationType, ChatbotSettings, Hotel } from "@/types/database";
+import type { AccommodationType, ChatbotSettings, Hotel, HotelMediaCategory } from "@/types/database";
 import { redactPhoneNumbers } from "@/features/partnerRequests/phoneRedaction";
 import { getActivePartnerRequestForConversation } from "@/features/partnerRequests/queries";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
@@ -903,17 +903,17 @@ export async function answerQuestion({
   // Deluxe" never matches a hotel_media category keyword, so this stays
   // null on that turn without any explicit exclusion logic needed.
   const requestedHotelMediaCategory = isHotelMediaPhotoRequest(message) ? detectHotelMediaCategory(message) : null;
-  const hotelMediaGallery: HotelMediaGallery | null = requestedHotelMediaCategory
-    ? await (async () => {
-        const photos = await loadSelectedHotelMediaPhotos(supabase, hotelId, requestedHotelMediaCategory);
-        // Zero selected photos in this category -> no gallery at all, never
-        // an object with an empty `photos` array and never a different
-        // category's photos as a fallback.
-        return photos.length > 0
-          ? { category: requestedHotelMediaCategory, label: HOTEL_MEDIA_CATEGORY_LABEL[requestedHotelMediaCategory], photos }
-          : null;
-      })()
-    : null;
+  const hotelMediaPhotos = requestedHotelMediaCategory ? await loadSelectedHotelMediaPhotos(supabase, hotelId, requestedHotelMediaCategory) : [];
+  // Zero selected photos in this category -> no gallery at all, never an
+  // object with an empty `photos` array and never a different category's
+  // photos as a fallback. hotelMediaPhotos.length is still reused below
+  // (buildHotelInstructions' hotelMediaGalleryRequest) even when this ends
+  // up null — the model must be told "0 photos" too, not just "some photos",
+  // so it never contradicts either truth.
+  const hotelMediaGallery: HotelMediaGallery | null =
+    requestedHotelMediaCategory && hotelMediaPhotos.length > 0
+      ? { category: requestedHotelMediaCategory, label: HOTEL_MEDIA_CATEGORY_LABEL[requestedHotelMediaCategory], photos: hotelMediaPhotos }
+      : null;
 
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
@@ -1069,6 +1069,7 @@ export async function answerQuestion({
       roomCatalogue,
       accommodationSummary,
       hotelMediaGallery,
+      requestedHotelMediaCategory,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -1108,6 +1109,7 @@ export async function answerQuestion({
     roomCatalogue,
     accommodationSummary,
     hotelMediaGallery,
+    requestedHotelMediaCategory,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1365,6 +1367,8 @@ async function answerGrounded(
     accommodationSummary: RoomCatalogueEntry[];
     /** Deterministic, server-computed — see AnswerQuestionResult.hotelMediaGallery's own doc comment (types.ts) and answer.ts's own hotelMediaGallery computation. */
     hotelMediaGallery: HotelMediaGallery | null;
+    /** Raw category detected this turn (non-null even when hotelMediaGallery itself is null due to zero selected photos) — needed by buildHotelInstructions' hotelMediaGalleryRequest so the model is told "0 photos" as explicitly as "N photos", never left silent. See features/rag/hotelMediaGallery.ts. */
+    requestedHotelMediaCategory: HotelMediaCategory | null;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1407,6 +1411,7 @@ async function answerGrounded(
     roomCatalogue,
     accommodationSummary,
     hotelMediaGallery,
+    requestedHotelMediaCategory,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1444,6 +1449,9 @@ async function answerGrounded(
     spaBookingFlowActive,
     spaAvailability,
     resolvedSpaBookingRequest,
+    hotelMediaGalleryRequest: requestedHotelMediaCategory
+      ? { label: HOTEL_MEDIA_CATEGORY_LABEL[requestedHotelMediaCategory], photoCount: hotelMediaGallery?.photos.length ?? 0 }
+      : null,
   });
   const referenceBlock = buildKnowledgeReferenceBlock(relevantChunks);
   const input = [
@@ -1675,6 +1683,8 @@ async function answerNoContext(
     accommodationSummary: RoomCatalogueEntry[];
     /** See answerGrounded's identical field — hotelMediaGallery is independent of groundingMode, so a no_context turn still needs it threaded through. */
     hotelMediaGallery: HotelMediaGallery | null;
+    /** Raw category detected this turn (non-null even when hotelMediaGallery itself is null due to zero selected photos) — needed by buildHotelInstructions' hotelMediaGalleryRequest so the model is told "0 photos" as explicitly as "N photos", never left silent. See features/rag/hotelMediaGallery.ts. */
+    requestedHotelMediaCategory: HotelMediaCategory | null;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1714,6 +1724,7 @@ async function answerNoContext(
     roomCatalogue,
     accommodationSummary,
     hotelMediaGallery,
+    requestedHotelMediaCategory,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1751,6 +1762,9 @@ async function answerNoContext(
     spaBookingFlowActive,
     spaAvailability,
     resolvedSpaBookingRequest,
+    hotelMediaGalleryRequest: requestedHotelMediaCategory
+      ? { label: HOTEL_MEDIA_CATEGORY_LABEL[requestedHotelMediaCategory], photoCount: hotelMediaGallery?.photos.length ?? 0 }
+      : null,
   });
   const input = [...historyInput, { role: "user" as const, content: message }];
 
