@@ -10,6 +10,8 @@ import { LE_1837_HOTEL_ID } from "@/features/photos/targetedImportPlan";
 import { getHotelMediaData } from "@/features/hotelMedia/queries";
 import { HotelMediaManager } from "@/features/hotelMedia/HotelMediaManager";
 import { HOTEL_MEDIA_ACTIONS_BACKOFFICE } from "@/features/hotelMedia/actionBundles";
+import { TargetedHotelMediaImport } from "@/features/hotelMedia/TargetedHotelMediaImport";
+import { importTargetedHotelMedia } from "@/features/hotelMedia/targetedImport";
 
 export default async function HotelPhotosPage({ params }: PageProps<"/etablissements/[id]/photos">) {
   const { id } = await params;
@@ -34,6 +36,8 @@ export default async function HotelPhotosPage({ params }: PageProps<"/etablissem
       {/* PHOTOS / CARROUSEL chantier — one-off, hotel-scoped entry point (see targetedImport.ts's own doc comment). Rendered ONLY for the one hotel this specific import targets; every other hotel's photos page is completely unaffected. */}
       {id === LE_1837_HOTEL_ID && <TargetedPhotoImport hotelId={id} action={importTargetedRoomPhotos} />}
       <PhotosManager hotelId={id} accommodations={data.accommodations} actions={PHOTO_ACTIONS_BACKOFFICE} />
+      {/* hotel_media equivalent of the room-photos targeted import above — same one-off, hotel-scoped entry point (see hotelMedia/targetedImport.ts's own doc comment). */}
+      {id === LE_1837_HOTEL_ID && <TargetedHotelMediaImport hotelId={id} action={importTargetedHotelMedia} />}
       <HotelMediaManager hotelId={id} data={hotelMediaData} actions={HOTEL_MEDIA_ACTIONS_BACKOFFICE} canUpload scope="backoffice" />
     </div>
   );

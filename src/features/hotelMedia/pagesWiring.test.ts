@@ -17,6 +17,10 @@ describe("back-office /etablissements/[id]/photos — upload toujours disponible
   it("[comportement PhotosManager/TargetedPhotoImport inchangé]", () => {
     expect(backofficePage).toMatch(/<PhotosManager hotelId=\{id\} accommodations=\{data\.accommodations\} actions=\{PHOTO_ACTIONS_BACKOFFICE\} \/>/);
   });
+
+  it("[import ciblé hotel_media — scopé au 1837, même garde que TargetedPhotoImport]", () => {
+    expect(backofficePage).toMatch(/\{id === LE_1837_HOTEL_ID && <TargetedHotelMediaImport hotelId=\{id\} action=\{importTargetedHotelMedia\} \/>\}/);
+  });
 });
 
 describe("client portal /client/photos — upload gated by hotels.photo_management", () => {
@@ -35,5 +39,10 @@ describe("client portal /client/photos — upload gated by hotels.photo_manageme
 
   it("[sélection/désélection toujours disponible, indépendamment du mode]", () => {
     expect(clientPage).toMatch(/<PhotosManager hotelId=\{hotelId\} accommodations=\{data\.accommodations\} actions=\{PHOTO_ACTIONS_CLIENT\} \/>/);
+  });
+
+  it("[import ciblé hotel_media jamais rendu ici — chantier back-office uniquement]", () => {
+    expect(clientPage).not.toMatch(/TargetedHotelMediaImport/);
+    expect(clientPage).not.toMatch(/importTargetedHotelMedia/);
   });
 });
