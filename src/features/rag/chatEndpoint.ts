@@ -93,6 +93,9 @@ export async function handleHotelChatRequest(request: Request, hotelId: string):
       // of accommodation categories for a genuine INFORMATION turn — see
       // features/rag/types.ts:AnswerQuestionResult.accommodationSummary.
       accommodationSummary: result.accommodationSummary,
+      // hotel_media equivalent of roomRecommendation — see
+      // features/rag/types.ts:AnswerQuestionResult.hotelMediaGallery.
+      hotelMediaGallery: result.hotelMediaGallery,
     });
   } catch (err) {
     console.error("handleHotelChatRequest: answerQuestion failed", { hotelId, message: (err as Error).message });

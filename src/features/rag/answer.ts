@@ -56,6 +56,7 @@ import type {
   AnswerQuestionResult,
   ChatAction,
   GroundingMode,
+  HotelMediaGallery,
   PartnerRecommendation,
   PartnerRequestPhonePrompt,
   RagPartner,
@@ -69,6 +70,8 @@ import { redactPhoneNumbers } from "@/features/partnerRequests/phoneRedaction";
 import { getActivePartnerRequestForConversation } from "@/features/partnerRequests/queries";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
 import { processPartnerRequestTurn, type PartnerRequestModelOutput } from "./partnerRequestFlow";
+import { detectHotelMediaCategory, isHotelMediaPhotoRequest, loadSelectedHotelMediaPhotos } from "./hotelMediaGallery";
+import { HOTEL_MEDIA_CATEGORY_LABEL } from "@/features/hotelMedia/schema";
 
 /**
  * Phase A: no hotel-configured timezone field exists yet (see
@@ -890,6 +893,28 @@ export async function answerQuestion({
       }))
     : [];
 
+  // HOTEL_MEDIA CHATBOT chantier — deterministic, server-computed, same
+  // "server computes truth, model narrates around it" discipline as
+  // roomCatalogue/accommodationSummary above. The category is never chosen
+  // by the model (detectHotelMediaCategory), and only ever populated for an
+  // explicit visual/photo request (isHotelMediaPhotoRequest) — a bare
+  // factual question ("avez-vous une piscine ?") intentionally computes
+  // null here. Independent of accommodation detection: "Montrez-moi la
+  // Deluxe" never matches a hotel_media category keyword, so this stays
+  // null on that turn without any explicit exclusion logic needed.
+  const requestedHotelMediaCategory = isHotelMediaPhotoRequest(message) ? detectHotelMediaCategory(message) : null;
+  const hotelMediaGallery: HotelMediaGallery | null = requestedHotelMediaCategory
+    ? await (async () => {
+        const photos = await loadSelectedHotelMediaPhotos(supabase, hotelId, requestedHotelMediaCategory);
+        // Zero selected photos in this category -> no gallery at all, never
+        // an object with an empty `photos` array and never a different
+        // category's photos as a fallback.
+        return photos.length > 0
+          ? { category: requestedHotelMediaCategory, label: HOTEL_MEDIA_CATEGORY_LABEL[requestedHotelMediaCategory], photos }
+          : null;
+      })()
+    : null;
+
   // Also orthogonal to groundingMode. Loading + ranking only runs when
   // intent was actually detected — no reason to query hotel_partners on
   // every single turn, most of which have nothing to do with a local
@@ -1043,6 +1068,7 @@ export async function answerQuestion({
       authorizedPriceAmounts,
       roomCatalogue,
       accommodationSummary,
+      hotelMediaGallery,
       partnerIntentDetected,
       partnerCandidates,
       normalizedPhoneE164,
@@ -1081,6 +1107,7 @@ export async function answerQuestion({
     authorizedPriceAmounts,
     roomCatalogue,
     accommodationSummary,
+    hotelMediaGallery,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1336,6 +1363,8 @@ async function answerGrounded(
     roomCatalogue: RoomCatalogueEntry[];
     /** Deterministic, server-computed — see AnswerQuestionResult.accommodationSummary's own doc comment (types.ts) and answer.ts's own accommodationSummary computation. Same entry shape as roomCatalogue, independent field, independent gate. */
     accommodationSummary: RoomCatalogueEntry[];
+    /** Deterministic, server-computed — see AnswerQuestionResult.hotelMediaGallery's own doc comment (types.ts) and answer.ts's own hotelMediaGallery computation. */
+    hotelMediaGallery: HotelMediaGallery | null;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1377,6 +1406,7 @@ async function answerGrounded(
     authorizedPriceAmounts,
     roomCatalogue,
     accommodationSummary,
+    hotelMediaGallery,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1586,7 +1616,7 @@ async function answerGrounded(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary };
+  return { reply, sources: relevantChunks, answerStatus: "answered", roomRecommendation, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery };
 }
 
 /**
@@ -1643,6 +1673,8 @@ async function answerNoContext(
     roomCatalogue: RoomCatalogueEntry[];
     /** See answerGrounded's identical field — accommodationSummary is independent of groundingMode, so a no_context turn still needs it threaded through. */
     accommodationSummary: RoomCatalogueEntry[];
+    /** See answerGrounded's identical field — hotelMediaGallery is independent of groundingMode, so a no_context turn still needs it threaded through. */
+    hotelMediaGallery: HotelMediaGallery | null;
     partnerIntentDetected: boolean;
     partnerCandidates: RagPartner[];
     normalizedPhoneE164: string | null;
@@ -1681,6 +1713,7 @@ async function answerNoContext(
     authorizedPriceAmounts,
     roomCatalogue,
     accommodationSummary,
+    hotelMediaGallery,
     partnerIntentDetected,
     partnerCandidates,
     normalizedPhoneE164,
@@ -1822,7 +1855,7 @@ async function answerNoContext(
 
   const partnerRecommendations = buildPartnerRecommendations(recommendedPartnerIds, partnerCandidates);
 
-  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary };
+  return { reply, sources: [], answerStatus, roomRecommendation: null, action, partnerRecommendations, partnerRequestPhonePrompt, spaBookingPhonePrompt, roomCatalogue, accommodationSummary, hotelMediaGallery };
 }
 
 async function loadHistory(supabase: SupabaseClient, conversationId: string) {
@@ -1883,5 +1916,5 @@ async function finalizeError(
     outputTokens: null,
     latencyMs,
   });
-  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [], accommodationSummary: [] };
+  return { reply, sources: [], answerStatus: "error", roomRecommendation: null, action: null, partnerRecommendations: [], partnerRequestPhonePrompt: null, spaBookingPhonePrompt: null, roomCatalogue: [], accommodationSummary: [], hotelMediaGallery: null };
 }

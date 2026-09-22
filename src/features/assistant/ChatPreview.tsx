@@ -21,6 +21,20 @@ interface RoomRecommendation {
   bookingUrl: string | null;
 }
 
+/**
+ * hotel_media equivalent of RoomRecommendation, for general-establishment
+ * photos (pool, spa...) rather than a specific accommodation — mirrors
+ * features/rag/types.ts's HotelMediaGallery field-for-field. Rendered via
+ * the same RoomPhotoModal as RoomRecommendation, always with pageUrl=null
+ * and bookingUrl=null (no accommodation page, no "Réserver" button for a
+ * facility gallery) — see this component's own render logic below.
+ */
+interface HotelMediaGallery {
+  category: string;
+  label: string;
+  photos: { url: string; alt: string | null }[];
+}
+
 type PartnerAction = { type: "partner_booking"; label: string; url: string } | { type: "partner_website"; label: string; url: string };
 
 /** Mirrors features/rag/types.ts's PartnerRecommendation — see that type's own doc comment. */
@@ -75,6 +89,7 @@ interface ChatMessage {
   action?: ChatAction | null;
   partnerRecommendations?: PartnerRecommendation[];
   accommodationSummary?: AccommodationSummaryEntry[];
+  hotelMediaGallery?: HotelMediaGallery | null;
 }
 
 interface ChatApiResponse {
@@ -86,6 +101,7 @@ interface ChatApiResponse {
   action: ChatAction | null;
   partnerRecommendations: PartnerRecommendation[];
   accommodationSummary: AccommodationSummaryEntry[];
+  hotelMediaGallery: HotelMediaGallery | null;
 }
 
 interface ChatPreviewProps {
@@ -130,6 +146,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+  const [openHotelMediaGallery, setOpenHotelMediaGallery] = useState<HotelMediaGallery | null>(null);
 
   // PARITÉ PHOTOS chantier — session-local only, a plain ref (mutating it
   // must never itself trigger a re-render; previewData below is what
@@ -193,6 +210,7 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
           action: data.action,
           partnerRecommendations: data.partnerRecommendations,
           accommodationSummary: data.accommodationSummary,
+          hotelMediaGallery: data.hotelMediaGallery,
         },
       ]);
     } catch (err) {
@@ -333,6 +351,16 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
                 className="max-w-[78%] rounded-lg border border-border bg-canvas px-3 py-2 text-left text-2xs font-medium text-ink hover:border-ink"
               >
                 Voir la chambre — {message.roomRecommendation.name}
+              </button>
+            )}
+            {/* hotel_media equivalent of the button above — same RoomPhotoModal, always pageUrl=null/bookingUrl=null (see the modal render below). Never both roomRecommendation and hotelMediaGallery the same turn in practice: accommodation names never match a hotel_media category keyword (features/rag/hotelMediaGallery.ts). */}
+            {message.role === "assistant" && message.hotelMediaGallery && (
+              <button
+                type="button"
+                onClick={() => setOpenHotelMediaGallery(message.hotelMediaGallery ?? null)}
+                className="max-w-[78%] rounded-lg border border-border bg-canvas px-3 py-2 text-left text-2xs font-medium text-ink hover:border-ink"
+              >
+                Voir les photos — {message.hotelMediaGallery.label}
               </button>
             )}
             {/* Server guarantees roomRecommendation and action are never both present for the same turn (see answer.ts's buildBookingAction) — no dedup needed here. */}
@@ -499,6 +527,17 @@ export function ChatPreview({ hotelId, assistantName, welcomeMessage, fullScreen
           pageUrl={openRoomRecommendation.pageUrl}
           bookingUrl={openRoomRecommendation.bookingUrl}
           onClose={() => setOpenRoomRecommendation(null)}
+        />
+      )}
+
+      {/* No pageUrl (no accommodation page) and no bookingUrl (no "Réserver" button for a facility gallery) — RoomPhotoModal already renders no footer at all when both are absent. */}
+      {openHotelMediaGallery && (
+        <RoomPhotoModal
+          name={openHotelMediaGallery.label}
+          photos={openHotelMediaGallery.photos}
+          pageUrl={null}
+          bookingUrl={null}
+          onClose={() => setOpenHotelMediaGallery(null)}
         />
       )}
     </div>

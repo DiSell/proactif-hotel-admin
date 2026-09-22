@@ -16,6 +16,21 @@ interface RoomRecommendation {
 }
 
 /**
+ * hotel_media equivalent of RoomRecommendation, for general-establishment
+ * photos (pool, spa...) rather than a specific accommodation — mirrors
+ * features/rag/types.ts's HotelMediaGallery field-for-field. Rendered via
+ * the same RoomPhotoModal as RoomRecommendation, always with pageUrl=null
+ * and bookingUrl=null/no onBooking (no accommodation page, no "Réserver"
+ * button for a facility gallery) — see this component's own render logic
+ * below.
+ */
+interface HotelMediaGallery {
+  category: string;
+  label: string;
+  photos: { url: string; alt: string | null }[];
+}
+
+/**
  * Mirrors features/rag/types.ts's RoomCatalogueEntry — see that type's own
  * doc comment for the bug this fixes (a confirmed, reproduced case: the
  * model's own free-text catalogue reply can silently drop compatible
@@ -58,6 +73,7 @@ interface ChatMessage {
   roomCatalogue?: RoomCatalogueEntry[];
   /** INFORMATION DÉTERMINISTE chantier — see features/rag/types.ts:AnswerQuestionResult.accommodationSummary's own doc comment. Same entry shape as roomCatalogue, independent field/gate, never both non-empty the same turn. */
   accommodationSummary?: RoomCatalogueEntry[];
+  hotelMediaGallery?: HotelMediaGallery | null;
 }
 
 /** Mirrors features/rag/types.ts's PendingPartnerRequestFields/PartnerRequestPhonePrompt — see those types' own doc comments. */
@@ -110,6 +126,7 @@ interface ChatApiResponse {
   spaBookingPhonePrompt: SpaBookingPhonePrompt | null;
   roomCatalogue: RoomCatalogueEntry[];
   accommodationSummary: RoomCatalogueEntry[];
+  hotelMediaGallery: HotelMediaGallery | null;
 }
 
 interface PublicWidgetChatProps {
@@ -260,6 +277,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openRoomRecommendation, setOpenRoomRecommendation] = useState<RoomRecommendation | null>(null);
+  const [openHotelMediaGallery, setOpenHotelMediaGallery] = useState<HotelMediaGallery | null>(null);
   // CATÉGORIES INFORMATION CLIQUABLES + PREVIEW AU SURVOL chantiers — which
   // accommodationSummary entry (by accommodationTypeId) currently has a
   // CLICK-triggered photo fetch in flight, if any. Drives the discreet
@@ -489,6 +507,7 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           partnerRecommendations: data.partnerRecommendations,
           roomCatalogue: data.roomCatalogue,
           accommodationSummary: data.accommodationSummary,
+          hotelMediaGallery: data.hotelMediaGallery,
         },
       ]);
       if (data.partnerRequestPhonePrompt) {
@@ -794,6 +813,27 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
                 }}
               >
                 Voir la chambre — {message.roomRecommendation.name}
+              </button>
+            )}
+            {/* hotel_media equivalent of the button above — same RoomPhotoModal, always pageUrl=null/bookingUrl=null (see the modal render below). Never both roomRecommendation and hotelMediaGallery the same turn in practice: accommodation names never match a hotel_media category keyword (features/rag/hotelMediaGallery.ts). */}
+            {message.role === "assistant" && message.hotelMediaGallery && (
+              <button
+                type="button"
+                onClick={() => setOpenHotelMediaGallery(message.hotelMediaGallery ?? null)}
+                style={{
+                  maxWidth: "82%",
+                  borderRadius: 8,
+                  border: "1px solid #E5E1D8",
+                  background: "#fff",
+                  padding: "8px 12px",
+                  textAlign: "left",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: "#1A1D1A",
+                  cursor: "pointer",
+                }}
+              >
+                Voir les photos — {message.hotelMediaGallery.label}
               </button>
             )}
             {/*
@@ -1211,6 +1251,17 @@ export function PublicWidgetChat({ widgetKey, config, hostOrigin }: PublicWidget
           bookingErrorMessage={
             hostBookingState?.messageIndex === "modal" && hostBookingState.status === "unavailable" ? HOST_BOOKING_UNAVAILABLE_MESSAGE : null
           }
+        />
+      )}
+
+      {/* No pageUrl (no accommodation page) and no bookingUrl/onBooking (no "Réserver" button for a facility gallery) — RoomPhotoModal already renders no footer at all when all three are absent. */}
+      {openHotelMediaGallery && (
+        <RoomPhotoModal
+          name={openHotelMediaGallery.label}
+          photos={openHotelMediaGallery.photos}
+          pageUrl={null}
+          bookingUrl={null}
+          onClose={() => setOpenHotelMediaGallery(null)}
         />
       )}
     </div>

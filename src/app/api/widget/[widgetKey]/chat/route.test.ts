@@ -68,6 +68,7 @@ function makeAnswerResult(overrides: Partial<AnswerQuestionResult> = {}): Answer
     spaBookingPhonePrompt: null,
     roomCatalogue: [],
     accommodationSummary: [],
+    hotelMediaGallery: null,
     ...overrides,
   };
 }
@@ -401,6 +402,7 @@ describe("POST /api/widget/[widgetKey]/chat — answerQuestion outcome", () => {
         "roomRecommendation",
         "roomCatalogue",
         "accommodationSummary",
+        "hotelMediaGallery",
       ].sort()
     );
     expect(body.action).toEqual({ type: "booking", label: "Réserver", url: "https://booking.example.com" });

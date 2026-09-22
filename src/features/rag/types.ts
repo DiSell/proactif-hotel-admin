@@ -1,4 +1,4 @@
-import type { HotelPartnerCategory } from "@/types/database";
+import type { HotelMediaCategory, HotelPartnerCategory } from "@/types/database";
 
 /**
  * Minimal, RAG-pipeline-specific projection of hotel_partners — deliberately
@@ -301,6 +301,31 @@ export interface AnswerQuestionResult {
    * roomCatalogue/RoomRecommendation.
    */
   accommodationSummary: RoomCatalogueEntry[];
+  /**
+   * hotel_media equivalent of RoomRecommendation, for general-establishment
+   * photos (pool, spa, fitness...) rather than a specific accommodation —
+   * see features/rag/hotelMediaGallery.ts. Deterministic, server-computed:
+   * the category is never chosen by the model, only detected from the raw
+   * message text (detectHotelMediaCategory) and gated by an explicit
+   * visual/photo request (isHotelMediaPhotoRequest) — a bare factual
+   * question ("avez-vous une piscine ?") never populates this field. Null
+   * whenever no category was detected, no visual intent was detected, OR
+   * the detected category currently has zero selected photos — NEVER an
+   * object with an empty `photos` array, and NEVER a different category's
+   * photos as a fallback (see loadSelectedHotelMediaPhotos's own doc
+   * comment). Independent of roomRecommendation: a room-specific request
+   * ("Montrez-moi la Deluxe") never populates this field, since accommodation
+   * names don't match any hotel_media category keyword.
+   */
+  hotelMediaGallery: HotelMediaGallery | null;
+}
+
+/** See AnswerQuestionResult.hotelMediaGallery's own doc comment. */
+export interface HotelMediaGallery {
+  category: HotelMediaCategory;
+  /** French label — reused from features/hotelMedia/schema.ts's HOTEL_MEDIA_CATEGORY_LABEL, never a second, parallel label map. */
+  label: string;
+  photos: { url: string; alt: string | null }[];
 }
 
 /**

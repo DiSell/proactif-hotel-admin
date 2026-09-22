@@ -249,6 +249,11 @@ export function createChatHandler(deps: ChatRouteDeps = defaultDeps) {
         // Independent of roomCatalogue (own gate, own intention, never both
         // non-empty the same turn) — see features/rag/types.ts:AnswerQuestionResult.accommodationSummary.
         accommodationSummary: result.accommodationSummary,
+        // hotel_media equivalent of roomRecommendation — general-establishment
+        // photos (pool, spa...) rather than a specific accommodation. Null
+        // whenever no visual/category intent was detected or the detected
+        // category has zero selected photos — see features/rag/types.ts:AnswerQuestionResult.hotelMediaGallery.
+        hotelMediaGallery: result.hotelMediaGallery,
       });
     } catch (err) {
       console.error("POST /api/widget/[widgetKey]/chat: answerQuestion failed", { hotelId, message: (err as Error).message });

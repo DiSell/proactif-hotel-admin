@@ -153,7 +153,7 @@ describe("PublicWidgetChat — RoomPhotoModal render site, non-régression", () 
     expect(block).toMatch(/onClose=\{\(\) => setOpenRoomRecommendation\(null\)\}/);
   });
 
-  it("[single RoomPhotoModal render site] never a second instance for the host_widget case", () => {
-    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(1);
+  it("[single RoomPhotoModal render site for the host_widget case] never a second instance FOR host_widget booking specifically — 2 total in the file, the other one is hotelMediaGallery's own, unrelated RoomPhotoModal (HOTEL_MEDIA CHATBOT chantier)", () => {
+    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(2);
   });
 });

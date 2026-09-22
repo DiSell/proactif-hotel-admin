@@ -223,7 +223,9 @@ describe("ChatPreview — handleAccommodationSummaryClick (click/loading/error/0
     expect(fn).toMatch(/setOpenRoomRecommendation\(data\);/);
     expect((source.match(/const \[openRoomRecommendation, setOpenRoomRecommendation\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
     expect((source.match(/const \[previewData, setPreviewData\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
-    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(1);
+    // 2, not 1: accommodationSummary itself still adds none (reuses this same modal) — the second
+    // instance is hotelMediaGallery's own, independent RoomPhotoModal (HOTEL_MEDIA CHATBOT chantier).
+    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(2);
   });
 
   it("[error -> no fake empty modal] a thrown error (loadAccommodationPhotos rejects) sets the existing generic `error` state and never calls setOpenRoomRecommendation", () => {
@@ -430,8 +432,8 @@ describe("ChatPreview — RoomRecommendation path unchanged (non-régression)", 
     expect(source).toMatch(/Voir la chambre — \{message\.roomRecommendation\.name\}/);
   });
 
-  it("[single RoomPhotoModal render site] only one <RoomPhotoModal ...> in the whole file — accommodationSummary's click reuses it, never a second instance", () => {
-    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(1);
+  it("[single RoomPhotoModal render site for RoomRecommendation] accommodationSummary's click reuses it, never a second instance for itself — 2 total in the file, the other one is hotelMediaGallery's own (HOTEL_MEDIA CHATBOT chantier)", () => {
+    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(2);
   });
 
   it("[chat text flow untouched] handleSend still uses fetch(apiPath ...) exactly as before — only accommodationSummary's own photo loading changed", () => {

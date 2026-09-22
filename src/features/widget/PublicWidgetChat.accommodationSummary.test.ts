@@ -192,7 +192,10 @@ describe("PublicWidgetChat — handleAccommodationSummaryClick (TEST B: click/lo
     // so a blanket count of every `useState<RoomRecommendation | null>` occurrence would be wrong.
     expect((source.match(/const \[openRoomRecommendation, setOpenRoomRecommendation\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
     expect((source.match(/const \[previewData, setPreviewData\] = useState<RoomRecommendation \| null>/g) ?? []).length).toBe(1);
-    expect(source).not.toMatch(/<RoomPhotoModal[\s\S]*?<RoomPhotoModal/);
+    // Exactly 2 in the whole file, not a duplicate for THIS feature: accommodationSummary itself
+    // still adds none (reuses this same modal) — the second instance is hotelMediaGallery's own,
+    // independent RoomPhotoModal (HOTEL_MEDIA CHATBOT chantier).
+    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(2);
   });
 
   it("[network/HTTP error -> no fake empty modal] a thrown error (loadAccommodationPhotos rejects on non-ok/network failure) sets the existing generic `error` state and never calls setOpenRoomRecommendation", () => {
@@ -403,7 +406,7 @@ describe("PublicWidgetChat — RoomRecommendation path unchanged (non-régressio
     expect(source).toMatch(/Voir la chambre — \{message\.roomRecommendation\.name\}/);
   });
 
-  it("[single RoomPhotoModal render site] only one <RoomPhotoModal ...> in the whole file — accommodationSummary's click reuses it, never a second instance", () => {
-    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(1);
+  it("[single RoomPhotoModal render site for RoomRecommendation] accommodationSummary's click reuses it, never a second instance for itself — 2 total in the file, the other one is hotelMediaGallery's own (HOTEL_MEDIA CHATBOT chantier)", () => {
+    expect((source.match(/<RoomPhotoModal/g) ?? []).length).toBe(2);
   });
 });
