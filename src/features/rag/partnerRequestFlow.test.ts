@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HotelPartner } from "@/types/database";
 import type { PartnerRequest } from "@/features/partnerRequests/types";
-import type { WhatsAppSendResult } from "@/lib/notifications/whatsapp/types";
+import type { deliverPartnerRequestViaSms as deliverPartnerRequestViaSmsType } from "@/features/partnerRequests/deliveryService";
+
+type DeliverPartnerRequestViaSmsResult = Awaited<ReturnType<typeof deliverPartnerRequestViaSmsType>>;
 
 const mockCreate = vi.fn<(...args: unknown[]) => Promise<string>>(async () => "req-new");
 const mockApplyCommand = vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined);
@@ -21,7 +23,7 @@ vi.mock("@/features/partnerRequests/queries", () => ({
   hasGuestConfirmedEvent: (...args: unknown[]) => mockHasGuestConfirmed(...args),
 }));
 
-const mockDeliverPartnerRequest = vi.fn<(...args: unknown[]) => Promise<WhatsAppSendResult>>(async () => ({ ok: true, providerMessageId: "wamid.test" }));
+const mockDeliverPartnerRequestViaSms = vi.fn<(...args: unknown[]) => Promise<DeliverPartnerRequestViaSmsResult>>(async () => ({ ok: true, providerMessageId: "SM_test" }));
 const mockGetLatestDeliveryStatus = vi.fn<(...args: unknown[]) => Promise<"queued" | "sending" | "sent" | "failed" | "unknown" | null>>(async () => null);
 const mockReconcileStaleSending = vi.fn(async (delivery: { status: "queued" | "sending" | "sent" | "failed" | "unknown" }) => delivery.status);
 const mockDeliverAlternativeAcceptance = vi.fn<(...args: unknown[]) => Promise<{ ok: boolean; error?: string; providerMessageId?: string }>>(async () => ({
@@ -29,7 +31,7 @@ const mockDeliverAlternativeAcceptance = vi.fn<(...args: unknown[]) => Promise<{
   providerMessageId: "SM_reconfirm",
 }));
 vi.mock("@/features/partnerRequests/deliveryService", () => ({
-  deliverPartnerRequest: (...args: unknown[]) => mockDeliverPartnerRequest(...args),
+  deliverPartnerRequestViaSms: (...args: unknown[]) => mockDeliverPartnerRequestViaSms(...args),
   deliverPartnerRequestAlternativeAcceptance: (...args: unknown[]) => mockDeliverAlternativeAcceptance(...args),
   getLatestPartnerRequestDelivery: async (...args: unknown[]) => {
     const status = await mockGetLatestDeliveryStatus(...args);
@@ -61,8 +63,8 @@ afterEach(() => {
   mockGetGuestPhone.mockImplementation(async () => null);
   mockGetPartnerRequestById.mockReset();
   mockGetPartnerRequestById.mockImplementation(async () => ({ id: "req-1", status: "pending_confirmation" }) as PartnerRequest);
-  mockDeliverPartnerRequest.mockReset();
-  mockDeliverPartnerRequest.mockImplementation(async () => ({ ok: true as const, providerMessageId: "wamid.test" }));
+  mockDeliverPartnerRequestViaSms.mockReset();
+  mockDeliverPartnerRequestViaSms.mockImplementation(async () => ({ ok: true as const, providerMessageId: "SM_test" }));
   mockGetLatestDeliveryStatus.mockReset();
   mockGetLatestDeliveryStatus.mockImplementation(async () => null);
   mockReconcileStaleSending.mockClear();
@@ -379,8 +381,8 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
     });
 
     expect(mockApplyCommand).toHaveBeenCalledWith("req-1", "hotel-a", "guest_confirm", {});
-    expect(mockApplyCommand.mock.invocationCallOrder[0]).toBeLessThan(mockDeliverPartnerRequest.mock.invocationCallOrder[0]);
-    expect(mockDeliverPartnerRequest).toHaveBeenCalledTimes(1);
+    expect(mockApplyCommand.mock.invocationCallOrder[0]).toBeLessThan(mockDeliverPartnerRequestViaSms.mock.invocationCallOrder[0]);
+    expect(mockDeliverPartnerRequestViaSms).toHaveBeenCalledTimes(1);
     expect(mockCreate).not.toHaveBeenCalled();
     expect(result.replySuffix).toMatch(/bien été transmise au partenaire/);
     expect(result.replySuffix).not.toMatch(/réservation confirmée/i);
@@ -407,12 +409,11 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
 
   it.each([
     [{ ok: false, error: "provider_not_configured", attempted: false }, /service de transmission.*pas encore disponible/],
-    [{ ok: false, error: "template_not_configured", attempted: false }, /service de transmission.*pas encore disponible/],
     [{ ok: false, error: "partner_not_eligible", attempted: false }, /ne peut pas recevoir de demande directement/],
     [{ ok: false, error: "provider_error", attempted: true, certainty: "not_sent" }, /pas pu la transmettre/],
     [{ ok: false, error: "provider_unknown", attempted: true, certainty: "unknown" }, /en cours de vérification/],
   ] as const)("[delivery result %o] maps to a deterministic non-technical message", async (deliveryResult, expected) => {
-    mockDeliverPartnerRequest.mockResolvedValueOnce(deliveryResult);
+    mockDeliverPartnerRequestViaSms.mockResolvedValueOnce(deliveryResult);
     const { processPartnerRequestTurn } = await import("./partnerRequestFlow");
     const result = await processPartnerRequestTurn({
       hotelId: "hotel-a", conversationId: "conv-1", message: "Oui", normalizedPhoneE164: null,
@@ -440,7 +441,7 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
     });
     expect(result.replySuffix).toMatch(expected);
     expect(mockApplyCommand).not.toHaveBeenCalled();
-    expect(mockDeliverPartnerRequest).not.toHaveBeenCalled();
+    expect(mockDeliverPartnerRequestViaSms).not.toHaveBeenCalled();
   });
 
   it("[already sent_to_partner] answers already transmitted without another delivery", async () => {
@@ -451,7 +452,7 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
       modelOutput: fakeModelOutput({ confirmPartnerRequest: true }), supabase: {} as never,
     });
     expect(result.replySuffix).toMatch(/bien été transmise/);
-    expect(mockDeliverPartnerRequest).not.toHaveBeenCalled();
+    expect(mockDeliverPartnerRequestViaSms).not.toHaveBeenCalled();
   });
 
   it("[lost HTTP response retry] existing guest confirmation plus unknown delivery never retries", async () => {
@@ -465,7 +466,7 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
     });
     expect(result.replySuffix).toMatch(/en cours de vérification/);
     expect(mockApplyCommand).not.toHaveBeenCalled();
-    expect(mockDeliverPartnerRequest).not.toHaveBeenCalled();
+    expect(mockDeliverPartnerRequestViaSms).not.toHaveBeenCalled();
   });
 
   it("[stale sending] reconciles to unknown and shows verification without provider retry", async () => {
@@ -480,7 +481,7 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
     });
     expect(result.replySuffix).toMatch(/en cours de vérification/);
     expect(mockReconcileStaleSending).toHaveBeenCalledTimes(1);
-    expect(mockDeliverPartnerRequest).not.toHaveBeenCalled();
+    expect(mockDeliverPartnerRequestViaSms).not.toHaveBeenCalled();
     expect(mockApplyCommand).not.toHaveBeenCalled();
   });
 
@@ -498,7 +499,7 @@ describe("processPartnerRequestTurn — active request pending_confirmation", ()
     const second = await processPartnerRequestTurn(params);
     expect(first.replySuffix).toMatch(/bien été transmise/);
     expect(second.replySuffix).toMatch(/bien été transmise/);
-    expect(mockDeliverPartnerRequest).toHaveBeenCalledTimes(1);
+    expect(mockDeliverPartnerRequestViaSms).toHaveBeenCalledTimes(1);
     expect(mockApplyCommand).toHaveBeenCalledTimes(1);
   });
 

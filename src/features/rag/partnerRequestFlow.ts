@@ -4,8 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { createPartnerRequestForChatbot, applyPartnerRequestCommandForChatbot } from "@/features/partnerRequests/chatbotService";
 import { getActivePartnerRequestForConversation, getGuestPhoneForPartnerRequest, getPartnerRequestById, hasGuestConfirmedEvent } from "@/features/partnerRequests/queries";
 import {
-  deliverPartnerRequest,
   deliverPartnerRequestAlternativeAcceptance,
+  deliverPartnerRequestViaSms,
   getLatestPartnerRequestDelivery,
   reconcileStaleSendingDelivery,
 } from "@/features/partnerRequests/deliveryService";
@@ -409,7 +409,7 @@ export async function processPartnerRequestTurn(params: ProcessPartnerRequestTur
       return { replySuffix: buildPartnerDeliveryUserMessage(messageForPersistedDelivery(status)), phonePrompt: null, replaceReply: true };
     }
 
-    const deliveryResult = await deliverPartnerRequest(activePartnerRequest.id, hotelId, { supabase: serverSupabase });
+    const deliveryResult = await deliverPartnerRequestViaSms(activePartnerRequest.id, hotelId, { supabase: serverSupabase });
     const finalRequest = await getPartnerRequestById(hotelId, activePartnerRequest.id, serverSupabase);
     let finalState = finalRequest?.status === "sent_to_partner" ? "sent" : messageForSendResult(deliveryResult);
     if (!deliveryResult.ok && deliveryResult.error === "delivery_already_in_progress") {
